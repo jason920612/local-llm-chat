@@ -195,6 +195,9 @@ export function Composer({
             onPaste={handlePaste}
             placeholder="Send a message or attach an image…  (Enter to send)"
             className="max-h-[200px] flex-1 resize-none bg-transparent py-1.5 text-sm outline-none placeholder:text-muted disabled:opacity-50"
+            // Browser extensions (writing assistants, etc.) inject attributes
+            // into inputs after SSR; suppress the resulting benign hydration diff.
+            suppressHydrationWarning
           />
 
           {streaming ? (
