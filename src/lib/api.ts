@@ -153,14 +153,22 @@ export async function updateSettings(
   });
 }
 
-/** Decode the base64(UTF-8 JSON) X-Citations response header. */
-export function parseCitationsHeader(header: string | null): Citation[] {
-  if (!header) return [];
+function decodeB64Json<T>(header: string | null, fallback: T): T {
+  if (!header) return fallback;
   try {
     const bytes = Uint8Array.from(atob(header), (c) => c.charCodeAt(0));
-    const json = new TextDecoder().decode(bytes);
-    return JSON.parse(json) as Citation[];
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
   } catch {
-    return [];
+    return fallback;
   }
+}
+
+/** Decode the base64(UTF-8 JSON) X-Citations response header. */
+export function parseCitationsHeader(header: string | null): Citation[] {
+  return decodeB64Json<Citation[]>(header, []);
+}
+
+/** Decode the base64(UTF-8 JSON) X-Images response header (generated images). */
+export function parseImagesHeader(header: string | null): string[] {
+  return decodeB64Json<string[]>(header, []);
 }

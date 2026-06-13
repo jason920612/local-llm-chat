@@ -8,6 +8,7 @@ import {
   createConversationApi,
   fetchConversation,
   parseCitationsHeader,
+  parseImagesHeader,
   saveMessage,
 } from "@/lib/api";
 import { fileToResizedDataURL, isImageFile } from "@/lib/image";
@@ -152,6 +153,7 @@ export function Chat({
       if (!res.body) throw new Error("No response stream.");
 
       const citations = parseCitationsHeader(res.headers.get("X-Citations"));
+      const genImages = parseImagesHeader(res.headers.get("X-Images"));
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let acc = "";
@@ -170,6 +172,7 @@ export function Chat({
         ...assistantMsg,
         content: acc,
         citations: citations.length > 0 ? citations : undefined,
+        images: genImages.length > 0 ? genImages : undefined,
       };
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),

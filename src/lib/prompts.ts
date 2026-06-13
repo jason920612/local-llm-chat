@@ -13,8 +13,10 @@ export interface SystemPromptOptions {
   hasImages?: boolean;
   /** Retrieved document context for RAG. When present, grounding is enforced. */
   ragContext?: string;
-  /** True when the grok_search tool is available this turn. */
+  /** True when the grok_search/generate_image function tools are available. */
   hasGrokTool?: boolean;
+  /** True when running natively on the Grok Responses API (search is automatic). */
+  grokNative?: boolean;
 }
 
 /**
@@ -57,18 +59,28 @@ ${ragContext}
 
 const GROK_DIRECTIVE = `
 
-# EXTERNAL SEARCH TOOL — grok_search
-You have a tool named "grok_search" that searches X (Twitter) and the web via Grok and returns a synthesized answer.
-- Call it ONLY when answering REQUIRES real-time, recent, or external information you cannot know (current events, news, prices, live status, public X posts).
-- Do NOT call it for general knowledge, reasoning, math, or coding — answer those directly.
-- Issue ONE focused query. After receiving the tool result, base your factual claims on it and cite the provided sources with [n].
-- If the tool result does not answer the question, say so plainly. Do NOT fabricate.`;
+# TOOLS
+You have two tools:
+1. "grok_search" — searches X (Twitter) and the web and returns a synthesized answer.
+   - Call it ONLY when answering REQUIRES real-time, recent, or external info you cannot know (current events, news, prices, live status, public X posts).
+   - Do NOT call it for general knowledge, reasoning, math, or coding — answer those directly.
+   - After the result, base factual claims on it and cite sources with [n]. If it doesn't answer, say so. Never fabricate.
+2. "generate_image" — generates an image from a text prompt.
+   - Call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork.
+   - The image is shown to the user automatically; after it succeeds, just briefly confirm in the user's language. Do NOT describe a fake image or output image markdown yourself.`;
+
+const NATIVE_GROK_DIRECTIVE = `
+
+# CAPABILITIES
+- You can search X (Twitter) and the web automatically when a question needs real-time or external information — just use it when relevant, and cite sources with [n].
+- You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.`;
 
 /** Build the full system prompt for the current turn. */
 export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {
   let prompt = CORE_DIRECTIVE;
   if (opts.hasImages) prompt += VISION_DIRECTIVE;
-  if (opts.hasGrokTool) prompt += GROK_DIRECTIVE;
+  if (opts.grokNative) prompt += NATIVE_GROK_DIRECTIVE;
+  else if (opts.hasGrokTool) prompt += GROK_DIRECTIVE;
   if (opts.ragContext && opts.ragContext.trim().length > 0) {
     prompt += ragDirective(opts.ragContext);
   }

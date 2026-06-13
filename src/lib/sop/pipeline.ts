@@ -4,9 +4,11 @@ import { buildSystemPrompt } from "../prompts";
 import { toOpenAIMessages } from "../openai-format";
 import type { ChatRequestBody, UIMessage } from "../types";
 import { retrieve } from "../rag/retrieve";
-import { chatClient, strictMonitorEnabled } from "../settings";
+import { chatClient, strictMonitorEnabled, chatTarget } from "../settings";
 import { askGrok, mapGrokCitations } from "../grok/search";
-import { grokSearchTool } from "../grok/tool";
+import { generateImage } from "../grok/image";
+import { grokSearchTool, generateImageTool } from "../grok/tool";
+import { runGrokResponses } from "../grok/responses";
 import type { Citation } from "../types";
 import { callStructured } from "./structured";
 import {
@@ -49,14 +51,7 @@ export async function runControlledChat(
   );
 
   try {
-    // GATE 1 — intent (code short-circuit). Runs before any answer is produced.
-    if (config.sop.intentGate) {
-      const clarification = await runIntentGate(messages);
-      if (clarification) return textResponse(clarification);
-    }
-
-    // RAG retrieval (Phase 4). Grounding + citation enforcement kick in only
-    // when documents are toggled on and something is actually retrieved.
+    // RAG retrieval (shared by all backends).
     let ragContext: string | undefined;
     let citations: Citation[] = [];
     let allowedSources = 0;
@@ -70,21 +65,45 @@ export async function runControlledChat(
       }
     }
 
-    const useGrok = Boolean(body.useGrok) && config.grok.enabled;
+    // NATIVE GROK BACKEND: use the xAI Responses API (server-side X/web search +
+    // client-side image tool). A frontier model needs no intent gate or
+    // scold-correction, so we return its answer directly.
+    if (chatTarget() === "grok") {
+      const systemPrompt = buildSystemPrompt({
+        hasImages,
+        ragContext,
+        grokNative: true,
+      });
+      const result = await runGrokResponses(systemPrompt, messages);
+      const think = result.reasoning
+        ? `<think>\n${result.reasoning}\n</think>\n\n`
+        : "";
+      const merged = [...citations, ...result.citations];
+      return textResponse(think + result.text, merged, result.images);
+    }
+
+    // GATE 1 — intent (code short-circuit). Local models only.
+    if (config.sop.intentGate) {
+      const clarification = await runIntentGate(messages);
+      if (clarification) return textResponse(clarification);
+    }
+
+    // Local model borrowing Grok tools (search + image) via function calling.
+    const useTools = Boolean(body.useGrok) && config.grok.enabled;
 
     const systemPrompt = buildSystemPrompt({
       hasImages,
       ragContext,
-      hasGrokTool: useGrok,
+      hasGrokTool: useTools,
     });
     const openaiMessages: ChatParam[] = [
       { role: "system", content: systemPrompt },
       ...toOpenAIMessages(messages),
     ];
 
-    // Grok search tool path: let the model call grok_search; resolve it server
-    // side and finalize the answer with collected citations.
-    if (useGrok) {
+    // Grok tool path: the model can call grok_search (X + web) and generate_image;
+    // we resolve them server-side and finalize with citations + generated images.
+    if (useTools) {
       return await runWithGrokTool(openaiMessages, citations);
     }
 
@@ -238,10 +257,11 @@ async function runStreaming(
 
 // --- Grok search tool path -------------------------------------------------
 
-/** Stream an existing message list (no tools) and attach citations. */
+/** Stream an existing message list (no tools) and attach citations + images. */
 function streamFinal(
   messages: ChatParam[],
   citations: Citation[],
+  images: string[] = [],
 ): Promise<Response> {
   const { client, model } = chatClient();
   return client.chat.completions
@@ -295,7 +315,7 @@ function streamFinal(
           }
         },
       });
-      return streamResponse(stream, citations);
+      return streamResponse(stream, citations, images);
     });
 }
 
@@ -310,6 +330,7 @@ async function runWithGrokTool(
 ): Promise<Response> {
   const messages = [...openaiMessages];
   const citations: Citation[] = [...baseCitations];
+  const images: string[] = []; // images generated via generate_image
   let usedTool = false;
   let directContent: string | null = null;
 
@@ -318,7 +339,7 @@ async function runWithGrokTool(
     const resp = await client.chat.completions.create({
       model,
       messages,
-      tools: [grokSearchTool],
+      tools: [grokSearchTool, generateImageTool],
       tool_choice: "auto",
       temperature: 0.3,
     });
@@ -327,10 +348,10 @@ async function runWithGrokTool(
     const toolCalls = msg?.tool_calls ?? [];
 
     if (toolCalls.length === 0) {
-      // Model answered directly without searching.
+      // Model answered directly without using a tool.
       if (!usedTool) {
         if (!strictMonitorEnabled()) {
-          return textResponse(msg?.content ?? "", citations);
+          return textResponse(msg?.content ?? "", citations, images);
         }
         // Reuse this draft in the monitor instead of regenerating.
         directContent = msg?.content ?? "";
@@ -343,31 +364,43 @@ async function runWithGrokTool(
 
     for (const call of toolCalls) {
       if (call.type !== "function") continue;
-      let query = "";
+      let args: { query?: string; prompt?: string } = {};
       try {
-        query = JSON.parse(call.function.arguments || "{}").query ?? "";
+        args = JSON.parse(call.function.arguments || "{}");
       } catch {
         /* leave empty */
       }
 
       let toolContent: string;
-      try {
-        const result = await askGrok(query);
-        const mapped = mapGrokCitations(
-          result.citations.map((c) => c.snippet),
-          citations.length,
-        );
-        citations.push(...mapped);
-        toolContent = result.answer || "(Grok returned no answer)";
-        if (mapped.length > 0) {
-          toolContent +=
-            "\n\nSources:\n" +
-            mapped.map((m) => `[${m.index}] ${m.snippet}`).join("\n");
+      if (call.function.name === "generate_image") {
+        try {
+          const src = await generateImage(args.prompt ?? "");
+          images.push(src);
+          toolContent = `Image generated successfully and shown to the user. Briefly confirm it in the user's language.`;
+        } catch (err) {
+          toolContent = `generate_image failed: ${
+            err instanceof Error ? err.message : "error"
+          }`;
         }
-      } catch (err) {
-        toolContent = `grok_search failed: ${
-          err instanceof Error ? err.message : "error"
-        }`;
+      } else {
+        try {
+          const result = await askGrok(args.query ?? "");
+          const mapped = mapGrokCitations(
+            result.citations.map((c) => c.snippet),
+            citations.length,
+          );
+          citations.push(...mapped);
+          toolContent = result.answer || "(Grok returned no answer)";
+          if (mapped.length > 0) {
+            toolContent +=
+              "\n\nSources:\n" +
+              mapped.map((m) => `[${m.index}] ${m.snippet}`).join("\n");
+          }
+        } catch (err) {
+          toolContent = `grok_search failed: ${
+            err instanceof Error ? err.message : "error"
+          }`;
+        }
       }
 
       messages.push({
@@ -387,18 +420,19 @@ async function runWithGrokTool(
       { allowedSources: -1, requireCitations: false },
       directContent ?? undefined,
     );
-    return monitorResponse(result, citations);
+    return monitorResponse(result, citations, images);
   }
-  return streamFinal(messages, citations);
+  return streamFinal(messages, citations, images);
 }
 
 /** Wrap a monitor result as a response: answer + neutral control note. */
 function monitorResponse(
   result: MonitorResult,
   citations: Citation[],
+  images: string[] = [],
 ): Response {
   const footer = result.controlNote ? `\n\n> ${result.controlNote}` : "";
-  return textResponse(result.text + footer, citations);
+  return textResponse(result.text + footer, citations, images);
 }
 
 // --- Blocking path (full code enforcement) ---------------------------------
@@ -514,9 +548,17 @@ function citationsHeader(citations: Citation[]): Record<string, string> {
   return { "X-Citations": Buffer.from(json, "utf-8").toString("base64") };
 }
 
+/** Base64(UTF-8 JSON) of generated image srcs, for the X-Images header. */
+function imagesHeader(images: string[]): Record<string, string> {
+  if (!images || images.length === 0) return {};
+  const json = JSON.stringify(images);
+  return { "X-Images": Buffer.from(json, "utf-8").toString("base64") };
+}
+
 function streamResponse(
   stream: ReadableStream<Uint8Array>,
   citations: Citation[] = [],
+  images: string[] = [],
 ): Response {
   return new Response(stream, {
     headers: {
@@ -524,16 +566,22 @@ function streamResponse(
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
       ...citationsHeader(citations),
+      ...imagesHeader(images),
     },
   });
 }
 
-function textResponse(text: string, citations: Citation[] = []): Response {
+function textResponse(
+  text: string,
+  citations: Citation[] = [],
+  images: string[] = [],
+): Response {
   return new Response(text, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       ...citationsHeader(citations),
+      ...imagesHeader(images),
     },
   });
 }

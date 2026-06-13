@@ -25,3 +25,28 @@ export const grokSearchTool: OpenAI.Chat.Completions.ChatCompletionTool = {
     },
   },
 };
+
+/**
+ * Image-generation tool. When the model calls it, the pipeline generates an
+ * image via Grok Imagine and attaches it to the reply.
+ */
+export const generateImageTool: OpenAI.Chat.Completions.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "generate_image",
+    description:
+      "Generate an image from a text description using Grok Imagine. Use when the user asks to create, draw, generate, or imagine a picture/image/logo/art. The image is shown to the user automatically.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description:
+            "A vivid, detailed English description of the image to generate.",
+        },
+      },
+      required: ["prompt"],
+      additionalProperties: false,
+    },
+  },
+};
