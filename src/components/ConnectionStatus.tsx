@@ -20,6 +20,7 @@ export function ConnectionStatus() {
     };
   }, []);
 
+  const isGrok = health?.target === "grok";
   const state = health == null ? "checking" : health.ok ? "online" : "offline";
   const color =
     state === "online"
@@ -28,8 +29,9 @@ export function ConnectionStatus() {
         ? "bg-red-500"
         : "bg-amber-400";
 
-  const label =
-    state === "online"
+  const label = isGrok
+    ? `☁ ${health?.chatModel}`
+    : state === "online"
       ? health?.chatLoaded
         ? health.chatModel
         : `connected · "${health?.chatModel}" not loaded`

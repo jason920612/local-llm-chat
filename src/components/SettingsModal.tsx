@@ -49,7 +49,11 @@ export function SettingsModal({
   }, [open]);
 
   const applyPatch = useCallback(
-    async (patch: { chatModel?: string; strictMonitor?: boolean }) => {
+    async (patch: {
+      chatModel?: string;
+      strictMonitor?: boolean;
+      chatTarget?: "local" | "grok";
+    }) => {
       setSaving(true);
       try {
         await updateSettings(patch);
@@ -139,20 +143,62 @@ export function SettingsModal({
               </h3>
               <div className="space-y-3 rounded-xl border border-border bg-surface-2 px-4 py-3">
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-sm text-muted">Chat model</span>
-                  <select
-                    value={settings.chatModel}
-                    disabled={saving}
-                    onChange={(e) => applyPatch({ chatModel: e.target.value })}
-                    className="max-w-[260px] flex-1 rounded-lg border border-border bg-surface px-2 py-1 text-xs outline-none focus:border-accent disabled:opacity-50"
-                  >
-                    {modelOptions.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
+                  <span className="text-sm text-muted">Backend</span>
+                  <div className="flex overflow-hidden rounded-lg border border-border">
+                    <button
+                      onClick={() => applyPatch({ chatTarget: "local" })}
+                      disabled={saving}
+                      className={`px-3 py-1 text-xs ${
+                        settings.chatTarget === "local"
+                          ? "bg-accent-strong text-white"
+                          : "text-muted hover:text-foreground"
+                      }`}
+                    >
+                      Local
+                    </button>
+                    <button
+                      onClick={() => applyPatch({ chatTarget: "grok" })}
+                      disabled={saving || !settings.grokAvailable}
+                      title={
+                        settings.grokAvailable
+                          ? "Use xAI Grok (cloud, frontier)"
+                          : "Set XAI_API_KEY to enable"
+                      }
+                      className={`px-3 py-1 text-xs disabled:opacity-40 ${
+                        settings.chatTarget === "grok"
+                          ? "bg-accent-strong text-white"
+                          : "text-muted hover:text-foreground"
+                      }`}
+                    >
+                      Grok ☁
+                    </button>
+                  </div>
                 </div>
+
+                {settings.chatTarget === "grok" ? (
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted">Cloud model</span>
+                    <span className="font-mono text-xs text-emerald-400">
+                      {settings.grokModel}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted">Chat model</span>
+                    <select
+                      value={settings.chatModel}
+                      disabled={saving}
+                      onChange={(e) => applyPatch({ chatModel: e.target.value })}
+                      className="max-w-[260px] flex-1 rounded-lg border border-border bg-surface px-2 py-1 text-xs outline-none focus:border-accent disabled:opacity-50"
+                    >
+                      {modelOptions.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-sm text-muted">
                     Strict monitor

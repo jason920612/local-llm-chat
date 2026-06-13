@@ -26,5 +26,8 @@ export async function POST(req: NextRequest) {
   if (typeof body.strictMonitor === "boolean") {
     setSetting("strictMonitor", String(body.strictMonitor));
   }
+  if (body.chatTarget === "local" || body.chatTarget === "grok") {
+    setSetting("chatTarget", body.chatTarget);
+  }
   return Response.json(getEffectiveSettings());
 }

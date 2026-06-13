@@ -1,11 +1,10 @@
 import type OpenAI from "openai";
-import { llm } from "../llm";
 import { config } from "../config";
 import { buildSystemPrompt } from "../prompts";
 import { toOpenAIMessages } from "../openai-format";
 import type { ChatRequestBody, UIMessage } from "../types";
 import { retrieve } from "../rag/retrieve";
-import { activeChatModel, strictMonitorEnabled } from "../settings";
+import { chatClient, strictMonitorEnabled } from "../settings";
 import { askGrok, mapGrokCitations } from "../grok/search";
 import { grokSearchTool } from "../grok/tool";
 import type { Citation } from "../types";
@@ -170,8 +169,9 @@ async function runStreaming(
   allowedSources: number,
   citations: Citation[],
 ): Promise<Response> {
-  const completion = await llm.chat.completions.create({
-    model: activeChatModel(),
+  const { client, model } = chatClient();
+  const completion = await client.chat.completions.create({
+    model,
     messages: openaiMessages,
     stream: true,
     temperature: 0.4,
@@ -243,9 +243,10 @@ function streamFinal(
   messages: ChatParam[],
   citations: Citation[],
 ): Promise<Response> {
-  return llm.chat.completions
+  const { client, model } = chatClient();
+  return client.chat.completions
     .create({
-      model: activeChatModel(),
+      model,
       messages,
       stream: true,
       temperature: 0.4,
@@ -312,9 +313,10 @@ async function runWithGrokTool(
   let usedTool = false;
   let directContent: string | null = null;
 
+  const { client, model } = chatClient();
   for (let round = 0; round < config.grok.maxRounds; round++) {
-    const resp = await llm.chat.completions.create({
-      model: activeChatModel(),
+    const resp = await client.chat.completions.create({
+      model,
       messages,
       tools: [grokSearchTool],
       tool_choice: "auto",
@@ -406,8 +408,9 @@ async function runBlocking(
   allowedSources: number,
   citations: Citation[],
 ): Promise<Response> {
-  const res = await llm.chat.completions.create({
-    model: activeChatModel(),
+  const { client, model } = chatClient();
+  const res = await client.chat.completions.create({
+    model,
     messages: openaiMessages,
     temperature: 0.4,
   });
@@ -481,8 +484,9 @@ async function regenerate(
   violations: string[],
 ): Promise<string | null> {
   try {
-    const res = await llm.chat.completions.create({
-      model: activeChatModel(),
+    const { client, model } = chatClient();
+    const res = await client.chat.completions.create({
+      model,
       temperature: 0.2,
       messages: [
         ...openaiMessages,

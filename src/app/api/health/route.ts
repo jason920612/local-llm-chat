@@ -1,12 +1,24 @@
 import { llm } from "@/lib/llm";
 import { config } from "@/lib/config";
-import { activeChatModel } from "@/lib/settings";
+import { activeChatModel, chatTarget } from "@/lib/settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** Probe the local model server and report which models are loaded. */
 export async function GET() {
+  const target = chatTarget();
+
+  // When chatting via Grok (cloud), the local server is only used for RAG
+  // embeddings — don't gate the indicator on it.
+  if (target === "grok") {
+    return Response.json({
+      ok: true,
+      target: "grok",
+      chatModel: config.grok.model,
+    });
+  }
+
   const chatModel = activeChatModel();
   try {
     const list = await llm.models.list();
@@ -15,6 +27,7 @@ export async function GET() {
     const embedLoaded = models.includes(config.llm.embeddingModel);
     return Response.json({
       ok: true,
+      target: "local",
       models,
       chatModel,
       embeddingModel: config.llm.embeddingModel,
@@ -24,6 +37,7 @@ export async function GET() {
   } catch (err) {
     return Response.json({
       ok: false,
+      target: "local",
       error: err instanceof Error ? err.message : "unreachable",
       baseURL: config.llm.baseURL,
       chatModel,

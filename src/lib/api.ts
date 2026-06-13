@@ -81,6 +81,7 @@ export async function deleteDocumentApi(id: string): Promise<void> {
 
 export interface HealthStatus {
   ok: boolean;
+  target?: "local" | "grok";
   models?: string[];
   chatModel?: string;
   embeddingModel?: string;
@@ -124,7 +125,10 @@ export async function fetchAppConfig(): Promise<AppConfig> {
 // --- Runtime settings ------------------------------------------------------
 
 export interface RuntimeSettings {
+  chatTarget: "local" | "grok";
   chatModel: string;
+  grokModel: string;
+  grokAvailable: boolean;
   strictMonitor: boolean;
   availableModels: string[];
 }
@@ -136,7 +140,11 @@ export async function fetchSettings(): Promise<RuntimeSettings> {
 }
 
 export async function updateSettings(
-  patch: { chatModel?: string; strictMonitor?: boolean },
+  patch: {
+    chatModel?: string;
+    strictMonitor?: boolean;
+    chatTarget?: "local" | "grok";
+  },
 ): Promise<void> {
   await fetch("/api/settings", {
     method: "POST",

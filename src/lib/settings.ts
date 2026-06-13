@@ -1,5 +1,9 @@
+import type OpenAI from "openai";
 import { db } from "./db";
 import { config } from "./config";
+import { llm, grokClient } from "./llm";
+
+export type ChatTarget = "local" | "grok";
 
 /**
  * Runtime-overridable settings (persisted in SQLite). These override the
@@ -32,14 +36,34 @@ export function strictMonitorEnabled(): boolean {
   return v === "true";
 }
 
+/** Where chat completions are routed: local LM Studio or xAI Grok (cloud). */
+export function chatTarget(): ChatTarget {
+  const v = getSetting("chatTarget");
+  return v === "grok" && config.grok.enabled ? "grok" : "local";
+}
+
+/** The OpenAI-compatible client + model id to use for chat this turn. */
+export function chatClient(): { client: OpenAI; model: string } {
+  if (chatTarget() === "grok") {
+    return { client: grokClient, model: config.grok.model };
+  }
+  return { client: llm, model: activeChatModel() };
+}
+
 export interface EffectiveSettings {
+  chatTarget: ChatTarget;
   chatModel: string;
+  grokModel: string;
+  grokAvailable: boolean;
   strictMonitor: boolean;
 }
 
 export function getEffectiveSettings(): EffectiveSettings {
   return {
+    chatTarget: chatTarget(),
     chatModel: activeChatModel(),
+    grokModel: config.grok.model,
+    grokAvailable: config.grok.enabled,
     strictMonitor: strictMonitorEnabled(),
   };
 }

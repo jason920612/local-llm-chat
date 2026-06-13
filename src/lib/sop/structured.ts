@@ -1,8 +1,7 @@
 import type OpenAI from "openai";
 import type { ZodType } from "zod";
-import { llm } from "../llm";
 import { config } from "../config";
-import { activeChatModel } from "../settings";
+import { chatClient } from "../settings";
 
 type ChatParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
@@ -25,10 +24,11 @@ export async function callStructured<T>(args: {
 }): Promise<T | null> {
   const retries = args.retries ?? config.sop.maxStructuredRetries;
 
+  const { client, model } = chatClient();
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await llm.chat.completions.create({
-        model: activeChatModel(),
+      const res = await client.chat.completions.create({
+        model,
         messages: args.messages,
         temperature: args.temperature ?? 0,
         // LM Studio honors JSON-schema structured output; if a given model
