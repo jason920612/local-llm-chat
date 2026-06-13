@@ -29,6 +29,26 @@ and text-to-speech run entirely client-side (no extra services).
 | Speech-to-text | `@huggingface/transformers` (Whisper, WASM/WebGPU, in-browser) |
 | Text-to-speech | Web Speech API (OS voices, offline) |
 
+## Code-enforced SOP control layer
+
+Small local models drift and hallucinate, so behavior is **enforced in code**, not
+left to a system prompt. Every chat turn runs through a control pipeline
+(`src/lib/sop/`):
+
+1. **Intent gate** — a JSON-schema structured call returns `{restatement, ambiguous,
+   clarifyingQuestion}`, validated by zod. If the request is ambiguous, code
+   **short-circuits the turn** and returns a clarifying question; the answer is never
+   generated.
+2. **Generation** — streamed by default.
+3. **Deterministic validators** — citation whitelist (fabricated `[n]` sources are
+   stripped/flagged), disclaimer/flattery stripping, empty-response detection. Pure
+   code, no model trust.
+4. **Verify gate (optional, blocking mode)** — a structured audit of the draft against
+   the SOP checklist, with one corrective regeneration before output.
+
+Toggle via env (`SOP_INTENT_GATE`, `SOP_BLOCKING`, `SOP_VERIFY_GATE`). The system
+prompt still states the rules, but the gates above are what actually enforce them.
+
 ## Prerequisites
 
 1. **[LM Studio](https://lmstudio.ai/)** (or `llama.cpp` server).
@@ -74,7 +94,7 @@ data/                SQLite DB + uploaded files (git-ignored)
 ## Roadmap / build phases
 
 - [x] Phase 0 — project scaffold
-- [ ] Phase 1 — streaming chat
+- [x] Phase 1 — streaming chat + code-enforced SOP control layer
 - [ ] Phase 2 — conversation history
 - [ ] Phase 3 — image / vision input
 - [ ] Phase 4 — RAG (document upload + retrieval)

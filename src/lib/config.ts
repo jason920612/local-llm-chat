@@ -1,3 +1,9 @@
+function envBool(name: string, fallback: boolean): boolean {
+  const v = process.env[name];
+  if (v === undefined) return fallback;
+  return v === "1" || v.toLowerCase() === "true";
+}
+
 /**
  * Central runtime configuration, read from environment variables.
  * Defaults target a stock LM Studio install on localhost.
@@ -15,5 +21,23 @@ export const config = {
     chunkSize: 1000, // characters per chunk
     chunkOverlap: 150,
     topK: 4, // chunks retrieved per query
+  },
+  /**
+   * SOP control layer. The SOP is enforced in CODE, not by trusting the prompt.
+   * These flags toggle the code-controlled gates around every chat turn.
+   */
+  sop: {
+    // Intent gate: structured pre-check that can short-circuit the turn into a
+    // forced clarifying question before any answer is generated.
+    intentGate: envBool("SOP_INTENT_GATE", true),
+    // Verify gate: structured post-check of the draft against the SOP checklist
+    // (only runs in blocking mode).
+    verifyGate: envBool("SOP_VERIFY_GATE", false),
+    // Blocking mode: generate the full answer, run deterministic + verify gates,
+    // and enforce/refuse in code BEFORE sending. Trades streaming UX for control.
+    blocking: envBool("SOP_BLOCKING", false),
+    // Code-controlled retries for structured calls — we assume the model returns
+    // malformed output and retry, then fail (open or closed) deterministically.
+    maxStructuredRetries: 2,
   },
 } as const;
