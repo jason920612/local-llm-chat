@@ -54,7 +54,36 @@ async function blobToMono16k(blob: Blob): Promise<Float32Array> {
   return rendered.getChannelData(0).slice();
 }
 
-/** In-browser Whisper transcription (offline fallback). */
+/** Encode mono Float32 samples as a 16-bit PCM WAV Blob. */
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (o: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  let off = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    off += 2;
+  }
+  return new Blob([view], { type: "audio/wav" });
+}
+
+/** In-browser Whisper transcription (offline fallback when no cloud key). */
 async function transcribeLocal(blob: Blob): Promise<string> {
   const audio = await blobToMono16k(blob);
   const transcriber = await getTranscriber();
@@ -69,25 +98,31 @@ async function transcribeLocal(blob: Blob): Promise<string> {
 }
 
 /**
- * Transcribe audio: prefer xAI cloud STT (/api/stt, fast + accurate), fall back
- * to in-browser Whisper when the cloud is unavailable.
+ * Transcribe audio: convert to WAV (a format xAI STT reliably accepts) and send
+ * to the cloud. If no API key is configured (503), fall back to in-browser
+ * Whisper. Other failures throw so the UI can show them.
  */
 export async function transcribe(blob: Blob): Promise<string> {
+  // Decode + resample to 16kHz mono WAV — webm/opus is not reliably accepted.
+  let wav: Blob;
   try {
-    const fd = new FormData();
-    fd.append("file", blob, "audio.webm");
-    const res = await fetch("/api/stt", { method: "POST", body: fd });
-    if (res.ok) {
-      const data = await res.json();
-      if (typeof data.text === "string" && data.text.trim()) {
-        return data.text.trim();
-      }
-      return "";
-    }
+    const samples = await blobToMono16k(blob);
+    wav = encodeWav(samples, 16000);
   } catch {
-    /* fall through to local whisper */
+    wav = blob; // send as-is if decoding fails
   }
-  return transcribeLocal(blob);
+
+  const fd = new FormData();
+  fd.append("file", wav, "audio.wav");
+  const res = await fetch("/api/stt", { method: "POST", body: fd });
+
+  if (res.status === 503) return transcribeLocal(blob); // no key → offline whisper
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `STT failed (${res.status})`);
+  }
+  const data = await res.json();
+  return typeof data.text === "string" ? data.text.trim() : "";
 }
 
 export function recordingSupported(): boolean {

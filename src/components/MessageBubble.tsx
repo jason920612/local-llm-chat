@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { User, Bot, Volume2, Square } from "lucide-react";
+import { User, Bot, Volume2, Square, Loader2 } from "lucide-react";
 import type { UIMessage } from "@/lib/types";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import { parseThinking } from "@/lib/think";
@@ -17,7 +17,9 @@ export function MessageBubble({
 }) {
   const isUser = message.role === "user";
   const [canTts, setCanTts] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
+  const [ttsState, setTtsState] = useState<"idle" | "loading" | "playing">(
+    "idle",
+  );
 
   useEffect(() => setCanTts(ttsSupported()), []);
   useEffect(() => () => stopSpeaking(), []);
@@ -28,13 +30,16 @@ export function MessageBubble({
     : parseThinking(message.content);
 
   function toggleSpeak() {
-    if (speaking) {
+    if (ttsState !== "idle") {
       stopSpeaking();
-      setSpeaking(false);
-    } else {
-      speak(answer, () => setSpeaking(false)); // never read the reasoning aloud
-      setSpeaking(true);
+      setTtsState("idle");
+      return;
     }
+    setTtsState("loading");
+    speak(answer, {
+      onStart: () => setTtsState("playing"),
+      onEnd: () => setTtsState("idle"),
+    }); // never read the reasoning aloud
   }
 
   return (
@@ -56,9 +61,21 @@ export function MessageBubble({
             <button
               onClick={toggleSpeak}
               className="text-muted hover:text-foreground"
-              title={speaking ? "Stop" : "Read aloud"}
+              title={
+                ttsState === "idle"
+                  ? "Read aloud"
+                  : ttsState === "loading"
+                    ? "Generating audio…"
+                    : "Stop"
+              }
             >
-              {speaking ? <Square size={12} /> : <Volume2 size={13} />}
+              {ttsState === "loading" ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : ttsState === "playing" ? (
+                <Square size={12} />
+              ) : (
+                <Volume2 size={13} />
+              )}
             </button>
           )}
         </div>

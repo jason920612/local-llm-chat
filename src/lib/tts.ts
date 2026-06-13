@@ -22,20 +22,26 @@ function guessLang(text: string): string {
   return typeof navigator !== "undefined" ? navigator.language : "en-US";
 }
 
-function browserSpeak(text: string, onEnd?: () => void): void {
+interface SpeakOpts {
+  onStart?: () => void;
+  onEnd?: () => void;
+}
+
+function browserSpeak(text: string, opts: SpeakOpts): void {
   if (!browserSupported()) {
-    onEnd?.();
+    opts.onEnd?.();
     return;
   }
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = guessLang(text);
-  u.onend = () => onEnd?.();
-  u.onerror = () => onEnd?.();
+  u.onstart = () => opts.onStart?.();
+  u.onend = () => opts.onEnd?.();
+  u.onerror = () => opts.onEnd?.();
   window.speechSynthesis.speak(u);
 }
 
-export async function speak(text: string, onEnd?: () => void): Promise<void> {
+export async function speak(text: string, opts: SpeakOpts = {}): Promise<void> {
   if (!text.trim()) return;
   stopSpeaking();
   try {
@@ -52,19 +58,20 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
       audio.onended = () => {
         URL.revokeObjectURL(url);
         if (currentAudio === audio) currentAudio = null;
-        onEnd?.();
+        opts.onEnd?.();
       };
       audio.onerror = () => {
         URL.revokeObjectURL(url);
-        onEnd?.();
+        opts.onEnd?.();
       };
       await audio.play();
+      opts.onStart?.();
       return;
     }
   } catch {
     /* fall through to browser TTS */
   }
-  browserSpeak(text, onEnd);
+  browserSpeak(text, opts);
 }
 
 export function stopSpeaking(): void {

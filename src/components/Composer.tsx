@@ -35,6 +35,7 @@ export function Composer({
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
+  const [sttError, setSttError] = useState<string | null>(null);
 
   useEffect(() => {
     setVoiceSupported(recordingSupported());
@@ -50,6 +51,7 @@ export function Composer({
   const canSend = value.trim().length > 0 || attachments.length > 0;
 
   async function startRecording() {
+    setSttError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream);
@@ -68,9 +70,11 @@ export function Composer({
           if (text) {
             const prev = valueRef.current;
             onChange(prev ? `${prev} ${text}` : text);
+          } else {
+            setSttError("沒有辨識到語音");
           }
-        } catch {
-          /* transcription failed — silently ignore */
+        } catch (err) {
+          setSttError(err instanceof Error ? err.message : "語音辨識失敗");
         } finally {
           setTranscribing(false);
         }
@@ -80,6 +84,7 @@ export function Composer({
       setRecording(true);
     } catch {
       setRecording(false);
+      setSttError("無法存取麥克風（請確認權限，且網址需為 localhost 或 https）");
     }
   }
 
@@ -220,10 +225,16 @@ export function Composer({
           )}
         </div>
       </div>
-      <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-muted">
-        Runs locally via LM Studio · responses may be wrong — verify important
-        facts
-      </p>
+      {sttError ? (
+        <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-red-400">
+          {sttError}
+        </p>
+      ) : (
+        <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-muted">
+          Runs locally via LM Studio · responses may be wrong — verify important
+          facts
+        </p>
+      )}
     </div>
   );
 }
