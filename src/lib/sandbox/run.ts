@@ -115,6 +115,16 @@ export async function runCode(
   const cmd = resolveCmd(language);
   const start = Date.now();
 
+  // For Python, prepend our pyboot dir to PYTHONPATH so sitecustomize.py auto-loads
+  // (it transparently embeds a CJK TTF when reportlab's CID fonts are used).
+  const env = { ...process.env };
+  if (language === "python") {
+    const bootDir = path.join(process.cwd(), "src", "lib", "sandbox", "pyboot");
+    env.PYTHONPATH = env.PYTHONPATH
+      ? `${bootDir}${path.delimiter}${env.PYTHONPATH}`
+      : bootDir;
+  }
+
   return new Promise<RunResult>((resolve) => {
     let stdout = "";
     let stderr = "";
@@ -123,7 +133,7 @@ export async function runCode(
     try {
       // Pass the program on stdin (python/bash both read it). Avoids writing a
       // script file and the Windows->WSL path issues that breaks file-path bash.
-      child = spawn(cmd, [], { cwd: dir, windowsHide: true });
+      child = spawn(cmd, [], { cwd: dir, windowsHide: true, env });
     } catch {
       resolve(emptyResult({ error: `${cmd} not found` }));
       return;
