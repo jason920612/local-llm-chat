@@ -3,19 +3,53 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { nanoid } from "nanoid";
 import { Bot } from "lucide-react";
-import type { UIMessage } from "@/lib/types";
+import type { Conversation, UIMessage } from "@/lib/types";
+import {
+  createConversationApi,
+  fetchConversation,
+  saveMessage,
+} from "@/lib/api";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
 
-export function Chat() {
+export function Chat({
+  conversationId,
+  title,
+  onCreated,
+  onPersisted,
+}: {
+  conversationId: string | null;
+  title: string | null;
+  onCreated: (conv: Conversation) => void;
+  onPersisted: () => void;
+}) {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The conversation currently loaded into `messages`. Used to avoid reloading
+  // (and clobbering an in-progress stream) when we create a conversation locally.
+  const loadedId = useRef<string | null>(null);
 
-  // Keep the view pinned to the latest content.
+  // Load messages when the active conversation changes externally.
+  useEffect(() => {
+    if (conversationId === loadedId.current) return;
+    loadedId.current = conversationId;
+    if (!conversationId) {
+      setMessages([]);
+      return;
+    }
+    let cancelled = false;
+    fetchConversation(conversationId)
+      .then((d) => !cancelled && setMessages(d.messages))
+      .catch(() => !cancelled && setMessages([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
@@ -29,8 +63,8 @@ export function Chat() {
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || streaming) return;
-
     setError(null);
+
     const userMsg: UIMessage = {
       id: nanoid(),
       role: "user",
@@ -53,10 +87,22 @@ export function Chat() {
     abortRef.current = controller;
 
     try {
+      // Ensure a conversation exists before persisting anything.
+      let cid = conversationId;
+      if (!cid) {
+        const conv = await createConversationApi(text.slice(0, 40));
+        cid = conv.id;
+        loadedId.current = cid; // don't reload over our own stream
+        onCreated(conv);
+      }
+
+      await saveMessage(cid, userMsg);
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          conversationId: cid,
           messages: history.map((m) => ({
             role: m.role,
             content: m.content,
@@ -74,26 +120,26 @@ export function Chat() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-
+      let acc = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
+        acc += decoder.decode(value, { stream: true });
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantMsg.id
-              ? { ...m, content: m.content + chunk }
-              : m,
+            m.id === assistantMsg.id ? { ...m, content: acc } : m,
           ),
         );
       }
+
+      await saveMessage(cid, { ...assistantMsg, content: acc });
+      onPersisted();
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        // user-initiated stop — keep whatever streamed so far
+        // user stopped — keep partial output
       } else {
         const msg = err instanceof Error ? err.message : "Unknown error";
         setError(msg);
-        // drop the empty assistant placeholder on hard failure
         setMessages((prev) =>
           prev.filter((m) => !(m.id === assistantMsg.id && m.content === "")),
         );
@@ -102,15 +148,16 @@ export function Chat() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [input, streaming, messages]);
+  }, [input, streaming, messages, conversationId, onCreated, onPersisted]);
 
   const isEmpty = messages.length === 0;
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <Bot size={18} className="text-accent" />
-        <span className="text-sm font-semibold">Local LLM Chat</span>
+    <div className="flex h-screen flex-1 flex-col">
+      <header className="flex h-12 items-center gap-2 border-b border-border px-4">
+        <span className="truncate text-sm font-medium text-muted">
+          {title ?? "New chat"}
+        </span>
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">

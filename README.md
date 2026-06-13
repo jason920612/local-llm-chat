@@ -95,7 +95,7 @@ data/                SQLite DB + uploaded files (git-ignored)
 
 - [x] Phase 0 — project scaffold
 - [x] Phase 1 — streaming chat + code-enforced SOP control layer
-- [ ] Phase 2 — conversation history
+- [x] Phase 2 — conversation history (SQLite)
 - [ ] Phase 3 — image / vision input
 - [ ] Phase 4 — RAG (document upload + retrieval)
 - [ ] Phase 5 — voice in/out

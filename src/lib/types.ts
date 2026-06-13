@@ -19,6 +19,13 @@ export interface Citation {
   snippet: string;
 }
 
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ChatRequestBody {
   messages: Pick<UIMessage, "role" | "content" | "images">[];
   conversationId?: string;
