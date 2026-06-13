@@ -14,7 +14,19 @@ type AnyWindow = Window &
     loadPyodide?: (opts: { indexURL: string }) => Promise<PyodideApi>;
     pdfjsLib?: PdfjsApi;
     mammoth?: MammothApi;
+    XLSX?: SheetJsApi;
   };
+
+export interface SheetJsApi {
+  read: (data: ArrayBuffer, opts?: { type: string }) => SheetWorkbook;
+  utils: {
+    sheet_to_html: (ws: unknown, opts?: { id?: string }) => string;
+  };
+}
+export interface SheetWorkbook {
+  SheetNames: string[];
+  Sheets: Record<string, unknown>;
+}
 
 export interface PdfPage {
   getViewport: (o: { scale: number }) => { width: number; height: number };
@@ -155,6 +167,21 @@ export function loadMammoth(): Promise<MammothApi> {
     })();
   }
   return mammothReady;
+}
+
+let sheetReady: Promise<SheetJsApi> | null = null;
+export function loadSheetJs(): Promise<SheetJsApi> {
+  if (!sheetReady) {
+    sheetReady = (async () => {
+      await loadScript(
+        "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js",
+      );
+      const x = (window as AnyWindow).XLSX;
+      if (!x) throw new Error("SheetJS did not load");
+      return x;
+    })();
+  }
+  return sheetReady;
 }
 
 let pyodideReady: Promise<PyodideApi> | null = null;

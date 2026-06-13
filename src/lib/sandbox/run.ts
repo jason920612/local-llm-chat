@@ -75,6 +75,77 @@ export function mountSkill(
   }
 }
 
+/** Locate the LibreOffice CLI (for converting office docs to PDF for preview). */
+function sofficeBin(): string {
+  const candidates =
+    process.platform === "win32"
+      ? [
+          "C:/Program Files/LibreOffice/program/soffice.exe",
+          "C:/Program Files (x86)/LibreOffice/program/soffice.exe",
+        ]
+      : ["/usr/bin/soffice", "/usr/bin/libreoffice", "/opt/libreoffice/program/soffice"];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  return "soffice"; // fall back to PATH
+}
+
+/**
+ * Convert an office file (pptx/docx/xlsx/odp…) in the sandbox to PDF via
+ * LibreOffice, for in-app preview. Returns the PDF bytes, or null if LibreOffice
+ * isn't available / conversion failed. Result is cached under .convert/.
+ */
+export async function convertToPdf(
+  conversationId: string,
+  name: string,
+): Promise<Buffer | null> {
+  const dir = workspaceDir(conversationId);
+  const src = path.resolve(dir, name);
+  if (!src.startsWith(path.resolve(dir)) || !fs.existsSync(src)) return null;
+  const outDir = path.join(dir, ".convert");
+  fs.mkdirSync(outDir, { recursive: true });
+  const pdfPath = path.join(
+    outDir,
+    (path.basename(name).replace(/\.[^.]+$/, "") || "out") + ".pdf",
+  );
+  try {
+    // Reuse a fresh-enough cached conversion.
+    if (
+      fs.existsSync(pdfPath) &&
+      fs.statSync(pdfPath).mtimeMs >= fs.statSync(src).mtimeMs
+    ) {
+      return fs.readFileSync(pdfPath);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return new Promise<Buffer | null>((resolve) => {
+    let child;
+    try {
+      child = spawn(
+        sofficeBin(),
+        ["--headless", "--convert-to", "pdf", "--outdir", outDir, src],
+        { windowsHide: true },
+      );
+    } catch {
+      resolve(null);
+      return;
+    }
+    child.on("error", () => resolve(null));
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve(null);
+    }, 120000);
+    child.on("close", () => {
+      clearTimeout(timer);
+      try {
+        resolve(fs.existsSync(pdfPath) ? fs.readFileSync(pdfPath) : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
 /** Remove a conversation's sandbox (called when the conversation is deleted). */
 export function deleteSandbox(conversationId: string): void {
   try {
@@ -103,6 +174,7 @@ function listFiles(dir: string, since: number): SandboxFile[] {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
       if (entry.name.startsWith("__script_")) continue;
       if (entry.name === ".skills") continue; // mounted skill bundles, not user files
+      if (entry.name === ".convert") continue; // cached format conversions
       const full = path.join(d, entry.name);
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
