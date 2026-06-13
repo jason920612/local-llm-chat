@@ -9,6 +9,7 @@ const LS = {
   model: "xai_model",
   sandbox: "xai_sandbox",
   convos: "xai_convos",
+  rag: "xai_rag",
 };
 const MEDIA_RE = /\[\[(image|video|file):([^\]\n]+)\]\]/g;
 
@@ -17,8 +18,13 @@ const state = {
   key: localStorage.getItem(LS.key) || "",
   model: localStorage.getItem(LS.model) || "grok-build-0.1",
   sandbox: localStorage.getItem(LS.sandbox) === "1",
+  useRag: localStorage.getItem(LS.rag) === "1",
   convos: JSON.parse(localStorage.getItem(LS.convos) || "[]"),
   activeId: null,
+  recorder: null,
+  recording: false,
+  curAudio: null,
+  rt: null,
   attachments: [], // {dataUrl} images for vision
   uploads: [], // {name} files written to pyodide FS
   streaming: false,
@@ -90,7 +96,9 @@ function renderAssistantBody(bodyEl, msg) {
     const labels = {
       web_search: "🔍 網路搜尋",
       x_search: "𝕏 搜尋",
+      search: "🔍 搜尋",
       generate_image: "🖼 生成圖片",
+      generate_video: "🎬 生成影片",
       run_code: "▶ 執行 Python",
     };
     const d = document.createElement("details");
@@ -259,6 +267,15 @@ function renderMsg(msg) {
     content.appendChild(p);
   } else {
     renderAssistantBody(content, msg);
+    if (msg.content && !state.streaming) {
+      const rb = document.createElement("button");
+      rb.className = "read-btn";
+      rb.textContent = "🔊";
+      rb.title = "朗讀";
+      rb.onclick = () =>
+        speakText(msg.content.replace(MEDIA_RE, "").replace(/\[\d+\]/g, ""), rb);
+      el.querySelector(".role").appendChild(rb);
+    }
   }
   msg._el = content; // for live updates
   return el;
@@ -287,6 +304,17 @@ function tools() {
     name: "generate_image",
     description:
       "Generate an image from a text prompt. Returns an image shown to the user.",
+    parameters: {
+      type: "object",
+      properties: { prompt: { type: "string" } },
+      required: ["prompt"],
+    },
+  });
+  t.push({
+    type: "function",
+    name: "generate_video",
+    description:
+      "Generate a short (~6s) video from a text prompt (auto-creates a still image then animates it). Use only when the user explicitly asks for a video. Takes a couple of minutes.",
     parameters: {
       type: "object",
       properties: { prompt: { type: "string" } },
@@ -353,11 +381,11 @@ function authJson() {
   };
 }
 
-async function runAgent(convo, assistant) {
+async function runAgent(convo, assistant, instructions) {
   const cacheKey = "conv:" + convo.id;
   let body = {
     model: state.model,
-    instructions: SYSTEM,
+    instructions: instructions || SYSTEM,
     input: toInput(convo.messages.filter((m) => m !== assistant)),
     tools: tools(),
     stream: true,
@@ -435,6 +463,15 @@ async function runAgent(convo, assistant) {
           out = `Image #${assistant.images.length} generated. Place it with [[image:${assistant.images.length}]].`;
         } catch (e) {
           out = "generate_image failed: " + e.message;
+        }
+      } else if (c.name === "generate_video") {
+        traceTool(assistant, "generate_video", { prompt: args.prompt });
+        try {
+          assistant.videos = assistant.videos || [];
+          assistant.videos.push(await generateVideo(args.prompt || ""));
+          out = `Video #${assistant.videos.length} generated. Place it with [[video:${assistant.videos.length}]].`;
+        } catch (e) {
+          out = "generate_video failed: " + e.message;
         }
       } else if (c.name === "run_code") {
         traceTool(assistant, "run_code", { code: args.code });
@@ -600,8 +637,21 @@ async function send() {
   renderSidebar();
   renderMessages();
 
+  let instructions = SYSTEM;
+  if (state.useRag) {
+    try {
+      const ctx = await retrieveRag(text);
+      if (ctx)
+        instructions =
+          SYSTEM +
+          `\n\n# RETRIEVED CONTEXT (use ONLY this for facts; cite [n]; if it lacks the answer, say so)\n${ctx}`;
+    } catch (e) {
+      console.warn("RAG retrieve failed", e);
+    }
+  }
+
   try {
-    await runAgent(convo, assistant);
+    await runAgent(convo, assistant, instructions);
   } catch (e) {
     if (e.name !== "AbortError")
       assistant.content += `\n\n> ⚠️ 錯誤：${e.message}`;
@@ -677,6 +727,396 @@ function selectConvo(id) {
   state.activeId = id;
   renderSidebar();
   renderMessages();
+  closeSidebar();
+}
+function closeSidebar() {
+  $("sidebar").classList.remove("open");
+  $("sb-backdrop").classList.remove("show");
+}
+
+/* ---------- helpers ---------- */
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = res;
+    s.onerror = rej;
+    document.head.appendChild(s);
+  });
+}
+
+/* ---------- video generation (image -> video, async poll) ---------- */
+async function generateVideo(prompt) {
+  const image = await generateImage(prompt); // grok video is image-to-video
+  const start = await fetch(`${XAI}/videos/generations`, {
+    method: "POST",
+    headers: authJson(),
+    body: JSON.stringify({
+      model: "grok-imagine-video-1.5-preview",
+      prompt,
+      image: { url: image },
+      duration: 6,
+      resolution: "720p",
+      aspect_ratio: "16:9",
+    }),
+  });
+  if (!start.ok) throw new Error("videos " + start.status);
+  const { request_id } = await start.json();
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const p = await fetch(`${XAI}/videos/${request_id}`, { headers: authJson() });
+    if (!p.ok) continue;
+    const d = await p.json();
+    if (d.status === "done" && d.video && d.video.url) return d.video.url;
+    if (d.status === "failed" || d.status === "expired")
+      throw new Error("video " + d.status);
+  }
+  throw new Error("video timed out");
+}
+
+/* ---------- TTS ---------- */
+async function speakText(text, btn) {
+  if (!text || !text.trim()) return;
+  stopSpeaking();
+  if (btn) btn.textContent = "⏳";
+  try {
+    const r = await fetch(`${XAI}/tts`, {
+      method: "POST",
+      headers: authJson(),
+      body: JSON.stringify({ text: text.slice(0, 8000), voice_id: "eve", language: "auto" }),
+    });
+    if (!r.ok) throw new Error("tts " + r.status);
+    const url = URL.createObjectURL(await r.blob());
+    const audio = new Audio(url);
+    state.curAudio = audio;
+    audio.onended = audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      if (btn) btn.textContent = "🔊";
+    };
+    audio.onplay = () => btn && (btn.textContent = "⏹");
+    await audio.play();
+  } catch (e) {
+    if (btn) btn.textContent = "🔊";
+    console.warn("TTS failed", e);
+  }
+}
+function stopSpeaking() {
+  if (state.curAudio) {
+    state.curAudio.pause();
+    state.curAudio = null;
+  }
+}
+
+/* ---------- STT (record -> WAV -> /v1/stt) ---------- */
+function encodeWav(samples, sr) {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); ws(8, "WAVE");
+  ws(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  ws(36, "data"); v.setUint32(40, samples.length * 2, true);
+  let o = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true); o += 2;
+  }
+  return new Blob([v], { type: "audio/wav" });
+}
+async function blobToWav(blob) {
+  const buf = await blob.arrayBuffer();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  const decoded = await ctx.decodeAudioData(buf);
+  await ctx.close();
+  const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+  const src = off.createBufferSource();
+  src.buffer = decoded; src.connect(off.destination); src.start();
+  const rendered = await off.startRendering();
+  return encodeWav(rendered.getChannelData(0), 16000);
+}
+async function transcribeAudio(blob) {
+  let wav;
+  try { wav = await blobToWav(blob); } catch { wav = blob; }
+  const fd = new FormData();
+  fd.append("file", wav, "audio.wav");
+  const r = await fetch(`${XAI}/stt`, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + state.key },
+    body: fd,
+  });
+  if (!r.ok) throw new Error("stt " + r.status);
+  const d = await r.json();
+  return (d.text || "").trim();
+}
+async function toggleRecording() {
+  const btn = $("mic-btn");
+  if (state.recording) {
+    state.recorder && state.recorder.stop();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mr = new MediaRecorder(stream);
+    const chunks = [];
+    mr.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    mr.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      state.recording = false;
+      btn.classList.remove("rec");
+      btn.textContent = "⏳";
+      try {
+        const txt = await transcribeAudio(new Blob(chunks, { type: mr.mimeType || "audio/webm" }));
+        if (txt) {
+          const inp = $("input");
+          inp.value = inp.value ? inp.value + " " + txt : txt;
+          inp.dispatchEvent(new Event("input"));
+        }
+      } catch (e) {
+        alert("語音辨識失敗：" + e.message);
+      }
+      btn.textContent = "🎙";
+    };
+    mr.start();
+    state.recorder = mr;
+    state.recording = true;
+    btn.classList.add("rec");
+  } catch {
+    alert("無法存取麥克風（需 https 或 localhost，並允許權限）");
+  }
+}
+
+/* ---------- Realtime voice (WebSocket) ---------- */
+function f32ToPcm16B64(input) {
+  const b = new ArrayBuffer(input.length * 2);
+  const v = new DataView(b);
+  for (let i = 0; i < input.length; i++) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    v.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  let bin = "";
+  const u = new Uint8Array(b);
+  for (let i = 0; i < u.length; i++) bin += String.fromCharCode(u[i]);
+  return btoa(bin);
+}
+function b64ToF32(b64) {
+  const bin = atob(b64);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  const v = new DataView(u.buffer);
+  const out = new Float32Array(u.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = v.getInt16(i * 2, true) / 0x8000;
+  return out;
+}
+async function openVoice() {
+  if (!state.key) return openSettings();
+  $("voice-modal").hidden = false;
+  const setStatus = (s) => ($("voice-status").textContent = s);
+  const orb = $("voice-orb");
+  const tr = $("voice-transcript");
+  tr.textContent = "";
+  setStatus("連線中…");
+  const SR = 24000;
+  let ws, ctx, playCtx, playHead = 0, stream, node;
+  const close = () => {
+    try { node && node.disconnect(); } catch {}
+    try { stream && stream.getTracks().forEach((t) => t.stop()); } catch {}
+    try { ctx && ctx.close(); } catch {}
+    try { playCtx && playCtx.close(); } catch {}
+    try { ws && ws.close(); } catch {}
+    state.rt = null;
+  };
+  state.rt = { close };
+  try {
+    const tk = await fetch(`${XAI}/realtime/client_secrets`, {
+      method: "POST",
+      headers: authJson(),
+      body: JSON.stringify({ expires_after: { seconds: 300 } }),
+    }).then((r) => r.json());
+    if (!tk.value) throw new Error("no token");
+    ws = new WebSocket("wss://api.x.ai/v1/realtime", ["xai-client-secret." + tk.value]);
+    ws.onopen = async () => {
+      ws.send(JSON.stringify({
+        type: "session.update",
+        session: {
+          model: "grok-voice-latest", voice: "eve",
+          modalities: ["audio", "text"],
+          input_audio_format: "pcm16", output_audio_format: "pcm16",
+          turn_detection: { type: "server_vad" },
+        },
+      }));
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      ctx = new Ctx({ sampleRate: SR });
+      const srcNode = ctx.createMediaStreamSource(stream);
+      node = ctx.createScriptProcessor(4096, 1, 1);
+      node.onaudioprocess = (e) => {
+        if (ws.readyState === 1)
+          ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: f32ToPcm16B64(e.inputBuffer.getChannelData(0)) }));
+      };
+      srcNode.connect(node); node.connect(ctx.destination);
+      setStatus("聆聽中…請說話"); orb.className = "voice-orb listening";
+    };
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.type === "response.output_audio.delta" && m.delta) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!playCtx) playCtx = new Ctx({ sampleRate: SR });
+        const data = b64ToF32(m.delta);
+        const bufr = playCtx.createBuffer(1, data.length, SR);
+        bufr.getChannelData(0).set(data);
+        const s = playCtx.createBufferSource(); s.buffer = bufr; s.connect(playCtx.destination);
+        playHead = Math.max(playHead, playCtx.currentTime); s.start(playHead); playHead += bufr.duration;
+        setStatus("Grok 回應中…"); orb.className = "voice-orb speaking";
+      } else if (m.type === "response.output_audio_transcript.delta" && m.delta) {
+        tr.textContent += m.delta;
+      } else if (m.type === "response.done") {
+        setStatus("聆聽中…"); orb.className = "voice-orb listening";
+      } else if (m.type === "error") {
+        setStatus("錯誤：" + (m.error && m.error.message || ""));
+      }
+    };
+    ws.onerror = () => setStatus("WebSocket 錯誤");
+    ws.onclose = () => setStatus("已結束");
+  } catch (e) {
+    setStatus("無法連線：" + e.message);
+  }
+}
+function closeVoice() {
+  if (state.rt) state.rt.close();
+  $("voice-modal").hidden = true;
+}
+
+/* ---------- RAG (transformers.js embeddings + pdf.js + IndexedDB) ---------- */
+let embedderPromise = null;
+async function getEmbedder() {
+  if (!embedderPromise) {
+    embedderPromise = (async () => {
+      const mod = await import("https://esm.sh/@huggingface/transformers@3.3.3");
+      mod.env.allowLocalModels = false;
+      return mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+    })();
+  }
+  return embedderPromise;
+}
+async function embedText(text) {
+  const ex = await getEmbedder();
+  const out = await ex(text, { pooling: "mean", normalize: true });
+  return Array.from(out.data);
+}
+function cosine(a, b) {
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += a[i] * b[i];
+  return d; // vectors are normalized
+}
+function chunkText(text, size = 1000, overlap = 150) {
+  const clean = text.replace(/\s+\n/g, "\n").trim();
+  const out = [];
+  for (let i = 0; i < clean.length; i += size - overlap)
+    out.push(clean.slice(i, i + size));
+  return out.filter((c) => c.trim());
+}
+function idb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("xai_rag", 1);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      if (!db.objectStoreNames.contains("chunks"))
+        db.createObjectStore("chunks", { keyPath: "id", autoIncrement: true }).createIndex("doc", "docId");
+      if (!db.objectStoreNames.contains("docs"))
+        db.createObjectStore("docs", { keyPath: "id" });
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function idbAll(store) {
+  return idb().then((db) => new Promise((res) => {
+    const out = [];
+    db.transaction(store).objectStore(store).openCursor().onsuccess = (e) => {
+      const c = e.target.result;
+      if (c) { out.push(c.value); c.continue(); } else res(out);
+    };
+  }));
+}
+async function ragDeleteDoc(docId) {
+  const db = await idb();
+  await new Promise((res) => { const t = db.transaction("docs", "readwrite"); t.objectStore("docs").delete(docId); t.oncomplete = res; });
+  await new Promise((res) => {
+    const t = db.transaction("chunks", "readwrite");
+    const idx = t.objectStore("chunks").index("doc");
+    idx.openCursor(IDBKeyRange.only(docId)).onsuccess = (e) => {
+      const c = e.target.result;
+      if (c) { c.delete(); c.continue(); } else {}
+    };
+    t.oncomplete = res;
+  });
+}
+async function loadPdfjs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  await loadScript("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js");
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  return window.pdfjsLib;
+}
+async function extractText(file) {
+  if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+    const pdfjs = await loadPdfjs();
+    const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+    let text = "";
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const c = await page.getTextContent();
+      text += c.items.map((i) => i.str).join(" ") + "\n";
+    }
+    return text;
+  }
+  return file.text();
+}
+async function ingestFiles(files) {
+  const st = $("kb-status");
+  const db = await idb();
+  for (const file of files) {
+    st.textContent = `處理中：${file.name}…`;
+    let text;
+    try { text = await extractText(file); } catch (e) { st.textContent = `${file.name} 解析失敗`; continue; }
+    const chunks = chunkText(text);
+    const docId = newId();
+    await new Promise((res) => { const t = db.transaction("docs", "readwrite"); t.objectStore("docs").put({ id: docId, name: file.name, chunks: chunks.length }); t.oncomplete = res; });
+    for (let i = 0; i < chunks.length; i++) {
+      st.textContent = `${file.name}：向量化 ${i + 1}/${chunks.length}…`;
+      const vec = await embedText(chunks[i]);
+      await new Promise((res) => { const t = db.transaction("chunks", "readwrite"); t.objectStore("chunks").add({ docId, docName: file.name, text: chunks[i], vec }); t.oncomplete = res; });
+    }
+  }
+  st.textContent = "完成。";
+  renderKbList();
+}
+async function retrieveRag(query, topK = 4) {
+  const chunks = await idbAll("chunks");
+  if (!chunks.length || !query.trim()) return "";
+  const qv = await embedText(query);
+  const scored = chunks
+    .map((c) => ({ c, s: cosine(qv, c.vec) }))
+    .sort((a, b) => b.s - a.s)
+    .slice(0, topK);
+  return scored
+    .map((x, i) => `[${i + 1}] (來源：${x.c.docName})\n${x.c.text}`)
+    .join("\n\n");
+}
+async function renderKbList() {
+  const docs = await idbAll("docs");
+  const list = $("kb-list");
+  list.innerHTML = "";
+  if (!docs.length) { list.innerHTML = '<div class="note">尚無文件。</div>'; return; }
+  docs.forEach((d) => {
+    const el = document.createElement("div");
+    el.className = "doc";
+    el.innerHTML = `<span class="name">📄 ${d.name}</span><span class="note">${d.chunks} 塊</span><button>🗑</button>`;
+    el.querySelector("button").onclick = async () => { await ragDeleteDoc(d.id); renderKbList(); };
+    list.appendChild(el);
+  });
 }
 
 /* ---------- wiring ---------- */
@@ -687,7 +1127,13 @@ function init() {
     state.activeId = null;
     renderSidebar();
     renderMessages();
+    closeSidebar();
   };
+  $("menu-btn").onclick = () => {
+    $("sidebar").classList.toggle("open");
+    $("sb-backdrop").classList.toggle("show");
+  };
+  $("sb-backdrop").onclick = closeSidebar;
   $("open-settings").onclick = openSettings;
   $("save-settings").onclick = () => {
     state.key = $("key-input").value.trim();
@@ -699,9 +1145,36 @@ function init() {
     $("settings-modal").hidden = true;
     updateStatus();
   };
-  document.querySelector(".modal-close").onclick = () =>
-    ($("settings-modal").hidden = true);
+  document.querySelectorAll(".modal-close").forEach((b) => {
+    b.onclick = () => {
+      const id = b.dataset.close;
+      if (id === "voice-modal") return closeVoice();
+      if (id) $(id).hidden = true;
+      else $("settings-modal").hidden = true;
+    };
+  });
   $("lightbox").onclick = () => ($("lightbox").hidden = true);
+
+  // voice / STT / RAG
+  $("mic-btn").onclick = toggleRecording;
+  $("voice-btn").onclick = openVoice;
+  $("voice-end").onclick = closeVoice;
+  $("rag-btn").onclick = () => {
+    $("rag-toggle").checked = state.useRag;
+    renderKbList();
+    $("kb-modal").hidden = false;
+  };
+  $("rag-toggle").onchange = (e) => {
+    state.useRag = e.target.checked;
+    localStorage.setItem(LS.rag, state.useRag ? "1" : "0");
+    updateRagBtn();
+  };
+  $("kb-upload").onclick = () => $("kb-file").click();
+  $("kb-file").onchange = (e) => {
+    ingestFiles([...e.target.files]);
+    e.target.value = "";
+  };
+  updateRagBtn();
 
   const inp = $("input");
   inp.addEventListener("input", () => {
@@ -753,6 +1226,9 @@ function updateStatus() {
   $("status").innerHTML = state.key
     ? `<span class="dot ok"></span>${state.model}`
     : `<span class="dot bad"></span>未設定 API key`;
+}
+function updateRagBtn() {
+  $("rag-btn").classList.toggle("on", state.useRag);
 }
 
 init();

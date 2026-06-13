@@ -12,6 +12,7 @@
   </head>
   <body>
     <div id="app">
+      <div id="sb-backdrop"></div>
       <aside id="sidebar">
         <div class="brand">🤖 Grok Chat <span class="tag">static</span></div>
         <button id="new-chat" class="btn-block">+ 新對話</button>
@@ -22,14 +23,18 @@
 
       <main id="main">
         <header id="topbar">
+          <button id="menu-btn" class="menu-btn" title="選單">☰</button>
           <span id="convo-title">新對話</span>
           <span id="status" class="status"></span>
+          <button id="rag-btn" class="top-btn" title="知識庫 / RAG">📚 知識庫</button>
+          <button id="voice-btn" class="top-btn" title="即時語音對話">🎙️ 語音</button>
         </header>
         <div id="messages"></div>
         <div id="composer">
           <div id="attachments"></div>
           <div class="composer-row">
             <button id="attach-btn" title="附加檔案">📎</button>
+            <button id="mic-btn" title="語音輸入（STT）">🎙</button>
             <input id="file-input" type="file" multiple hidden />
             <textarea
               id="input"
@@ -69,6 +74,34 @@
           取得 key：<a href="https://console.x.ai" target="_blank">console.x.ai</a>
         </p>
         <button id="save-settings" class="btn-block primary">儲存</button>
+      </div>
+    </div>
+
+    <!-- Knowledge base (RAG) modal -->
+    <div id="kb-modal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="modal-head"><b>知識庫（RAG）</b><button class="modal-close" data-close="kb-modal">✕</button></div>
+        <label class="field-row">
+          <input id="rag-toggle" type="checkbox" />
+          <span>回答時使用知識庫（檢索增強）</span>
+        </label>
+        <button id="kb-upload" class="btn-block">上傳文件（PDF / txt / md）</button>
+        <input id="kb-file" type="file" accept=".pdf,.txt,.md,.markdown,.csv,.json,text/*,application/pdf" multiple hidden />
+        <div id="kb-status" class="note"></div>
+        <div id="kb-list"></div>
+        <p class="note">文件在瀏覽器解析、用 xAI embeddings 向量化、存在本機 IndexedDB；不會上傳到任何伺服器（除了送給 xAI 取得向量）。</p>
+      </div>
+    </div>
+
+    <!-- Realtime voice modal -->
+    <div id="voice-modal" class="modal" hidden>
+      <div class="modal-card" style="text-align:center">
+        <div class="modal-head"><b>即時語音</b><button class="modal-close" data-close="voice-modal">✕</button></div>
+        <div id="voice-orb" class="voice-orb">🎙️</div>
+        <div id="voice-status" class="voice-status">連線中…</div>
+        <div id="voice-transcript" class="voice-transcript"></div>
+        <button id="voice-end" class="btn-block" style="background:#ef4444;border-color:#ef4444;color:#fff;margin-top:14px">結束對話</button>
+        <p class="note">瀏覽器 ↔ xAI Realtime（WebSocket）。需要麥克風權限。</p>
       </div>
     </div>
 
