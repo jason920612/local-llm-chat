@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import { llm } from "../llm";
 import { config } from "../config";
+import { activeChatModel } from "../settings";
 import { callStructured } from "./structured";
 import { VerifyResult, verifyJsonSchema } from "./schemas";
 import {
@@ -103,7 +104,7 @@ async function generate(
   temperature: number,
 ): Promise<string> {
   const res = await llm.chat.completions.create({
-    model: config.llm.model,
+    model: activeChatModel(),
     messages,
     temperature,
   });

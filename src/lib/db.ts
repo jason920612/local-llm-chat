@@ -55,6 +55,11 @@ function init(): Database.Database {
     );
 
     CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(document_id);
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   return db;

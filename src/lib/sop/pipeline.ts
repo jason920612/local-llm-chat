@@ -5,6 +5,7 @@ import { buildSystemPrompt } from "../prompts";
 import { toOpenAIMessages } from "../openai-format";
 import type { ChatRequestBody, UIMessage } from "../types";
 import { retrieve } from "../rag/retrieve";
+import { activeChatModel, strictMonitorEnabled } from "../settings";
 import { askGrok, mapGrokCitations } from "../grok/search";
 import { grokSearchTool } from "../grok/tool";
 import type { Citation } from "../types";
@@ -89,7 +90,7 @@ export async function runControlledChat(
     }
 
     // Strict monitor takes precedence: aggressive monitor + scold-correct path.
-    if (config.sop.strictMonitor) {
+    if (strictMonitorEnabled()) {
       const result = await runMonitor(openaiMessages, {
         allowedSources,
         requireCitations: allowedSources > 0,
@@ -170,7 +171,7 @@ async function runStreaming(
   citations: Citation[],
 ): Promise<Response> {
   const completion = await llm.chat.completions.create({
-    model: config.llm.model,
+    model: activeChatModel(),
     messages: openaiMessages,
     stream: true,
     temperature: 0.4,
@@ -220,7 +221,7 @@ function streamFinal(
 ): Promise<Response> {
   return llm.chat.completions
     .create({
-      model: config.llm.model,
+      model: activeChatModel(),
       messages,
       stream: true,
       temperature: 0.4,
@@ -263,7 +264,7 @@ async function runWithGrokTool(
 
   for (let round = 0; round < config.grok.maxRounds; round++) {
     const resp = await llm.chat.completions.create({
-      model: config.llm.model,
+      model: activeChatModel(),
       messages,
       tools: [grokSearchTool],
       tool_choice: "auto",
@@ -276,7 +277,7 @@ async function runWithGrokTool(
     if (toolCalls.length === 0) {
       // Model answered directly without searching.
       if (!usedTool) {
-        if (!config.sop.strictMonitor) {
+        if (!strictMonitorEnabled()) {
           return textResponse(msg?.content ?? "", citations);
         }
         // Reuse this draft in the monitor instead of regenerating.
@@ -328,7 +329,7 @@ async function runWithGrokTool(
   // Final answer. Under strict monitor, run the scold-correction loop but leave
   // citations unmanaged (-1): Grok already sourced the answer with inline links,
   // so numeric [n] stripping would mangle them and trigger false corrections.
-  if (config.sop.strictMonitor) {
+  if (strictMonitorEnabled()) {
     const result = await runMonitor(
       messages,
       { allowedSources: -1, requireCitations: false },
@@ -356,7 +357,7 @@ async function runBlocking(
   citations: Citation[],
 ): Promise<Response> {
   const res = await llm.chat.completions.create({
-    model: config.llm.model,
+    model: activeChatModel(),
     messages: openaiMessages,
     temperature: 0.4,
   });
@@ -431,7 +432,7 @@ async function regenerate(
 ): Promise<string | null> {
   try {
     const res = await llm.chat.completions.create({
-      model: config.llm.model,
+      model: activeChatModel(),
       temperature: 0.2,
       messages: [
         ...openaiMessages,

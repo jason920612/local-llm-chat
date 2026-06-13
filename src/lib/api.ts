@@ -121,6 +121,30 @@ export async function fetchAppConfig(): Promise<AppConfig> {
   return res.json();
 }
 
+// --- Runtime settings ------------------------------------------------------
+
+export interface RuntimeSettings {
+  chatModel: string;
+  strictMonitor: boolean;
+  availableModels: string[];
+}
+
+export async function fetchSettings(): Promise<RuntimeSettings> {
+  const res = await fetch("/api/settings");
+  if (!res.ok) throw new Error("Failed to load settings");
+  return res.json();
+}
+
+export async function updateSettings(
+  patch: { chatModel?: string; strictMonitor?: boolean },
+): Promise<void> {
+  await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
 /** Decode the base64(UTF-8 JSON) X-Citations response header. */
 export function parseCitationsHeader(header: string | null): Citation[] {
   if (!header) return [];

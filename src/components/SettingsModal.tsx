@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { X, CheckCircle2, XCircle } from "lucide-react";
 import {
   fetchAppConfig,
   fetchHealth,
+  fetchSettings,
+  updateSettings,
   type AppConfig,
   type HealthStatus,
+  type RuntimeSettings,
 } from "@/lib/api";
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -35,14 +38,38 @@ export function SettingsModal({
 }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [settings, setSettings] = useState<RuntimeSettings | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     fetchAppConfig().then(setConfig).catch(() => setConfig(null));
     fetchHealth().then(setHealth);
+    fetchSettings().then(setSettings).catch(() => setSettings(null));
   }, [open]);
 
+  const applyPatch = useCallback(
+    async (patch: { chatModel?: string; strictMonitor?: boolean }) => {
+      setSaving(true);
+      try {
+        await updateSettings(patch);
+        setSettings(await fetchSettings());
+        setHealth(await fetchHealth()); // model change affects the indicator
+      } finally {
+        setSaving(false);
+      }
+    },
+    [],
+  );
+
   if (!open) return null;
+
+  // Model options = what LM Studio exposes, plus the current selection.
+  const modelOptions = settings
+    ? Array.from(
+        new Set([settings.chatModel, ...settings.availableModels]),
+      ).filter(Boolean)
+    : [];
 
   return (
     <div
@@ -104,10 +131,64 @@ export function SettingsModal({
             )}
           </div>
 
+          {settings && (
+            <>
+              <h3 className="mb-1 mt-5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                Runtime controls
+                {saving && <span className="text-[10px] normal-case">saving…</span>}
+              </h3>
+              <div className="space-y-3 rounded-xl border border-border bg-surface-2 px-4 py-3">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-muted">Chat model</span>
+                  <select
+                    value={settings.chatModel}
+                    disabled={saving}
+                    onChange={(e) => applyPatch({ chatModel: e.target.value })}
+                    className="max-w-[260px] flex-1 rounded-lg border border-border bg-surface px-2 py-1 text-xs outline-none focus:border-accent disabled:opacity-50"
+                  >
+                    {modelOptions.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-muted">
+                    Strict monitor
+                    <span className="ml-1 text-[11px] text-muted/70">
+                      (off = faster streaming)
+                    </span>
+                  </span>
+                  <button
+                    onClick={() =>
+                      applyPatch({ strictMonitor: !settings.strictMonitor })
+                    }
+                    disabled={saving}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition disabled:opacity-50 ${
+                      settings.strictMonitor ? "bg-accent-strong" : "bg-border"
+                    }`}
+                    title="Toggle strict monitor"
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                        settings.strictMonitor ? "left-[18px]" : "left-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted">
+                  Changes take effect immediately — no restart. Switching models
+                  uses LM Studio&apos;s loaded/available models (it loads on demand).
+                </p>
+              </div>
+            </>
+          )}
+
           {config && (
             <>
               <h3 className="mb-1 mt-5 text-xs font-semibold uppercase tracking-wide text-muted">
-                Configuration
+                Configuration (env defaults)
               </h3>
               <div className="rounded-xl border border-border bg-surface-2 px-4 py-2">
                 <Row label="Base URL" value={config.baseURL} />
@@ -156,9 +237,8 @@ export function SettingsModal({
           )}
 
           <p className="mt-4 text-[11px] leading-relaxed text-muted">
-            Configuration is read from <code>.env.local</code> at startup. Edit
-            that file and restart the dev server to change models or toggle SOP
-            gates.
+            Runtime controls above override the env defaults and persist locally.
+            The remaining values are read from <code>.env.local</code> at startup.
           </p>
         </div>
       </div>
