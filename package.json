@@ -1,0 +1,36 @@
+{
+  "name": "local-llm-chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local LLM web chat with multimodal (vision), RAG, and voice — powered by LM Studio / llama.cpp",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.3.3",
+    "better-sqlite3": "^11.8.1",
+    "lucide-react": "^0.475.0",
+    "nanoid": "^5.0.9",
+    "next": "^15.1.6",
+    "openai": "^4.83.0",
+    "pdf-parse": "^1.1.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^9.0.3",
+    "remark-gfm": "^4.0.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.3",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.0",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "tailwindcss": "^4.0.3",
+    "typescript": "^5.7.3"
+  }
+}
