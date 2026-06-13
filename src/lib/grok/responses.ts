@@ -3,8 +3,13 @@ import type { Citation, UIMessage, SandboxFileMeta } from "../types";
 import { mapGrokCitations } from "./search";
 import { generateImage } from "./image";
 import { generateVideo } from "./video";
-import { runCode, cloneRepo, saveMediaToSandbox } from "../sandbox/run";
-import { getSkill } from "../skills";
+import {
+  runCode,
+  cloneRepo,
+  saveMediaToSandbox,
+  mountSkill,
+} from "../sandbox/run";
+import { getSkill, installSkill } from "../skills";
 
 /**
  * Native xAI Responses API agent (POST /v1/responses).
@@ -20,6 +25,7 @@ const VIDEO_FN = "generate_video";
 const CODE_FN = "run_code";
 const SKILL_FN = "use_skill";
 const CLONE_FN = "clone_repo";
+const INSTALL_FN = "install_skill";
 
 const BASE_TOOLS = [
   { type: "web_search" },
@@ -105,9 +111,27 @@ const CLONE_REPO_TOOL = {
   },
 };
 
+const INSTALL_SKILL_TOOL = {
+  type: "function",
+  name: INSTALL_FN,
+  description:
+    "Install one or more skills from a git repository into the skill library so they become available. Accepts a repo (owner/repo or git URL) or a GitHub folder URL (.../tree/<branch>/<path>). Use when the user asks to add/install a skill (e.g. an Anthropic skill from github.com/anthropics/skills). After installing, call use_skill to load it.",
+  parameters: {
+    type: "object",
+    properties: {
+      source: {
+        type: "string",
+        description:
+          "owner/repo, a git URL, or a GitHub tree URL pointing at a skill folder.",
+      },
+    },
+    required: ["source"],
+  },
+};
+
 /**
  * Tools sent to the Responses API. The sandbox-backed tools (run_code, clone_repo,
- * use_skill) are only offered when the sandbox is enabled, since they depend on it.
+ * use_skill, install_skill) are only offered when the sandbox is enabled.
  */
 function toolset() {
   if (!config.sandbox.enabled) return BASE_TOOLS;
@@ -116,6 +140,7 @@ function toolset() {
     RUN_CODE_TOOL,
     CLONE_REPO_TOOL,
     USE_SKILL_TOOL,
+    INSTALL_SKILL_TOOL,
   ];
 }
 
@@ -370,6 +395,7 @@ export function streamGrokResponses(
               code?: string;
               name?: string;
               url?: string;
+              source?: string;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -451,9 +477,22 @@ export function streamGrokResponses(
             } else if (c.name === SKILL_FN) {
               emitTool("use_skill", { name: args.name ?? "" });
               const skill = getSkill(args.name ?? "");
-              out = skill
-                ? `Skill "${skill.name}" loaded. Follow this playbook:\n\n${skill.body}`
-                : `Unknown skill: ${args.name ?? ""}`;
+              if (skill) {
+                const mounted = mountSkill(conversationId, skill.name);
+                out =
+                  `Skill "${skill.name}" loaded. Follow this playbook:\n\n${skill.body}` +
+                  (mounted
+                    ? `\n\n---\nThis skill's bundled files (scripts/resources) are in your sandbox at "${mounted}/". Run them with run_code, e.g. \`cd ${mounted} && python scripts/<script>.py ...\`. The skill may need Python packages — pip install them in run_code first (e.g. python-docx, pdfplumber/pypdf, python-pptx, openpyxl). Output files you create in the working directory are shown to the user.`
+                    : "");
+              } else {
+                out = `Unknown skill: ${args.name ?? ""}`;
+              }
+            } else if (c.name === INSTALL_FN) {
+              emitTool("install_skill", { source: args.source ?? "" });
+              const r = await installSkill(args.source ?? "");
+              out = r.installed.length
+                ? `Installed skill(s): ${r.installed.join(", ")}. Call use_skill with one of these names to load it.`
+                : `install_skill failed: ${r.error ?? "no skills found"}`;
             } else if (c.name === CLONE_FN) {
               emitTool("clone_repo", { url: args.url ?? "" });
               const r = await cloneRepo(conversationId, args.url ?? "");

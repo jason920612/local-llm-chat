@@ -165,6 +165,7 @@ const TOOL_LABELS: Record<string, string> = {
   generate_video: "🎬 生成影片",
   run_code: "▶ 執行程式",
   use_skill: "📖 載入技能",
+  install_skill: "⬇ 安裝技能",
   clone_repo: "📦 拉取倉庫",
 };
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { config } from "../config";
 
 const SANDBOX_ROOT = path.join(process.cwd(), "data", "sandboxes");
+const SKILLS_ROOT = path.join(process.cwd(), "skills");
 
 export interface SandboxFile {
   name: string;
@@ -48,6 +49,32 @@ function cleanupOld(): void {
   }
 }
 
+/**
+ * Copy a skill's whole folder (SKILL.md + bundled scripts/resources) into the
+ * conversation sandbox at `.skills/<name>/`, so run_code can execute its scripts.
+ * Returns the relative mount path, or null if the skill folder doesn't exist.
+ */
+export function mountSkill(
+  conversationId: string,
+  name: string,
+): string | null {
+  const safe = name.replace(/[^A-Za-z0-9_-]/g, "");
+  if (!safe) return null;
+  const src = path.join(SKILLS_ROOT, safe);
+  try {
+    if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) return null;
+    const dir = workspaceDir(conversationId);
+    const destRel = `.skills/${safe}`;
+    const dest = path.join(dir, destRel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.cpSync(src, dest, { recursive: true });
+    return destRel;
+  } catch {
+    return null;
+  }
+}
+
 /** Remove a conversation's sandbox (called when the conversation is deleted). */
 export function deleteSandbox(conversationId: string): void {
   try {
@@ -75,6 +102,7 @@ function listFiles(dir: string, since: number): SandboxFile[] {
   const walk = (d: string, prefix: string) => {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
       if (entry.name.startsWith("__script_")) continue;
+      if (entry.name === ".skills") continue; // mounted skill bundles, not user files
       const full = path.join(d, entry.name);
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {

@@ -105,7 +105,9 @@ ${skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
 
 Hard rules:
 - Need to search/explore a codebase or many files → load "explore-codebase" and use tree-structured search (ripgrep/grep via run_code), never read every file.
-- User gives a GitHub repo / asks you to look at a project → load "clone-github", then "clone_repo" it, then explore.`;
+- User gives a GitHub repo / asks you to look at a project → load "clone-github", then "clone_repo" it, then explore.
+- Producing or editing a real file (PDF / Word / PowerPoint / Excel) → load the matching skill (pdf/docx/pptx/xlsx). When you load a skill its bundled scripts are mounted in your sandbox under ".skills/<name>/"; run them via run_code (pip install any packages they need first).
+- User asks to add/install a skill (e.g. from github.com/anthropics/skills) → use "install_skill" with the repo or folder URL, then "use_skill" to load it.`;
 
 /** Build the full system prompt for the current turn. */
 export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {
