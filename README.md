@@ -18,6 +18,10 @@ data leaves your machine, no cloud API keys.
 Everything runs on a single Next.js app + a local SQLite database. Speech-to-text
 and text-to-speech run entirely client-side (no extra services).
 
+> Note: the Whisper model (~150MB) is downloaded from the Hugging Face hub on the
+> first voice recording, then cached in your browser. Transcription itself runs
+> locally. TTS uses your OS voices (fully offline).
+
 ## Stack
 
 | Layer | Choice |
@@ -98,7 +102,7 @@ data/                SQLite DB + uploaded files (git-ignored)
 - [x] Phase 2 — conversation history (SQLite)
 - [x] Phase 3 — image / vision input
 - [x] Phase 4 — RAG (document upload + retrieval + citations)
-- [ ] Phase 5 — voice in/out
+- [x] Phase 5 — voice in (Whisper) / out (TTS)
 - [ ] Phase 6 — settings & polish
 
 ## License

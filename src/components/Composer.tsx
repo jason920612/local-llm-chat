@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useEffect } from "react";
-import { Send, Square, ImagePlus, X } from "lucide-react";
+import { useRef, useEffect, useState } from "react";
+import { Send, Square, ImagePlus, X, Mic, Loader2 } from "lucide-react";
+import { recordingSupported, transcribe } from "@/lib/speech";
 
 export function Composer({
   value,
@@ -26,6 +27,18 @@ export function Composer({
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+
+  useEffect(() => {
+    setVoiceSupported(recordingSupported());
+  }, []);
 
   useEffect(() => {
     const el = ref.current;
@@ -35,6 +48,46 @@ export function Composer({
   }, [value]);
 
   const canSend = value.trim().length > 0 || attachments.length > 0;
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, {
+          type: mr.mimeType || "audio/webm",
+        });
+        setTranscribing(true);
+        try {
+          const text = await transcribe(blob);
+          if (text) {
+            const prev = valueRef.current;
+            onChange(prev ? `${prev} ${text}` : text);
+          }
+        } catch {
+          /* transcription failed — silently ignore */
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      mr.start();
+      recorderRef.current = mr;
+      setRecording(true);
+    } catch {
+      setRecording(false);
+    }
+  }
+
+  function stopRecording() {
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+    setRecording(false);
+  }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -101,6 +154,36 @@ export function Composer({
             hidden
             onChange={handleFileInput}
           />
+
+          {voiceSupported && (
+            <button
+              onClick={recording ? stopRecording : startRecording}
+              disabled={disabled || transcribing}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl disabled:opacity-40 ${
+                recording
+                  ? "bg-red-500/20 text-red-400"
+                  : "text-muted hover:bg-surface hover:text-foreground"
+              }`}
+              title={
+                recording
+                  ? "Stop recording"
+                  : transcribing
+                    ? "Transcribing…"
+                    : "Record voice (Whisper, in-browser)"
+              }
+            >
+              {transcribing ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : recording ? (
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
+                </span>
+              ) : (
+                <Mic size={18} />
+              )}
+            </button>
+          )}
 
           <textarea
             ref={ref}

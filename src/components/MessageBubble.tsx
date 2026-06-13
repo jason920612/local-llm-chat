@@ -1,7 +1,9 @@
 "use client";
 
-import { User, Bot } from "lucide-react";
+import { useEffect, useState } from "react";
+import { User, Bot, Volume2, Square } from "lucide-react";
 import type { UIMessage } from "@/lib/types";
+import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import { Markdown } from "./Markdown";
 
 export function MessageBubble({
@@ -12,6 +14,21 @@ export function MessageBubble({
   streaming?: boolean;
 }) {
   const isUser = message.role === "user";
+  const [canTts, setCanTts] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+
+  useEffect(() => setCanTts(ttsSupported()), []);
+  useEffect(() => () => stopSpeaking(), []);
+
+  function toggleSpeak() {
+    if (speaking) {
+      stopSpeaking();
+      setSpeaking(false);
+    } else {
+      speak(message.content, () => setSpeaking(false));
+      setSpeaking(true);
+    }
+  }
 
   return (
     <div className="flex gap-3 px-4 py-4">
@@ -24,8 +41,19 @@ export function MessageBubble({
       </div>
 
       <div className="min-w-0 flex-1">
-        <div className="mb-1 text-xs font-medium text-muted">
-          {isUser ? "You" : "Assistant"}
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-xs font-medium text-muted">
+            {isUser ? "You" : "Assistant"}
+          </span>
+          {!isUser && canTts && !streaming && message.content.trim() && (
+            <button
+              onClick={toggleSpeak}
+              className="text-muted hover:text-foreground"
+              title={speaking ? "Stop" : "Read aloud"}
+            >
+              {speaking ? <Square size={12} /> : <Volume2 size={13} />}
+            </button>
+          )}
         </div>
 
         {message.images && message.images.length > 0 && (
