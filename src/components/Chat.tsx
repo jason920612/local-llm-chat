@@ -56,6 +56,7 @@ export function Chat({
   const [dragOver, setDragOver] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const dragDepth = useRef(0);
   // The conversation currently loaded into `messages`. Used to avoid reloading
   // (and clobbering an in-progress stream) when we create a conversation locally.
   const loadedId = useRef<string | null>(null);
@@ -80,6 +81,28 @@ export function Chat({
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
+
+  // Robust drag-overlay reset: dropping or ending a drag anywhere clears it, and
+  // we preventDefault globally so the browser never opens a stray dropped file.
+  useEffect(() => {
+    const reset = () => {
+      dragDepth.current = 0;
+      setDragOver(false);
+    };
+    const onWinDragOver = (e: DragEvent) => e.preventDefault();
+    const onWinDrop = (e: DragEvent) => {
+      e.preventDefault();
+      reset();
+    };
+    window.addEventListener("dragover", onWinDragOver);
+    window.addEventListener("drop", onWinDrop);
+    window.addEventListener("dragend", reset);
+    return () => {
+      window.removeEventListener("dragover", onWinDragOver);
+      window.removeEventListener("drop", onWinDrop);
+      window.removeEventListener("dragend", reset);
+    };
+  }, []);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -326,17 +349,22 @@ export function Chat({
   return (
     <div
       className="relative flex h-screen flex-1 flex-col"
-      onDragOver={(e) => {
+      onDragEnter={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
-          e.preventDefault();
+          dragDepth.current += 1;
           setDragOver(true);
         }
       }}
-      onDragLeave={(e) => {
-        if (e.currentTarget === e.target) setDragOver(false);
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragOver(false);
       }}
       onDrop={(e) => {
         e.preventDefault();
+        dragDepth.current = 0;
         setDragOver(false);
         const files = Array.from(e.dataTransfer.files);
         if (files.length) handleFiles(files);
