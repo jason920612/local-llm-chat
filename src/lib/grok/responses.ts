@@ -117,6 +117,201 @@ function extractReasoning(output: OutItem[]): string {
   return parts.join("\n").trim();
 }
 
+/** Sentinel that separates the streamed answer from trailing media metadata. */
+export const MEDIA_MARKER = "<<<XAI_MEDIA>>>";
+
+/** Parse an SSE byte stream into decoded event objects. */
+async function* sseEvents(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<Record<string, unknown>> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const data = block
+        .split("\n")
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => l.slice(5).trim())
+        .join("");
+      if (!data || data === "[DONE]") continue;
+      try {
+        yield JSON.parse(data);
+      } catch {
+        /* ignore non-JSON keepalives */
+      }
+    }
+  }
+}
+
+interface FnCall {
+  call_id: string;
+  name: string;
+  args: string;
+}
+
+/**
+ * Streaming variant of the Grok Responses agent. Returns a text byte stream:
+ * answer tokens (reasoning wrapped in <think>), then a trailing MEDIA_MARKER +
+ * base64(JSON {citations, images, videos}) since headers can't follow a body.
+ */
+export function streamGrokResponses(
+  instructions: string,
+  messages: UIMessage[],
+  baseCitations: Citation[] = [],
+): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const enq = (s: string) => controller.enqueue(enc.encode(s));
+      const images: string[] = [];
+      const videos: string[] = [];
+      let citations: Citation[] = [...baseCitations];
+      let thinkOpen = false;
+      let contentStarted = false;
+
+      let body: Record<string, unknown> = {
+        model: config.grok.model,
+        instructions,
+        input: toInput(messages),
+        tools: RESPONSES_TOOLS,
+        stream: true,
+      };
+
+      try {
+        for (let round = 0; round < config.grok.maxRounds; round++) {
+          const res = await fetch(`${config.grok.baseURL}/responses`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${config.grok.apiKey}`,
+            },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok || !res.body) {
+            const detail = await res.text().catch(() => "");
+            throw new Error(`xAI responses ${res.status}: ${detail.slice(0, 200)}`);
+          }
+
+          const fns: Record<string, FnCall> = {};
+          let respId: string | undefined;
+
+          for await (const ev of sseEvents(res.body)) {
+            const type = ev.type as string;
+            if (type === "response.output_text.delta") {
+              if (thinkOpen && !contentStarted) enq("</think>\n\n");
+              contentStarted = true;
+              enq((ev.delta as string) ?? "");
+            } else if (
+              type === "response.reasoning_text.delta" ||
+              type === "response.reasoning_summary_text.delta"
+            ) {
+              if (!thinkOpen) {
+                enq("<think>");
+                thinkOpen = true;
+              }
+              enq((ev.delta as string) ?? "");
+            } else if (type === "response.output_item.added") {
+              const item = ev.item as
+                | { id?: string; type?: string; call_id?: string; name?: string }
+                | undefined;
+              if (item?.type === "function_call" && item.id) {
+                fns[item.id] = {
+                  call_id: item.call_id ?? "",
+                  name: item.name ?? "",
+                  args: "",
+                };
+              }
+            } else if (type === "response.function_call_arguments.delta") {
+              const id = ev.item_id as string;
+              if (fns[id]) fns[id].args += (ev.delta as string) ?? "";
+            } else if (type === "response.completed") {
+              const r = ev.response as
+                | { id?: string; citations?: unknown[] }
+                | undefined;
+              respId = r?.id;
+              if (Array.isArray(r?.citations)) {
+                citations = [
+                  ...citations,
+                  ...mapGrokCitations(r.citations, citations.length),
+                ];
+              }
+            }
+          }
+
+          const calls = Object.values(fns);
+          if (calls.length === 0) break;
+
+          const outputs: unknown[] = [];
+          for (const c of calls) {
+            let prompt = "";
+            try {
+              prompt = JSON.parse(c.args || "{}").prompt ?? "";
+            } catch {
+              /* ignore */
+            }
+            let out: string;
+            if (c.name === IMAGE_FN) {
+              try {
+                images.push(await generateImage(prompt));
+                out = "Image generated and shown. Briefly confirm it.";
+              } catch (err) {
+                out = `generate_image failed: ${
+                  err instanceof Error ? err.message : "error"
+                }`;
+              }
+            } else if (c.name === VIDEO_FN) {
+              try {
+                videos.push(await generateVideo(prompt));
+                out = "Video generated and shown. Briefly confirm it.";
+              } catch (err) {
+                out = `generate_video failed: ${
+                  err instanceof Error ? err.message : "error"
+                }`;
+              }
+            } else {
+              out = `Unknown tool: ${c.name}`;
+            }
+            outputs.push({
+              type: "function_call_output",
+              call_id: c.call_id,
+              output: out,
+            });
+          }
+
+          body = {
+            model: config.grok.model,
+            tools: RESPONSES_TOOLS,
+            input: outputs,
+            previous_response_id: respId,
+            stream: true,
+          };
+        }
+
+        if (thinkOpen && !contentStarted) enq("</think>\n\n");
+
+        if (citations.length || images.length || videos.length) {
+          const meta = Buffer.from(
+            JSON.stringify({ citations, images, videos }),
+            "utf-8",
+          ).toString("base64");
+          enq(`\n${MEDIA_MARKER}${meta}`);
+        }
+      } catch (err) {
+        enq(`\n\n[stream error: ${err instanceof Error ? err.message : "?"}]`);
+      } finally {
+        controller.close();
+      }
+    },
+  });
+}
+
 async function postResponses(body: Record<string, unknown>): Promise<{
   id?: string;
   output?: OutItem[];

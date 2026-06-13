@@ -8,7 +8,7 @@ import { chatClient, strictMonitorEnabled, chatTarget } from "../settings";
 import { askGrok, mapGrokCitations } from "../grok/search";
 import { generateImage } from "../grok/image";
 import { grokSearchTool, generateImageTool } from "../grok/tool";
-import { runGrokResponses } from "../grok/responses";
+import { streamGrokResponses } from "../grok/responses";
 import type { Citation } from "../types";
 import { callStructured } from "./structured";
 import {
@@ -74,17 +74,10 @@ export async function runControlledChat(
         ragContext,
         grokNative: true,
       });
-      const result = await runGrokResponses(systemPrompt, messages);
-      const think = result.reasoning
-        ? `<think>\n${result.reasoning}\n</think>\n\n`
-        : "";
-      const merged = [...citations, ...result.citations];
-      return textResponse(
-        think + result.text,
-        merged,
-        result.images,
-        result.videos,
-      );
+      // Streamed: text tokens, then a trailing media marker with
+      // citations/images/videos (parsed by the client).
+      const stream = streamGrokResponses(systemPrompt, messages, citations);
+      return streamResponse(stream);
     }
 
     // GATE 1 — intent (code short-circuit). Local models only.

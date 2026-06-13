@@ -10,6 +10,8 @@ import {
   parseCitationsHeader,
   parseImagesHeader,
   parseVideosHeader,
+  parseMediaSentinel,
+  MEDIA_MARKER,
   saveMessage,
 } from "@/lib/api";
 import { fileToResizedDataURL, isImageFile } from "@/lib/image";
@@ -165,19 +167,33 @@ export function Chat({
         const { done, value } = await reader.read();
         if (done) break;
         acc += decoder.decode(value, { stream: true });
+        // Hide the trailing media marker while streaming.
+        const visible = acc.split(MEDIA_MARKER)[0];
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantMsg.id ? { ...m, content: acc } : m,
+            m.id === assistantMsg.id ? { ...m, content: visible } : m,
           ),
         );
       }
 
+      // Streamed Grok responses carry citations/images/videos in a trailing
+      // marker; header-based ones (local/tool paths) carry them in headers.
+      const media = parseMediaSentinel(acc);
       const finalAssistant: UIMessage = {
         ...assistantMsg,
-        content: acc,
-        citations: citations.length > 0 ? citations : undefined,
-        images: genImages.length > 0 ? genImages : undefined,
-        videos: genVideos.length > 0 ? genVideos : undefined,
+        content: media.text,
+        citations:
+          citations.length || media.citations.length
+            ? [...citations, ...media.citations]
+            : undefined,
+        images:
+          genImages.length || media.images.length
+            ? [...genImages, ...media.images]
+            : undefined,
+        videos:
+          genVideos.length || media.videos.length
+            ? [...genVideos, ...media.videos]
+            : undefined,
       };
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),

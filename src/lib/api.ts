@@ -177,3 +177,31 @@ export function parseImagesHeader(header: string | null): string[] {
 export function parseVideosHeader(header: string | null): string[] {
   return decodeB64Json<string[]>(header, []);
 }
+
+// Trailing marker on streamed Grok responses (kept in sync with grok/responses.ts).
+export const MEDIA_MARKER = "<<<XAI_MEDIA>>>";
+
+export interface StreamMedia {
+  text: string;
+  citations: Citation[];
+  images: string[];
+  videos: string[];
+}
+
+/** Split a streamed body into answer text and trailing media metadata. */
+export function parseMediaSentinel(full: string): StreamMedia {
+  const idx = full.indexOf(MEDIA_MARKER);
+  if (idx < 0) return { text: full, citations: [], images: [], videos: [] };
+  const text = full.slice(0, idx).replace(/\s+$/, "");
+  const media = decodeB64Json<{
+    citations?: Citation[];
+    images?: string[];
+    videos?: string[];
+  }>(full.slice(idx + MEDIA_MARKER.length), {});
+  return {
+    text,
+    citations: media.citations ?? [],
+    images: media.images ?? [],
+    videos: media.videos ?? [],
+  };
+}
