@@ -13,6 +13,7 @@ data leaves your machine, no cloud API keys.
 - 🖼️ **Vision / image input** — drop an image and ask about it (multimodal)
 - 📄 **RAG** — upload PDF / text / markdown, chat grounded in your documents with citations
 - 🎙️ **Voice** — speech-to-text via Whisper (runs in your browser), text-to-speech via OS voices
+- 🌐 **Grok search tool** — the local model can borrow Grok's X (Twitter) + web search via a `grok_search` tool and receive only Grok's synthesized answer (saves context)
 - 🗂️ **Conversation history** — saved locally in SQLite
 
 Everything runs on a single Next.js app + a local SQLite database. Speech-to-text
@@ -52,6 +53,24 @@ left to a system prompt. Every chat turn runs through a control pipeline
 
 Toggle via env (`SOP_INTENT_GATE`, `SOP_BLOCKING`, `SOP_VERIFY_GATE`). The system
 prompt still states the rules, but the gates above are what actually enforce them.
+
+## Grok search tool (xAI)
+
+The local model can call a `grok_search` function-tool that borrows Grok's
+**server-side X (Twitter) + web search** (via xAI's Responses API
+`POST /v1/responses` with `web_search` + `x_search` tools). Grok runs the whole
+search→read→synthesize loop on its servers and returns one answer; the local
+model receives **only that synthesized answer + sources**, not raw results — so
+its context stays small.
+
+Flow: local model emits a `grok_search` tool call → pipeline calls xAI →
+Grok's answer is fed back as the tool result → local model writes the final
+reply with `[n]` citations.
+
+Enable it by setting `XAI_API_KEY` in `.env.local` (get one at
+<https://console.x.ai>), then toggle **Grok** in the chat header. The model is
+configurable via `GROK_MODEL` (default `grok-build-0.1`). The legacy Live Search
+`search_parameters` API is retired — this uses the current Agent Tools API.
 
 ## Prerequisites
 

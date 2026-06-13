@@ -23,6 +23,17 @@ export const config = {
     topK: 4, // chunks retrieved per query
   },
   /**
+   * Grok (xAI) search tool. Lets the local model borrow Grok's server-side
+   * X (Twitter) + web search and receive only Grok's synthesized answer.
+   */
+  grok: {
+    baseURL: process.env.XAI_BASE_URL ?? "https://api.x.ai/v1",
+    apiKey: process.env.XAI_API_KEY ?? "",
+    model: process.env.GROK_MODEL ?? "grok-build-0.1",
+    enabled: Boolean(process.env.XAI_API_KEY),
+    maxRounds: 3, // max tool-call rounds per turn
+  },
+  /**
    * SOP control layer. The SOP is enforced in CODE, not by trusting the prompt.
    * These flags toggle the code-controlled gates around every chat turn.
    */

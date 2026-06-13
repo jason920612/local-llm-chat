@@ -113,6 +113,18 @@ export function SettingsModal({
                 <Row label="Base URL" value={config.baseURL} />
                 <Row label="Chat model" value={config.chatModel} />
                 <Row label="Embedding model" value={config.embeddingModel} />
+                <Row
+                  label="Grok search"
+                  value={
+                    config.grok.enabled ? (
+                      <span className="text-emerald-400">
+                        {config.grok.model}
+                      </span>
+                    ) : (
+                      <span className="text-muted">disabled (no XAI_API_KEY)</span>
+                    )
+                  }
+                />
                 <Row label="RAG top-K" value={config.rag.topK} />
                 <Row
                   label="Chunk size / overlap"

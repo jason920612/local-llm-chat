@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { nanoid } from "nanoid";
-import { Bot, BookOpen } from "lucide-react";
+import { Bot, BookOpen, Globe } from "lucide-react";
 import type { Conversation, UIMessage } from "@/lib/types";
 import {
   createConversationApi,
@@ -21,6 +21,9 @@ export function Chat({
   useRag,
   docCount,
   onToggleRag,
+  useGrok,
+  grokEnabled,
+  onToggleGrok,
   onCreated,
   onPersisted,
 }: {
@@ -29,6 +32,9 @@ export function Chat({
   useRag: boolean;
   docCount: number;
   onToggleRag: () => void;
+  useGrok: boolean;
+  grokEnabled: boolean;
+  onToggleGrok: () => void;
   onCreated: (conv: Conversation) => void;
   onPersisted: () => void;
 }) {
@@ -129,6 +135,7 @@ export function Chat({
         body: JSON.stringify({
           conversationId: cid,
           useRag,
+          useGrok,
           messages: history.map((m) => ({
             role: m.role,
             content: m.content,
@@ -190,6 +197,7 @@ export function Chat({
     messages,
     conversationId,
     useRag,
+    useGrok,
     onCreated,
     onPersisted,
   ]);
@@ -219,6 +227,23 @@ export function Chat({
         >
           <BookOpen size={13} />
           Docs{docCount > 0 ? ` (${docCount})` : ""}
+        </button>
+        <button
+          onClick={onToggleGrok}
+          disabled={!grokEnabled}
+          title={
+            grokEnabled
+              ? "Let the model search X & the web via Grok"
+              : "Set XAI_API_KEY in .env.local to enable"
+          }
+          className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            useGrok && grokEnabled
+              ? "border-accent bg-accent/15 text-accent"
+              : "border-border text-muted hover:text-foreground"
+          }`}
+        >
+          <Globe size={13} />
+          Grok
         </button>
       </header>
 

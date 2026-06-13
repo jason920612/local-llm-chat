@@ -11,5 +11,6 @@ export async function GET() {
     embeddingModel: config.llm.embeddingModel,
     rag: config.rag,
     sop: config.sop,
+    grok: { enabled: config.grok.enabled, model: config.grok.model },
   });
 }

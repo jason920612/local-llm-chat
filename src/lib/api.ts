@@ -110,6 +110,7 @@ export interface AppConfig {
     blocking: boolean;
     maxStructuredRetries: number;
   };
+  grok: { enabled: boolean; model: string };
 }
 
 export async function fetchAppConfig(): Promise<AppConfig> {

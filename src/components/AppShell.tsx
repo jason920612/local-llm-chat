@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Conversation, RagDocument } from "@/lib/types";
 import {
   deleteConversationApi,
+  fetchAppConfig,
   fetchConversations,
   fetchDocuments,
   renameConversationApi,
@@ -18,6 +19,8 @@ export function AppShell() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [documents, setDocuments] = useState<RagDocument[]>([]);
   const [useRag, setUseRag] = useState(false);
+  const [useGrok, setUseGrok] = useState(false);
+  const [grokEnabled, setGrokEnabled] = useState(false);
   const [docsOpen, setDocsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -40,6 +43,9 @@ export function AppShell() {
   useEffect(() => {
     refresh();
     refreshDocuments();
+    fetchAppConfig()
+      .then((c) => setGrokEnabled(c.grok?.enabled ?? false))
+      .catch(() => setGrokEnabled(false));
   }, [refresh, refreshDocuments]);
 
   // If the last document is removed, turn grounding off.
@@ -94,6 +100,9 @@ export function AppShell() {
         useRag={useRag}
         docCount={documents.length}
         onToggleRag={() => setUseRag((v) => !v)}
+        useGrok={useGrok}
+        grokEnabled={grokEnabled}
+        onToggleGrok={() => setUseGrok((v) => !v)}
         onCreated={handleCreated}
         onPersisted={refresh}
       />

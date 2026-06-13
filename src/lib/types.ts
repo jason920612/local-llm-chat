@@ -40,4 +40,6 @@ export interface ChatRequestBody {
   conversationId?: string;
   /** Whether to ground the answer in uploaded documents. */
   useRag?: boolean;
+  /** Whether to expose the Grok X/web search tool to the model. */
+  useGrok?: boolean;
 }

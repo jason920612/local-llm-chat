@@ -5,6 +5,8 @@ import { buildSystemPrompt } from "../prompts";
 import { toOpenAIMessages } from "../openai-format";
 import type { ChatRequestBody, UIMessage } from "../types";
 import { retrieve } from "../rag/retrieve";
+import { askGrok, mapGrokCitations } from "../grok/search";
+import { grokSearchTool } from "../grok/tool";
 import type { Citation } from "../types";
 import { callStructured } from "./structured";
 import {
@@ -67,11 +69,23 @@ export async function runControlledChat(
       }
     }
 
-    const systemPrompt = buildSystemPrompt({ hasImages, ragContext });
+    const useGrok = Boolean(body.useGrok) && config.grok.enabled;
+
+    const systemPrompt = buildSystemPrompt({
+      hasImages,
+      ragContext,
+      hasGrokTool: useGrok,
+    });
     const openaiMessages: ChatParam[] = [
       { role: "system", content: systemPrompt },
       ...toOpenAIMessages(messages),
     ];
+
+    // Grok search tool path: let the model call grok_search; resolve it server
+    // side and stream the final answer with collected citations.
+    if (useGrok) {
+      return await runWithGrokTool(openaiMessages, citations);
+    }
 
     return config.sop.blocking
       ? await runBlocking(openaiMessages, allowedSources, citations)
@@ -185,6 +199,117 @@ async function runStreaming(
   });
 
   return streamResponse(stream, citations);
+}
+
+// --- Grok search tool path -------------------------------------------------
+
+/** Stream an existing message list (no tools) and attach citations. */
+function streamFinal(
+  messages: ChatParam[],
+  citations: Citation[],
+): Promise<Response> {
+  return llm.chat.completions
+    .create({
+      model: config.llm.model,
+      messages,
+      stream: true,
+      temperature: 0.4,
+    })
+    .then((completion) => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          try {
+            for await (const chunk of completion) {
+              const delta = chunk.choices[0]?.delta?.content;
+              if (delta) controller.enqueue(encoder.encode(delta));
+            }
+          } catch (err) {
+            const message =
+              err instanceof Error ? err.message : "stream interrupted";
+            controller.enqueue(encoder.encode(`\n\n[stream error: ${message}]`));
+          } finally {
+            controller.close();
+          }
+        },
+      });
+      return streamResponse(stream, citations);
+    });
+}
+
+/**
+ * Resolve grok_search tool calls server-side, then stream the final answer.
+ * The local model only ever sees Grok's synthesized answer (+ source list),
+ * never the raw search results — keeping its context small.
+ */
+async function runWithGrokTool(
+  openaiMessages: ChatParam[],
+  baseCitations: Citation[],
+): Promise<Response> {
+  const messages = [...openaiMessages];
+  const citations: Citation[] = [...baseCitations];
+  let usedTool = false;
+
+  for (let round = 0; round < config.grok.maxRounds; round++) {
+    const resp = await llm.chat.completions.create({
+      model: config.llm.model,
+      messages,
+      tools: [grokSearchTool],
+      tool_choice: "auto",
+      temperature: 0.3,
+    });
+
+    const msg = resp.choices[0]?.message;
+    const toolCalls = msg?.tool_calls ?? [];
+
+    if (toolCalls.length === 0) {
+      // Model answered directly without searching.
+      if (!usedTool) return textResponse(msg?.content ?? "", citations);
+      break; // had tool results already → fall through to streamed final
+    }
+
+    usedTool = true;
+    messages.push(msg as ChatParam);
+
+    for (const call of toolCalls) {
+      if (call.type !== "function") continue;
+      let query = "";
+      try {
+        query = JSON.parse(call.function.arguments || "{}").query ?? "";
+      } catch {
+        /* leave empty */
+      }
+
+      let toolContent: string;
+      try {
+        const result = await askGrok(query);
+        const mapped = mapGrokCitations(
+          result.citations.map((c) => c.snippet),
+          citations.length,
+        );
+        citations.push(...mapped);
+        toolContent = result.answer || "(Grok returned no answer)";
+        if (mapped.length > 0) {
+          toolContent +=
+            "\n\nSources:\n" +
+            mapped.map((m) => `[${m.index}] ${m.snippet}`).join("\n");
+        }
+      } catch (err) {
+        toolContent = `grok_search failed: ${
+          err instanceof Error ? err.message : "error"
+        }`;
+      }
+
+      messages.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: toolContent,
+      });
+    }
+  }
+
+  // Final answer, streamed (tools withheld so the model must respond in text).
+  return streamFinal(messages, citations);
 }
 
 // --- Blocking path (full code enforcement) ---------------------------------

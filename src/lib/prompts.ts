@@ -14,6 +14,8 @@ export interface SystemPromptOptions {
   hasImages?: boolean;
   /** Retrieved document context for RAG. When present, grounding is enforced. */
   ragContext?: string;
+  /** True when the grok_search tool is available this turn. */
+  hasGrokTool?: boolean;
 }
 
 /** The non-negotiable core. Applies to every single turn, no exceptions. */
@@ -70,10 +72,20 @@ ${ragContext}
 - If the context does NOT contain the answer, output exactly: "The provided documents do not contain this information." (in the user's language). Do NOT fall back to your own knowledge. Do NOT guess.
 - Do NOT use any source number that is not listed above.`;
 
+const GROK_DIRECTIVE = `
+
+# EXTERNAL SEARCH TOOL — grok_search
+You have a tool named "grok_search" that searches X (Twitter) and the web via Grok and returns a synthesized answer.
+- Call it ONLY when answering REQUIRES real-time, recent, or external information you cannot know (current events, news, prices, live status, public X posts).
+- Do NOT call it for general knowledge, reasoning, math, or coding — answer those directly.
+- Issue ONE focused query. After receiving the tool result, base your factual claims on it and cite the provided sources with [n].
+- If the tool result does not answer the question, say so plainly. Do NOT fabricate.`;
+
 /** Build the full system prompt for the current turn. */
 export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {
   let prompt = CORE_DIRECTIVE;
   if (opts.hasImages) prompt += VISION_DIRECTIVE;
+  if (opts.hasGrokTool) prompt += GROK_DIRECTIVE;
   if (opts.ragContext && opts.ragContext.trim().length > 0) {
     prompt += ragDirective(opts.ragContext);
   }
