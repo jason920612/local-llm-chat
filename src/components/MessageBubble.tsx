@@ -14,6 +14,8 @@ import {
   FileCode,
   Wrench,
   ChevronRight,
+  ChevronLeft,
+  RefreshCw,
 } from "lucide-react";
 import type { UIMessage, SandboxFileMeta, ToolCallTrace } from "@/lib/types";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
@@ -210,6 +212,11 @@ export function MessageBubble({
   canEdit,
   onEdit,
   onFork,
+  onRegenerate,
+  versionIndex,
+  versionCount,
+  onPrevVersion,
+  onNextVersion,
   conversationId,
 }: {
   message: UIMessage;
@@ -217,6 +224,11 @@ export function MessageBubble({
   canEdit?: boolean;
   onEdit?: (id: string, newText: string) => void;
   onFork?: (id: string) => void;
+  onRegenerate?: (id: string) => void;
+  versionIndex?: number;
+  versionCount?: number;
+  onPrevVersion?: () => void;
+  onNextVersion?: () => void;
   conversationId?: string | null;
 }) {
   const isUser = message.role === "user";
@@ -270,6 +282,29 @@ export function MessageBubble({
           <span className="text-xs font-medium text-muted">
             {isUser ? "You" : "Assistant"}
           </span>
+          {versionCount && versionCount > 1 && (
+            <span className="flex items-center gap-0.5 text-[11px] text-muted">
+              <button
+                onClick={onPrevVersion}
+                className="hover:text-foreground disabled:opacity-30"
+                disabled={streaming}
+                title="上一個版本"
+              >
+                <ChevronLeft size={12} />
+              </button>
+              <span className="tabular-nums">
+                {versionIndex}/{versionCount}
+              </span>
+              <button
+                onClick={onNextVersion}
+                className="hover:text-foreground disabled:opacity-30"
+                disabled={streaming}
+                title="下一個版本"
+              >
+                <ChevronRight size={12} />
+              </button>
+            </span>
+          )}
           {!isUser && canTts && !streaming && answer.trim() && (
             <button
               onClick={toggleSpeak}
@@ -300,16 +335,25 @@ export function MessageBubble({
                     setEditing(true);
                   }}
                   className="text-muted hover:text-foreground"
-                  title="編輯此輪"
+                  title="編輯此輪（建立新版本）"
                 >
                   <Pencil size={12} />
+                </button>
+              )}
+              {!isUser && onRegenerate && (
+                <button
+                  onClick={() => onRegenerate(message.id)}
+                  className="text-muted hover:text-foreground"
+                  title="重新生成（建立新版本）"
+                >
+                  <RefreshCw size={12} />
                 </button>
               )}
               {onFork && (
                 <button
                   onClick={() => onFork(message.id)}
                   className="text-muted hover:text-foreground"
-                  title="從此處分支對話"
+                  title="從此處分支為新對話"
                 >
                   <GitBranch size={12} />
                 </button>

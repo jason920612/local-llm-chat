@@ -1,14 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nanoid } from "nanoid";
 import { Bot, BookOpen, Globe, AudioLines, FolderOpen } from "lucide-react";
 import type { Conversation, UIMessage, SandboxFileMeta } from "@/lib/types";
 import {
   createConversationApi,
   fetchConversation,
-  truncateAfter,
   forkConversationApi,
+  setActiveBranch,
   uploadSandboxFiles,
   parseCitationsHeader,
   parseImagesHeader,
@@ -17,6 +17,7 @@ import {
   parseStreamingText,
   saveMessage,
 } from "@/lib/api";
+import { computePath, ancestorsOf, versionInfo } from "@/lib/tree";
 import { fileToResizedDataURL, isImageFile } from "@/lib/image";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
@@ -47,7 +48,10 @@ export function Chat({
   onCreated: (conv: Conversation) => void;
   onPersisted: () => void;
 }) {
-  const [messages, setMessages] = useState<UIMessage[]>([]);
+  // The full message TREE for this conversation; the displayed thread is the
+  // path derived from it (computePath), following each node's selected branch.
+  const [allMessages, setAllMessages] = useState<UIMessage[]>([]);
+  const [rootChildId, setRootChildId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -63,18 +67,49 @@ export function Chat({
   // (and clobbering an in-progress stream) when we create a conversation locally.
   const loadedId = useRef<string | null>(null);
 
-  // Load messages when the active conversation changes externally.
+  // The visible conversation path through the tree.
+  const messages = useMemo(
+    () => computePath(allMessages, rootChildId),
+    [allMessages, rootChildId],
+  );
+
+  // Add or replace a message in the tree, and select it as its parent's branch
+  // (so a newly added/branched message becomes part of the visible path).
+  const attach = useCallback((m: UIMessage) => {
+    setAllMessages((prev) => {
+      const next = prev.some((x) => x.id === m.id)
+        ? prev.map((x) => (x.id === m.id ? m : x))
+        : [...prev, m];
+      return m.parentId
+        ? next.map((x) =>
+            x.id === m.parentId ? { ...x, activeChildId: m.id } : x,
+          )
+        : next;
+    });
+    if (!m.parentId) setRootChildId(m.id);
+  }, []);
+
+  // Load the tree when the active conversation changes externally.
   useEffect(() => {
     if (conversationId === loadedId.current) return;
     loadedId.current = conversationId;
     if (!conversationId) {
-      setMessages([]);
+      setAllMessages([]);
+      setRootChildId(null);
       return;
     }
     let cancelled = false;
     fetchConversation(conversationId)
-      .then((d) => !cancelled && setMessages(d.messages))
-      .catch(() => !cancelled && setMessages([]));
+      .then((d) => {
+        if (cancelled) return;
+        setAllMessages(d.messages);
+        setRootChildId(d.rootChildId);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAllMessages([]);
+        setRootChildId(null);
+      });
     return () => {
       cancelled = true;
     };
@@ -173,13 +208,17 @@ export function Chat({
   // answer), shows an assistant placeholder, streams the reply, and persists it.
   const runTurn = useCallback(
     async (history: UIMessage[], cid: string) => {
+      // The new assistant branches off the last message of the history (the user
+      // turn it answers), so re-generating just adds another sibling version.
+      const parentId = history[history.length - 1]?.id ?? null;
       const assistantMsg: UIMessage = {
         id: nanoid(),
         role: "assistant",
         content: "",
         createdAt: Date.now(),
+        parentId,
       };
-      setMessages([...history, assistantMsg]);
+      attach(assistantMsg);
       setStreaming(true);
       const controller = new AbortController();
       abortRef.current = controller;
@@ -218,7 +257,7 @@ export function Chat({
           if (done) break;
           acc += decoder.decode(value, { stream: true });
           const live = parseStreamingText(acc);
-          setMessages((prev) =>
+          setAllMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsg.id
                 ? {
@@ -253,7 +292,7 @@ export function Chat({
               : undefined,
           files: media.files.length > 0 ? media.files : undefined,
         };
-        setMessages((prev) =>
+        setAllMessages((prev) =>
           prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),
         );
         await saveMessage(cid, finalAssistant);
@@ -264,7 +303,7 @@ export function Chat({
         } else {
           const msg = err instanceof Error ? err.message : "Unknown error";
           setError(msg);
-          setMessages((prev) =>
+          setAllMessages((prev) =>
             prev.filter((m) => !(m.id === assistantMsg.id && m.content === "")),
           );
         }
@@ -273,7 +312,7 @@ export function Chat({
         abortRef.current = null;
       }
     },
-    [useRag, useGrok, onPersisted],
+    [useRag, useGrok, onPersisted, attach],
   );
 
   const send = useCallback(async () => {
@@ -298,11 +337,13 @@ export function Chat({
       content: text + fileNote,
       images: images.length > 0 ? images : undefined,
       createdAt: Date.now(),
+      parentId: messages.length ? messages[messages.length - 1].id : null,
     };
     const history = [...messages, userMsg];
     setInput("");
     setAttachments([]);
     setSandboxFiles([]);
+    attach(userMsg);
 
     const cid = await ensureConversation(text || "New chat");
     await saveMessage(cid, userMsg);
@@ -315,31 +356,78 @@ export function Chat({
     messages,
     ensureConversation,
     runTurn,
+    attach,
   ]);
 
-  // Edit any turn. Editing a user turn truncates what follows and regenerates;
-  // editing an assistant turn just keeps the edited text (and truncates after).
+  // Edit any turn as a NEW version (branch), preserving the old one. Editing a
+  // user turn creates a sibling and regenerates; editing an assistant turn saves
+  // a sibling with the new text (no regeneration).
   const editMessage = useCallback(
     async (messageId: string, newText: string) => {
       if (streaming || !conversationId) return;
-      const idx = messages.findIndex((m) => m.id === messageId);
-      if (idx < 0) return;
+      const original = allMessages.find((m) => m.id === messageId);
+      if (!original) return;
       setError(null);
 
-      const edited: UIMessage = { ...messages[idx], content: newText };
-      const history = [...messages.slice(0, idx), edited];
+      const sibling: UIMessage = {
+        id: nanoid(),
+        role: original.role,
+        content: newText,
+        images: original.images,
+        parentId: original.parentId ?? null,
+        createdAt: Date.now(),
+      };
+      attach(sibling);
+      await saveMessage(conversationId, sibling);
 
-      await saveMessage(conversationId, edited);
-      await truncateAfter(conversationId, messageId);
-
-      if (edited.role === "user") {
+      if (sibling.role === "user") {
+        const history = ancestorsOf([...allMessages, sibling], sibling);
         await runTurn(history, conversationId);
       } else {
-        setMessages(history);
         onPersisted();
       }
     },
-    [streaming, conversationId, messages, runTurn, onPersisted],
+    [streaming, conversationId, allMessages, runTurn, onPersisted, attach],
+  );
+
+  // Regenerate any assistant message: add another sibling version under the same
+  // user turn and stream a fresh answer. The previous version stays switchable.
+  const regenerate = useCallback(
+    async (messageId: string) => {
+      if (streaming || !conversationId) return;
+      const target = allMessages.find((m) => m.id === messageId);
+      if (!target || target.role !== "assistant" || !target.parentId) return;
+      const parent = allMessages.find((m) => m.id === target.parentId);
+      if (!parent) return;
+      setError(null);
+      const history = ancestorsOf(allMessages, parent);
+      await runTurn(history, conversationId);
+    },
+    [streaming, conversationId, allMessages, runTurn],
+  );
+
+  // Switch which version of a message (and its branch) is shown.
+  const switchVersion = useCallback(
+    async (messageId: string, dir: -1 | 1) => {
+      if (streaming || !conversationId) return;
+      const msg = allMessages.find((m) => m.id === messageId);
+      if (!msg) return;
+      const { index, count, siblings } = versionInfo(allMessages, msg);
+      if (count < 2) return;
+      const target = siblings[(index + dir + count) % count];
+      const parentId = target.parentId ?? null;
+      if (parentId) {
+        setAllMessages((prev) =>
+          prev.map((m) =>
+            m.id === parentId ? { ...m, activeChildId: target.id } : m,
+          ),
+        );
+      } else {
+        setRootChildId(target.id);
+      }
+      await setActiveBranch(conversationId, parentId, target.id);
+    },
+    [streaming, conversationId, allMessages],
   );
 
   // Fork: branch a new conversation containing everything up to this message.
@@ -464,21 +552,29 @@ export function Chat({
           </div>
         ) : (
           <div className="mx-auto max-w-3xl divide-y divide-border/50">
-            {messages.map((m, i) => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                streaming={
-                  streaming &&
-                  i === messages.length - 1 &&
-                  m.role === "assistant"
-                }
-                canEdit={!streaming}
-                onEdit={editMessage}
-                onFork={forkAt}
-                conversationId={conversationId}
-              />
-            ))}
+            {messages.map((m, i) => {
+              const v = versionInfo(allMessages, m);
+              return (
+                <MessageBubble
+                  key={m.id}
+                  message={m}
+                  streaming={
+                    streaming &&
+                    i === messages.length - 1 &&
+                    m.role === "assistant"
+                  }
+                  canEdit={!streaming}
+                  onEdit={editMessage}
+                  onFork={forkAt}
+                  onRegenerate={regenerate}
+                  versionIndex={v.index + 1}
+                  versionCount={v.count}
+                  onPrevVersion={() => switchVersion(m.id, -1)}
+                  onNextVersion={() => switchVersion(m.id, 1)}
+                  conversationId={conversationId}
+                />
+              );
+            })}
           </div>
         )}
       </div>

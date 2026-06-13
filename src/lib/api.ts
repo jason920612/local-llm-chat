@@ -27,10 +27,27 @@ export async function createConversationApi(
 
 export async function fetchConversation(
   id: string,
-): Promise<{ conversation: Conversation; messages: UIMessage[] }> {
+): Promise<{
+  conversation: Conversation;
+  messages: UIMessage[];
+  rootChildId: string | null;
+}> {
   const res = await fetch(`/api/conversations/${id}`);
   if (!res.ok) throw new Error("Failed to load conversation");
   return res.json();
+}
+
+/** Select which child branch is active under a node (or the root if parentId null). */
+export async function setActiveBranch(
+  conversationId: string,
+  parentId: string | null,
+  childId: string,
+): Promise<void> {
+  await fetch(`/api/conversations/${conversationId}/branch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parentId, childId }),
+  });
 }
 
 export async function renameConversationApi(

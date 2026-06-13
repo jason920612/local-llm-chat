@@ -79,8 +79,68 @@ function init(): Database.Database {
   } catch {
     /* column already exists */
   }
+  // Message tree (versions/branches): parent_id links a message to the one it
+  // follows; active_child_id remembers which child branch is currently selected;
+  // conversations.root_child_id remembers the selected first message.
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN parent_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN active_child_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN root_child_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
 
+  backfillTree(db);
   return db;
+}
+
+/**
+ * Link any pre-tree (flat) conversations into a single linear chain so the tree
+ * model works on old data. Idempotent: only touches conversations whose
+ * root_child_id is still null but which already have messages.
+ */
+function backfillTree(db: Database.Database): void {
+  try {
+    const convs = db
+      .prepare(`SELECT id FROM conversations WHERE root_child_id IS NULL`)
+      .all() as { id: string }[];
+    const link = db.prepare(
+      `UPDATE messages SET parent_id = ?, active_child_id = ? WHERE id = ?`,
+    );
+    const setRoot = db.prepare(
+      `UPDATE conversations SET root_child_id = ? WHERE id = ?`,
+    );
+    for (const { id } of convs) {
+      const msgs = db
+        .prepare(
+          `SELECT id FROM messages WHERE conversation_id = ?
+           ORDER BY created_at ASC, rowid ASC`,
+        )
+        .all(id) as { id: string }[];
+      if (msgs.length === 0) continue;
+      const tx = db.transaction(() => {
+        for (let i = 0; i < msgs.length; i++) {
+          link.run(
+            i > 0 ? msgs[i - 1].id : null,
+            i < msgs.length - 1 ? msgs[i + 1].id : null,
+            msgs[i].id,
+          );
+        }
+        setRoot.run(msgs[0].id, id);
+      });
+      tx();
+    }
+  } catch {
+    /* best-effort backfill */
+  }
 }
 
 export const db: Database.Database =

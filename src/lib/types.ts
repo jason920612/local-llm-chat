@@ -16,6 +16,10 @@ export interface UIMessage {
   /** Citations resolved from RAG retrieval, if any. */
   citations?: Citation[];
   createdAt?: number;
+  /** Message-tree links: the message this one follows (null/undefined = a root). */
+  parentId?: string | null;
+  /** Which child branch is currently selected under this message (remembered). */
+  activeChildId?: string | null;
 }
 
 export interface ToolCallTrace {
