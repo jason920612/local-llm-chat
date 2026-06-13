@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { User, Bot, Volume2, Square } from "lucide-react";
 import type { UIMessage } from "@/lib/types";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
+import { parseThinking } from "@/lib/think";
 import { Markdown } from "./Markdown";
+import { Thinking } from "./Thinking";
 
 export function MessageBubble({
   message,
@@ -20,12 +22,17 @@ export function MessageBubble({
   useEffect(() => setCanTts(ttsSupported()), []);
   useEffect(() => () => stopSpeaking(), []);
 
+  // Split reasoning (<think>) from the answer for assistant messages.
+  const { thinking, answer, thinkingStreaming } = isUser
+    ? { thinking: "", answer: message.content, thinkingStreaming: false }
+    : parseThinking(message.content);
+
   function toggleSpeak() {
     if (speaking) {
       stopSpeaking();
       setSpeaking(false);
     } else {
-      speak(message.content, () => setSpeaking(false));
+      speak(answer, () => setSpeaking(false)); // never read the reasoning aloud
       setSpeaking(true);
     }
   }
@@ -45,7 +52,7 @@ export function MessageBubble({
           <span className="text-xs font-medium text-muted">
             {isUser ? "You" : "Assistant"}
           </span>
-          {!isUser && canTts && !streaming && message.content.trim() && (
+          {!isUser && canTts && !streaming && answer.trim() && (
             <button
               onClick={toggleSpeak}
               className="text-muted hover:text-foreground"
@@ -73,9 +80,15 @@ export function MessageBubble({
         {isUser ? (
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
         ) : (
-          <Markdown>
-            {message.content || (streaming ? "" : "_(empty response)_")}
-          </Markdown>
+          <>
+            <Thinking
+              content={thinking}
+              live={streaming && thinkingStreaming}
+            />
+            <Markdown>
+              {answer || (streaming ? "" : "_(empty response)_")}
+            </Markdown>
+          </>
         )}
 
         {streaming && (

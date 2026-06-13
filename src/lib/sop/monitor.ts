@@ -102,13 +102,20 @@ export interface MonitorResult {
 async function generate(
   messages: ChatParam[],
   temperature: number,
-): Promise<string> {
+): Promise<{ content: string; reasoning: string }> {
   const res = await llm.chat.completions.create({
     model: activeChatModel(),
     messages,
     temperature,
   });
-  return stripBoilerplate(res.choices[0]?.message?.content ?? "");
+  const msg = res.choices[0]?.message as
+    | { content?: string; reasoning_content?: string; reasoning?: string }
+    | undefined;
+  const reasoning = msg?.reasoning_content ?? msg?.reasoning ?? "";
+  return {
+    content: stripBoilerplate(msg?.content ?? ""),
+    reasoning: typeof reasoning === "string" ? reasoning : "",
+  };
 }
 
 /** Deterministic checks. Returns cleaned text + violation list. */
@@ -159,10 +166,15 @@ export async function runMonitor(
   initialDraft?: string,
 ): Promise<MonitorResult> {
   let correctionRounds = 0;
-  let draft =
-    initialDraft != null
-      ? stripBoilerplate(initialDraft)
-      : await generate(messages, 0.4);
+  let lastReasoning = "";
+  let draft: string;
+  if (initialDraft != null) {
+    draft = stripBoilerplate(initialDraft);
+  } else {
+    const gen = await generate(messages, 0.4);
+    draft = gen.content;
+    lastReasoning = gen.reasoning;
+  }
 
   for (let round = 0; round <= config.sop.maxCorrections; round++) {
     const det = inspect(draft, opts);
@@ -195,7 +207,7 @@ export async function runMonitor(
 
     // Harsh internal correction — never shown to the user.
     correctionRounds++;
-    draft = await generate(
+    const gen = await generate(
       [
         ...messages,
         { role: "assistant", content: draft },
@@ -203,13 +215,21 @@ export async function runMonitor(
       ],
       0.2,
     );
-    draft = stripBoilerplate(draft);
+    draft = stripBoilerplate(gen.content);
+    lastReasoning = gen.reasoning;
   }
 
   // Final guarantee: strip any leaked reprimand and re-clean citations.
   draft = sanitize(draft);
   draft = enforceCitations(draft, opts.allowedSources, RAG_REFUSAL).text;
   if (isEmptyResponse(draft)) draft = "I don't know.";
+
+  // Surface the model's reasoning (if any) as a collapsible <think> block.
+  // It is sanitized too, so the internal reprimand can never leak through it.
+  const think = lastReasoning ? sanitize(lastReasoning).trim() : "";
+  if (think && !draft.includes("<think>")) {
+    draft = `<think>\n${think}\n</think>\n\n${draft}`;
+  }
 
   const controlNote =
     correctionRounds > 0

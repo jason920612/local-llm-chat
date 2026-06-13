@@ -181,13 +181,37 @@ async function runStreaming(
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let acc = "";
+      let thinkOpen = false;
+      let contentStarted = false;
       try {
         for await (const chunk of completion) {
-          const delta = chunk.choices[0]?.delta?.content;
-          if (delta) {
-            acc += delta;
-            controller.enqueue(encoder.encode(delta));
+          const delta = chunk.choices[0]?.delta as
+            | {
+                content?: string;
+                reasoning_content?: string;
+                reasoning?: string;
+              }
+            | undefined;
+          const r = delta?.reasoning_content ?? delta?.reasoning;
+          if (r) {
+            if (!thinkOpen) {
+              controller.enqueue(encoder.encode("<think>"));
+              thinkOpen = true;
+            }
+            controller.enqueue(encoder.encode(r));
           }
+          const c = delta?.content;
+          if (c) {
+            if (thinkOpen && !contentStarted) {
+              controller.enqueue(encoder.encode("</think>\n\n"));
+            }
+            contentStarted = true;
+            acc += c;
+            controller.enqueue(encoder.encode(c));
+          }
+        }
+        if (thinkOpen && !contentStarted) {
+          controller.enqueue(encoder.encode("</think>\n\n"));
         }
         // Deterministic post-check. In streaming mode this is transparency:
         // hard enforcement (rewriting/refusing) happens in blocking mode.
@@ -230,10 +254,36 @@ function streamFinal(
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
+          let thinkOpen = false;
+          let contentStarted = false;
           try {
             for await (const chunk of completion) {
-              const delta = chunk.choices[0]?.delta?.content;
-              if (delta) controller.enqueue(encoder.encode(delta));
+              const delta = chunk.choices[0]?.delta as
+                | {
+                    content?: string;
+                    reasoning_content?: string;
+                    reasoning?: string;
+                  }
+                | undefined;
+              const r = delta?.reasoning_content ?? delta?.reasoning;
+              if (r) {
+                if (!thinkOpen) {
+                  controller.enqueue(encoder.encode("<think>"));
+                  thinkOpen = true;
+                }
+                controller.enqueue(encoder.encode(r));
+              }
+              const c = delta?.content;
+              if (c) {
+                if (thinkOpen && !contentStarted) {
+                  controller.enqueue(encoder.encode("</think>\n\n"));
+                }
+                contentStarted = true;
+                controller.enqueue(encoder.encode(c));
+              }
+            }
+            if (thinkOpen && !contentStarted) {
+              controller.enqueue(encoder.encode("</think>\n\n"));
             }
           } catch (err) {
             const message =
