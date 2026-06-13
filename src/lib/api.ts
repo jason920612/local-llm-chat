@@ -172,3 +172,8 @@ export function parseCitationsHeader(header: string | null): Citation[] {
 export function parseImagesHeader(header: string | null): string[] {
   return decodeB64Json<string[]>(header, []);
 }
+
+/** Decode the base64(UTF-8 JSON) X-Videos response header (generated videos). */
+export function parseVideosHeader(header: string | null): string[] {
+  return decodeB64Json<string[]>(header, []);
+}

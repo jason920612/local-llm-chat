@@ -5,8 +5,10 @@ export interface UIMessage {
   id: string;
   role: Role;
   content: string;
-  /** Base64 data URLs for attached images (vision). */
+  /** Base64 data URLs for attached images (vision), or generated image URLs. */
   images?: string[];
+  /** Generated video URLs (Grok Imagine). */
+  videos?: string[];
   /** Citations resolved from RAG retrieval, if any. */
   citations?: Citation[];
   createdAt?: number;

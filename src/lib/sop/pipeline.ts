@@ -79,7 +79,12 @@ export async function runControlledChat(
         ? `<think>\n${result.reasoning}\n</think>\n\n`
         : "";
       const merged = [...citations, ...result.citations];
-      return textResponse(think + result.text, merged, result.images);
+      return textResponse(
+        think + result.text,
+        merged,
+        result.images,
+        result.videos,
+      );
     }
 
     // GATE 1 — intent (code short-circuit). Local models only.
@@ -548,17 +553,18 @@ function citationsHeader(citations: Citation[]): Record<string, string> {
   return { "X-Citations": Buffer.from(json, "utf-8").toString("base64") };
 }
 
-/** Base64(UTF-8 JSON) of generated image srcs, for the X-Images header. */
-function imagesHeader(images: string[]): Record<string, string> {
-  if (!images || images.length === 0) return {};
-  const json = JSON.stringify(images);
-  return { "X-Images": Buffer.from(json, "utf-8").toString("base64") };
+/** Base64(UTF-8 JSON) of media srcs, for the X-Images / X-Videos headers. */
+function mediaHeader(name: string, items: string[]): Record<string, string> {
+  if (!items || items.length === 0) return {};
+  const json = JSON.stringify(items);
+  return { [name]: Buffer.from(json, "utf-8").toString("base64") };
 }
 
 function streamResponse(
   stream: ReadableStream<Uint8Array>,
   citations: Citation[] = [],
   images: string[] = [],
+  videos: string[] = [],
 ): Response {
   return new Response(stream, {
     headers: {
@@ -566,7 +572,8 @@ function streamResponse(
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
       ...citationsHeader(citations),
-      ...imagesHeader(images),
+      ...mediaHeader("X-Images", images),
+      ...mediaHeader("X-Videos", videos),
     },
   });
 }
@@ -575,13 +582,15 @@ function textResponse(
   text: string,
   citations: Citation[] = [],
   images: string[] = [],
+  videos: string[] = [],
 ): Response {
   return new Response(text, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       ...citationsHeader(citations),
-      ...imagesHeader(images),
+      ...mediaHeader("X-Images", images),
+      ...mediaHeader("X-Videos", videos),
     },
   });
 }

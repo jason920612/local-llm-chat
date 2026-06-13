@@ -54,7 +54,8 @@ async function blobToMono16k(blob: Blob): Promise<Float32Array> {
   return rendered.getChannelData(0).slice();
 }
 
-export async function transcribe(blob: Blob): Promise<string> {
+/** In-browser Whisper transcription (offline fallback). */
+async function transcribeLocal(blob: Blob): Promise<string> {
   const audio = await blobToMono16k(blob);
   const transcriber = await getTranscriber();
   const result = await transcriber(audio, {
@@ -65,6 +66,28 @@ export async function transcribe(blob: Blob): Promise<string> {
     ? result.map((r) => r.text).join(" ")
     : result.text;
   return (text ?? "").trim();
+}
+
+/**
+ * Transcribe audio: prefer xAI cloud STT (/api/stt, fast + accurate), fall back
+ * to in-browser Whisper when the cloud is unavailable.
+ */
+export async function transcribe(blob: Blob): Promise<string> {
+  try {
+    const fd = new FormData();
+    fd.append("file", blob, "audio.webm");
+    const res = await fetch("/api/stt", { method: "POST", body: fd });
+    if (res.ok) {
+      const data = await res.json();
+      if (typeof data.text === "string" && data.text.trim()) {
+        return data.text.trim();
+      }
+      return "";
+    }
+  } catch {
+    /* fall through to local whisper */
+  }
+  return transcribeLocal(blob);
 }
 
 export function recordingSupported(): boolean {

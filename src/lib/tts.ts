@@ -1,8 +1,17 @@
 "use client";
 
-/** Text-to-speech via the browser's Web Speech API (uses offline OS voices). */
+/**
+ * Text-to-speech: prefers xAI cloud TTS (/api/tts, natural voices), falls back
+ * to the browser's offline Web Speech API if the cloud is unavailable.
+ */
+
+let currentAudio: HTMLAudioElement | null = null;
 
 export function ttsSupported(): boolean {
+  return typeof window !== "undefined";
+}
+
+function browserSupported(): boolean {
   return typeof window !== "undefined" && "speechSynthesis" in window;
 }
 
@@ -13,8 +22,11 @@ function guessLang(text: string): string {
   return typeof navigator !== "undefined" ? navigator.language : "en-US";
 }
 
-export function speak(text: string, onEnd?: () => void): void {
-  if (!ttsSupported() || !text.trim()) return;
+function browserSpeak(text: string, onEnd?: () => void): void {
+  if (!browserSupported()) {
+    onEnd?.();
+    return;
+  }
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = guessLang(text);
@@ -23,6 +35,42 @@ export function speak(text: string, onEnd?: () => void): void {
   window.speechSynthesis.speak(u);
 }
 
+export async function speak(text: string, onEnd?: () => void): Promise<void> {
+  if (!text.trim()) return;
+  stopSpeaking();
+  try {
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      currentAudio = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        if (currentAudio === audio) currentAudio = null;
+        onEnd?.();
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        onEnd?.();
+      };
+      await audio.play();
+      return;
+    }
+  } catch {
+    /* fall through to browser TTS */
+  }
+  browserSpeak(text, onEnd);
+}
+
 export function stopSpeaking(): void {
-  if (ttsSupported()) window.speechSynthesis.cancel();
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  if (browserSupported()) window.speechSynthesis.cancel();
 }

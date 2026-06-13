@@ -4,6 +4,7 @@ import type { ChatRequestBody } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // video generation polling can take minutes
 
 export async function POST(req: NextRequest) {
   let body: ChatRequestBody;

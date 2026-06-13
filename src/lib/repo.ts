@@ -15,6 +15,7 @@ interface MessageRow {
   role: string;
   content: string;
   images: string | null;
+  videos: string | null;
   citations: string | null;
   created_at: number;
 }
@@ -25,6 +26,7 @@ function rowToMessage(row: MessageRow): UIMessage {
     role: row.role as Role,
     content: row.content,
     images: row.images ? (JSON.parse(row.images) as string[]) : undefined,
+    videos: row.videos ? (JSON.parse(row.videos) as string[]) : undefined,
     citations: row.citations
       ? (JSON.parse(row.citations) as Citation[])
       : undefined,
@@ -88,14 +90,15 @@ export function addMessage(conversationId: string, m: UIMessage): void {
   // OR REPLACE so a finalized assistant message can overwrite a placeholder.
   db.prepare(
     `INSERT OR REPLACE INTO messages
-       (id, conversation_id, role, content, images, citations, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, conversation_id, role, content, images, videos, citations, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     m.id,
     conversationId,
     m.role,
     m.content,
     m.images ? JSON.stringify(m.images) : null,
+    m.videos ? JSON.stringify(m.videos) : null,
     m.citations ? JSON.stringify(m.citations) : null,
     now,
   );

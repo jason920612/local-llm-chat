@@ -30,6 +30,7 @@ function init(): Database.Database {
       role            TEXT NOT NULL,
       content         TEXT NOT NULL,
       images          TEXT,
+      videos          TEXT,
       citations       TEXT,
       created_at      INTEGER NOT NULL
     );
@@ -61,6 +62,13 @@ function init(): Database.Database {
       value TEXT NOT NULL
     );
   `);
+
+  // Migration: add `videos` to pre-existing messages tables (no-op if present).
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN videos TEXT`);
+  } catch {
+    /* column already exists */
+  }
 
   return db;
 }

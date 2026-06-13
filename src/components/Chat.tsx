@@ -2,19 +2,21 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { nanoid } from "nanoid";
-import { Bot, BookOpen, Globe } from "lucide-react";
+import { Bot, BookOpen, Globe, AudioLines } from "lucide-react";
 import type { Conversation, UIMessage } from "@/lib/types";
 import {
   createConversationApi,
   fetchConversation,
   parseCitationsHeader,
   parseImagesHeader,
+  parseVideosHeader,
   saveMessage,
 } from "@/lib/api";
 import { fileToResizedDataURL, isImageFile } from "@/lib/image";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
 import { ConnectionStatus } from "./ConnectionStatus";
+import { VoiceMode } from "./VoiceMode";
 
 export function Chat({
   conversationId,
@@ -44,6 +46,7 @@ export function Chat({
   const [attachments, setAttachments] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [voiceOpen, setVoiceOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // The conversation currently loaded into `messages`. Used to avoid reloading
@@ -154,6 +157,7 @@ export function Chat({
 
       const citations = parseCitationsHeader(res.headers.get("X-Citations"));
       const genImages = parseImagesHeader(res.headers.get("X-Images"));
+      const genVideos = parseVideosHeader(res.headers.get("X-Videos"));
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let acc = "";
@@ -173,6 +177,7 @@ export function Chat({
         content: acc,
         citations: citations.length > 0 ? citations : undefined,
         images: genImages.length > 0 ? genImages : undefined,
+        videos: genVideos.length > 0 ? genVideos : undefined,
       };
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),
@@ -231,6 +236,16 @@ export function Chat({
           <BookOpen size={13} />
           Docs{docCount > 0 ? ` (${docCount})` : ""}
         </button>
+        {grokEnabled && (
+          <button
+            onClick={() => setVoiceOpen(true)}
+            title="即時語音對話 (xAI Realtime)"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground"
+          >
+            <AudioLines size={13} />
+            Voice
+          </button>
+        )}
         <button
           onClick={onToggleGrok}
           disabled={!grokEnabled}
@@ -299,6 +314,8 @@ export function Chat({
         onAttachFiles={addAttachments}
         onRemoveAttachment={removeAttachment}
       />
+
+      <VoiceMode open={voiceOpen} onClose={() => setVoiceOpen(false)} />
     </div>
   );
 }

@@ -81,6 +81,21 @@ Enable it by setting `XAI_API_KEY` in `.env.local` (get one at
 configurable via `GROK_MODEL` (default `grok-build-0.1`). The legacy Live Search
 `search_parameters` API is retired — this uses the current Agent Tools API.
 
+### Cloud backend + xAI media
+
+In Settings you can switch the **chat backend** from local to **Grok (cloud)**.
+On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`):
+
+- **X + web search** run server-side automatically (no toggle needed).
+- **Image generation** (`generate_image` → Grok Imagine, `/v1/images/generations`)
+  and **video generation** (`generate_video` → `grok-imagine-video-1.5-preview`,
+  `/v1/videos/generations`, async) are client-side function tools — the model calls
+  them and the result is shown inline.
+- **Voice**: TTS via `/v1/tts` (natural voices) and STT via `/v1/stt` replace the
+  browser engines when a key is present (falling back to browser TTS/Whisper otherwise).
+- **Realtime voice agent**: the **Voice** button opens a speech-to-speech session
+  over WebSocket (`wss://api.x.ai/v1/realtime`) using an ephemeral token.
+
 ## Prerequisites
 
 1. **[LM Studio](https://lmstudio.ai/)** (or `llama.cpp` server).

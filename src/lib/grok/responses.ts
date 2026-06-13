@@ -2,6 +2,7 @@ import { config } from "../config";
 import type { Citation, UIMessage } from "../types";
 import { mapGrokCitations } from "./search";
 import { generateImage } from "./image";
+import { generateVideo } from "./video";
 
 /**
  * Native xAI Responses API agent (POST /v1/responses).
@@ -13,9 +14,10 @@ import { generateImage } from "./image";
  */
 
 const IMAGE_FN = "generate_image";
+const VIDEO_FN = "generate_video";
 
 // Tools sent to the Responses API. web/x search are server-side; generate_image
-// is a client-side function we execute. Note the flat function shape.
+// and generate_video are client-side functions we execute. Note the flat shape.
 const RESPONSES_TOOLS = [
   { type: "web_search" },
   { type: "x_search" },
@@ -30,6 +32,22 @@ const RESPONSES_TOOLS = [
         prompt: {
           type: "string",
           description: "A vivid, detailed English description of the image.",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    type: "function",
+    name: VIDEO_FN,
+    description:
+      "Generate a short video (~6s) from a text prompt using Grok Imagine. Use only when the user explicitly asks for a video/animation/clip. Takes a couple of minutes; the video is shown automatically.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "A vivid English description of the video and its motion.",
         },
       },
       required: ["prompt"],
@@ -53,6 +71,7 @@ export interface GrokResponseResult {
   reasoning: string;
   citations: Citation[];
   images: string[];
+  videos: string[];
 }
 
 /** Map our chat messages into Responses API `input` items. */
@@ -127,6 +146,7 @@ export async function runGrokResponses(
   messages: UIMessage[],
 ): Promise<GrokResponseResult> {
   const images: string[] = [];
+  const videos: string[] = [];
 
   let resp = await postResponses({
     model: config.grok.model,
@@ -143,19 +163,28 @@ export async function runGrokResponses(
     const toolOutputs: unknown[] = [];
     for (const call of calls) {
       let out = "";
+      let prompt = "";
+      try {
+        prompt = JSON.parse(call.arguments || "{}").prompt ?? "";
+      } catch {
+        /* ignore */
+      }
+
       if (call.name === IMAGE_FN) {
         try {
-          let prompt = "";
-          try {
-            prompt = JSON.parse(call.arguments || "{}").prompt ?? "";
-          } catch {
-            /* ignore */
-          }
-          const src = await generateImage(prompt);
-          images.push(src);
+          images.push(await generateImage(prompt));
           out = "Image generated and shown to the user. Briefly confirm it.";
         } catch (err) {
           out = `generate_image failed: ${
+            err instanceof Error ? err.message : "error"
+          }`;
+        }
+      } else if (call.name === VIDEO_FN) {
+        try {
+          videos.push(await generateVideo(prompt));
+          out = "Video generated and shown to the user. Briefly confirm it.";
+        } catch (err) {
+          out = `generate_video failed: ${
             err instanceof Error ? err.message : "error"
           }`;
         }
@@ -184,5 +213,6 @@ export async function runGrokResponses(
     reasoning: extractReasoning(output),
     citations: mapGrokCitations(rawCitations, 0),
     images,
+    videos,
   };
 }

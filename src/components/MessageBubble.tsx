@@ -71,7 +71,20 @@ export function MessageBubble({
                 key={i}
                 src={src}
                 alt={`attachment ${i + 1}`}
-                className="max-h-48 rounded-lg border border-border object-contain"
+                className="max-h-64 rounded-lg border border-border object-contain"
+              />
+            ))}
+          </div>
+        )}
+
+        {message.videos && message.videos.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {message.videos.map((src, i) => (
+              <video
+                key={i}
+                src={src}
+                controls
+                className="max-h-72 rounded-lg border border-border"
               />
             ))}
           </div>
