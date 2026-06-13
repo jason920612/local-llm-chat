@@ -315,6 +315,66 @@ function emptyResult(extra: Partial<RunResult>): RunResult {
   };
 }
 
+/** Map a MIME type to a file extension. */
+function extFromMime(mime: string): string {
+  const m = mime.toLowerCase();
+  if (m.includes("jpeg") || m.includes("jpg")) return "jpg";
+  if (m.includes("png")) return "png";
+  if (m.includes("webp")) return "webp";
+  if (m.includes("gif")) return "gif";
+  if (m.includes("mp4")) return "mp4";
+  if (m.includes("webm")) return "webm";
+  if (m.includes("quicktime")) return "mov";
+  return "";
+}
+
+/** Best-effort extension from a URL path (ignores query string). */
+function extFromUrl(url: string): string {
+  const m = url.split(/[?#]/)[0].match(/\.([a-z0-9]{2,4})$/i);
+  return m ? m[1].toLowerCase() : "";
+}
+
+/**
+ * Save a generated media item (http(s) URL or data: URI) into a conversation's
+ * sandbox workspace, so it shows up in the file explorer, downloads, and is usable
+ * by run_code. Returns the file meta, or null on failure. `baseName` has no ext.
+ */
+export async function saveMediaToSandbox(
+  conversationId: string,
+  src: string,
+  baseName: string,
+  fallbackExt = "bin",
+): Promise<SandboxFile | null> {
+  try {
+    let buffer: Buffer;
+    let ext = "";
+    if (src.startsWith("data:")) {
+      const m = src.match(/^data:([^;,]*)(;base64)?,(.*)$/s);
+      if (!m) return null;
+      buffer = Buffer.from(m[3], m[2] ? "base64" : "utf-8");
+      ext = extFromMime(m[1] || "");
+    } else {
+      const res = await fetch(src);
+      if (!res.ok) return null;
+      buffer = Buffer.from(await res.arrayBuffer());
+      ext = extFromMime(res.headers.get("content-type") || "") || extFromUrl(src);
+    }
+    if (!ext) ext = fallbackExt;
+
+    const dir = workspaceDir(conversationId);
+    fs.mkdirSync(dir, { recursive: true });
+    let name = `${baseName}.${ext}`;
+    let i = 1;
+    while (fs.existsSync(path.join(dir, name))) name = `${baseName}_${i++}.${ext}`;
+    const target = path.join(dir, name);
+    if (!path.resolve(target).startsWith(path.resolve(dir))) return null;
+    fs.writeFileSync(target, buffer);
+    return { name, size: buffer.length, isText: false };
+  } catch {
+    return null;
+  }
+}
+
 /** Write uploaded files into a conversation's sandbox workspace. */
 export function writeSandboxFiles(
   conversationId: string,

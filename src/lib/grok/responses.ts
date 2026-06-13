@@ -3,7 +3,7 @@ import type { Citation, UIMessage, SandboxFileMeta } from "../types";
 import { mapGrokCitations } from "./search";
 import { generateImage } from "./image";
 import { generateVideo } from "./video";
-import { runCode, cloneRepo } from "../sandbox/run";
+import { runCode, cloneRepo, saveMediaToSandbox } from "../sandbox/run";
 import { getSkill } from "../skills";
 
 /**
@@ -380,9 +380,23 @@ export function streamGrokResponses(
             if (c.name === IMAGE_FN) {
               emitTool("generate_image", { prompt: args.prompt ?? "" });
               try {
-                images.push(await generateImage(args.prompt ?? ""));
+                const src = await generateImage(args.prompt ?? "");
+                images.push(src);
                 const n = images.length;
-                out = `Image #${n} generated. Place it inline by writing the marker [[image:${n}]] at the exact point in your reply where it should appear (omit it to append at the end).`;
+                // Also persist a copy into the conversation sandbox so it shows up
+                // in the file explorer / is usable by run_code.
+                const saved = await saveMediaToSandbox(
+                  conversationId,
+                  src,
+                  `image_${n}`,
+                  "jpg",
+                );
+                if (saved && !files.some((x) => x.name === saved.name)) {
+                  files.push(saved);
+                }
+                out = `Image #${n} generated. Place it inline by writing the marker [[image:${n}]] at the exact point in your reply where it should appear (omit it to append at the end).${
+                  saved ? ` Saved to the sandbox as ${saved.name}.` : ""
+                }`;
               } catch (err) {
                 out = `generate_image failed: ${
                   err instanceof Error ? err.message : "error"
@@ -391,9 +405,21 @@ export function streamGrokResponses(
             } else if (c.name === VIDEO_FN) {
               emitTool("generate_video", { prompt: args.prompt ?? "" });
               try {
-                videos.push(await generateVideo(args.prompt ?? ""));
+                const src = await generateVideo(args.prompt ?? "");
+                videos.push(src);
                 const n = videos.length;
-                out = `Video #${n} generated. Place it inline by writing the marker [[video:${n}]] where it should appear in your reply (omit it to append at the end).`;
+                const saved = await saveMediaToSandbox(
+                  conversationId,
+                  src,
+                  `video_${n}`,
+                  "mp4",
+                );
+                if (saved && !files.some((x) => x.name === saved.name)) {
+                  files.push(saved);
+                }
+                out = `Video #${n} generated. Place it inline by writing the marker [[video:${n}]] where it should appear in your reply (omit it to append at the end).${
+                  saved ? ` Saved to the sandbox as ${saved.name}.` : ""
+                }`;
               } catch (err) {
                 out = `generate_video failed: ${
                   err instanceof Error ? err.message : "error"
