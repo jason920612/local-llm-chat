@@ -38,6 +38,7 @@ export function MessageBubble({
   );
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [lightbox, setLightbox] = useState<string | null>(null);
 
   useEffect(() => setCanTts(ttsSupported()), []);
   useEffect(() => () => stopSpeaking(), []);
@@ -131,7 +132,8 @@ export function MessageBubble({
                 key={i}
                 src={src}
                 alt={`attachment ${i + 1}`}
-                className="max-h-64 rounded-lg border border-border object-contain"
+                onClick={() => setLightbox(src)}
+                className="max-h-64 cursor-zoom-in rounded-lg border border-border object-contain transition hover:opacity-90"
               />
             ))}
           </div>
@@ -217,6 +219,27 @@ export function MessageBubble({
           </div>
         )}
       </div>
+
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6"
+          onClick={() => setLightbox(null)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={lightbox}
+            alt="preview"
+            className="max-h-full max-w-full rounded-lg object-contain"
+          />
+          <button
+            onClick={() => setLightbox(null)}
+            className="absolute right-4 top-4 text-white/80 hover:text-white"
+            title="關閉"
+          >
+            <X size={24} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

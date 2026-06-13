@@ -102,18 +102,34 @@ async function transcribeLocal(blob: Blob): Promise<string> {
  * to the cloud. If no API key is configured (503), fall back to in-browser
  * Whisper. Other failures throw so the UI can show them.
  */
+function extFor(type: string): string {
+  if (type.includes("ogg")) return "audio.ogg";
+  if (type.includes("mp4") || type.includes("m4a")) return "audio.mp4";
+  if (type.includes("mpeg") || type.includes("mp3")) return "audio.mp3";
+  if (type.includes("wav")) return "audio.wav";
+  return "audio.webm";
+}
+
 export async function transcribe(blob: Blob): Promise<string> {
-  // Decode + resample to 16kHz mono WAV — webm/opus is not reliably accepted.
-  let wav: Blob;
+  // Convert to 16kHz mono WAV (reliably accepted). If decoding fails, send the
+  // original blob with a CORRECT extension (never mislabel webm as wav).
+  let file: Blob;
+  let name: string;
   try {
     const samples = await blobToMono16k(blob);
-    wav = encodeWav(samples, 16000);
-  } catch {
-    wav = blob; // send as-is if decoding fails
+    if (samples.length < 1600) {
+      throw new Error("錄音太短或沒有聲音"); // < 0.1s of 16k audio
+    }
+    file = encodeWav(samples, 16000);
+    name = "audio.wav";
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("錄音太短")) throw e;
+    file = blob;
+    name = extFor(blob.type);
   }
 
   const fd = new FormData();
-  fd.append("file", wav, "audio.wav");
+  fd.append("file", file, name);
   const res = await fetch("/api/stt", { method: "POST", body: fd });
 
   if (res.status === 503) return transcribeLocal(blob); // no key → offline whisper
