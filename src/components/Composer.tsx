@@ -1,8 +1,9 @@
 "use client";
 
 import { useRef, useEffect, useState } from "react";
-import { Send, Square, ImagePlus, X, Mic, Loader2 } from "lucide-react";
+import { Send, Square, Paperclip, X, Mic, Loader2, FileUp } from "lucide-react";
 import { recordingSupported, transcribe } from "@/lib/speech";
+import type { SandboxFileMeta } from "@/lib/types";
 
 export function Composer({
   value,
@@ -12,8 +13,10 @@ export function Composer({
   streaming,
   disabled,
   attachments,
-  onAttachFiles,
+  onFiles,
   onRemoveAttachment,
+  sandboxFiles,
+  onRemoveSandboxFile,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -22,8 +25,10 @@ export function Composer({
   streaming: boolean;
   disabled?: boolean;
   attachments: string[];
-  onAttachFiles: (files: File[]) => void;
+  onFiles: (files: File[]) => void;
   onRemoveAttachment: (index: number) => void;
+  sandboxFiles: SandboxFileMeta[];
+  onRemoveSandboxFile: (name: string) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -102,18 +107,16 @@ export function Composer({
   }
 
   function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const files = Array.from(e.clipboardData.files).filter((f) =>
-      f.type.startsWith("image/"),
-    );
+    const files = Array.from(e.clipboardData.files);
     if (files.length > 0) {
       e.preventDefault();
-      onAttachFiles(files);
+      onFiles(files);
     }
   }
 
   function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
-    if (files.length) onAttachFiles(files);
+    if (files.length) onFiles(files);
     e.target.value = "";
   }
 
@@ -142,19 +145,41 @@ export function Composer({
           </div>
         )}
 
+        {sandboxFiles.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {sandboxFiles.map((f) => (
+              <span
+                key={f.name}
+                className="flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-xs"
+              >
+                <FileUp size={12} className="text-accent" />
+                <span className="max-w-[160px] truncate font-mono">
+                  {f.name}
+                </span>
+                <button
+                  onClick={() => onRemoveSandboxFile(f.name)}
+                  className="text-muted hover:text-red-400"
+                  title="Remove"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-end gap-2">
           <button
             onClick={() => fileRef.current?.click()}
             disabled={disabled || streaming}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-muted hover:bg-surface hover:text-foreground disabled:opacity-40"
-            title="Attach image"
+            title="附加檔案（圖片或資料檔）"
           >
-            <ImagePlus size={18} />
+            <Paperclip size={18} />
           </button>
           <input
             ref={fileRef}
             type="file"
-            accept="image/*"
             multiple
             hidden
             onChange={handleFileInput}

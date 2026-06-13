@@ -194,6 +194,32 @@ function emptyResult(extra: Partial<RunResult>): RunResult {
   };
 }
 
+/** Write uploaded files into a conversation's sandbox workspace. */
+export function writeSandboxFiles(
+  conversationId: string,
+  files: { name: string; buffer: Buffer }[],
+): SandboxFile[] {
+  cleanupOld();
+  const dir = workspaceDir(conversationId);
+  fs.mkdirSync(dir, { recursive: true });
+  const out: SandboxFile[] = [];
+  for (const f of files) {
+    const base = (f.name.split(/[\\/]/).pop() || "file").replace(
+      /[^A-Za-z0-9._-]/g,
+      "_",
+    );
+    const target = path.join(dir, base);
+    if (!path.resolve(target).startsWith(path.resolve(dir))) continue;
+    fs.writeFileSync(target, f.buffer);
+    out.push({
+      name: base,
+      size: f.buffer.length,
+      isText: looksTextual(target),
+    });
+  }
+  return out;
+}
+
 /** Read a file from a conversation's sandbox (with path-traversal guard). */
 export function readSandboxFile(
   conversationId: string,

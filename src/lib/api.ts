@@ -69,6 +69,24 @@ export async function truncateAfter(
   });
 }
 
+export async function uploadSandboxFiles(
+  conversationId: string,
+  files: File[],
+): Promise<SandboxFileMeta[]> {
+  const form = new FormData();
+  files.forEach((f) => form.append("files", f));
+  const res = await fetch(`/api/sandbox/${conversationId}/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "upload failed");
+  }
+  const data = await res.json();
+  return (data.files ?? []) as SandboxFileMeta[];
+}
+
 export async function forkConversationApi(
   conversationId: string,
   messageId: string,

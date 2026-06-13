@@ -104,6 +104,10 @@ On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`
 Code blocks have syntax highlighting, a copy button, and auto-collapse when long;
 images open in a lightbox.
 
+**File upload & drag-and-drop:** attach files with the paperclip or drag them onto
+the chat. Images become vision attachments; other files upload into the
+conversation's sandbox workspace so `run_code` can read/process them.
+
 ## Prerequisites
 
 1. **[LM Studio](https://lmstudio.ai/)** (or `llama.cpp` server).
