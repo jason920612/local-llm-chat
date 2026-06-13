@@ -63,9 +63,14 @@ function init(): Database.Database {
     );
   `);
 
-  // Migration: add `videos` to pre-existing messages tables (no-op if present).
+  // Migrations: add columns to pre-existing messages tables (no-op if present).
   try {
     db.exec(`ALTER TABLE messages ADD COLUMN videos TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN files TEXT`);
   } catch {
     /* column already exists */
   }

@@ -166,6 +166,7 @@ export function Chat({
             genVideos.length || media.videos.length
               ? [...genVideos, ...media.videos]
               : undefined,
+          files: media.files.length > 0 ? media.files : undefined,
         };
         setMessages((prev) =>
           prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),
@@ -340,6 +341,7 @@ export function Chat({
                 canEdit={!streaming}
                 onEdit={editMessage}
                 onFork={forkAt}
+                conversationId={conversationId}
               />
             ))}
           </div>

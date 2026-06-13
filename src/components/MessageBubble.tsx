@@ -11,6 +11,7 @@ import {
   GitBranch,
   Check,
   X,
+  FileCode,
 } from "lucide-react";
 import type { UIMessage } from "@/lib/types";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
@@ -24,12 +25,14 @@ export function MessageBubble({
   canEdit,
   onEdit,
   onFork,
+  conversationId,
 }: {
   message: UIMessage;
   streaming?: boolean;
   canEdit?: boolean;
   onEdit?: (id: string, newText: string) => void;
   onFork?: (id: string) => void;
+  conversationId?: string | null;
 }) {
   const isUser = message.role === "user";
   const [canTts, setCanTts] = useState(false);
@@ -39,6 +42,27 @@ export function MessageBubble({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<{ name: string; content: string } | null>(
+    null,
+  );
+
+  async function openFile(name: string) {
+    if (!conversationId) return;
+    try {
+      const res = await fetch(
+        `/api/sandbox/${conversationId}/file?name=${encodeURIComponent(name)}`,
+      );
+      const content = await res.text();
+      setViewer({ name, content });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function fileExt(name: string): string {
+    const m = name.match(/\.([a-z0-9]+)$/i);
+    return m ? m[1].toLowerCase() : "";
+  }
 
   useEffect(() => setCanTts(ttsSupported()), []);
   useEffect(() => () => stopSpeaking(), []);
@@ -152,6 +176,41 @@ export function MessageBubble({
           </div>
         )}
 
+        {message.files && message.files.length > 0 && conversationId && (
+          <div className="mb-2 space-y-1">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted">
+              Files
+            </div>
+            {message.files.map((f) => (
+              <div
+                key={f.name}
+                className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs"
+              >
+                <FileCode size={14} className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate font-mono">
+                  {f.name}
+                </span>
+                <span className="shrink-0 text-muted">{f.size}B</span>
+                {f.isText ? (
+                  <button
+                    onClick={() => openFile(f.name)}
+                    className="shrink-0 text-accent hover:text-foreground"
+                  >
+                    檢視
+                  </button>
+                ) : (
+                  <a
+                    href={`/api/sandbox/${conversationId}/file?name=${encodeURIComponent(f.name)}&download=1`}
+                    className="shrink-0 text-accent hover:text-foreground"
+                  >
+                    下載
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {editing ? (
           <div>
             <textarea
@@ -238,6 +297,37 @@ export function MessageBubble({
           >
             <X size={24} />
           </button>
+        </div>
+      )}
+
+      {viewer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          onClick={() => setViewer(null)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-surface"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border px-4 py-2">
+              <span className="truncate font-mono text-xs">{viewer.name}</span>
+              <button
+                onClick={() => setViewer(null)}
+                className="text-muted hover:text-foreground"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-3">
+              <Markdown>
+                {"```" +
+                  fileExt(viewer.name) +
+                  "\n" +
+                  viewer.content +
+                  "\n```"}
+              </Markdown>
+            </div>
+          </div>
         </div>
       )}
     </div>

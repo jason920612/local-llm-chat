@@ -73,7 +73,8 @@ const NATIVE_GROK_DIRECTIVE = `
 
 # CAPABILITIES
 - You can search X (Twitter) and the web automatically when a question needs real-time or external information — just use it when relevant, and cite sources with [n].
-- You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.`;
+- You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.
+- You may also have a "run_code" tool (bash/python) running in a per-conversation sandbox. Use it to compute, test code, or process data. Files you write to the working directory are shown to the user automatically.`;
 
 /** Build the full system prompt for the current turn. */
 export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {

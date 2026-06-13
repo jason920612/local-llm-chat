@@ -1,12 +1,14 @@
 import { nanoid } from "nanoid";
 import { db } from "./db";
 import { vectorToBlob, blobToVector } from "./embeddings";
+import { deleteSandbox } from "./sandbox/run";
 import type {
   Conversation,
   UIMessage,
   Role,
   Citation,
   RagDocument,
+  SandboxFileMeta,
 } from "./types";
 
 interface MessageRow {
@@ -16,6 +18,7 @@ interface MessageRow {
   content: string;
   images: string | null;
   videos: string | null;
+  files: string | null;
   citations: string | null;
   created_at: number;
 }
@@ -27,6 +30,9 @@ function rowToMessage(row: MessageRow): UIMessage {
     content: row.content,
     images: row.images ? (JSON.parse(row.images) as string[]) : undefined,
     videos: row.videos ? (JSON.parse(row.videos) as string[]) : undefined,
+    files: row.files
+      ? (JSON.parse(row.files) as SandboxFileMeta[])
+      : undefined,
     citations: row.citations
       ? (JSON.parse(row.citations) as Citation[])
       : undefined,
@@ -125,6 +131,7 @@ export function renameConversation(id: string, title: string): void {
 
 export function deleteConversation(id: string): void {
   db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
+  deleteSandbox(id); // remove any code-execution workspace for this conversation
 }
 
 export function addMessage(conversationId: string, m: UIMessage): void {
@@ -132,8 +139,8 @@ export function addMessage(conversationId: string, m: UIMessage): void {
   // OR REPLACE so a finalized assistant message can overwrite a placeholder.
   db.prepare(
     `INSERT OR REPLACE INTO messages
-       (id, conversation_id, role, content, images, videos, citations, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, conversation_id, role, content, images, videos, files, citations, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     m.id,
     conversationId,
@@ -141,6 +148,7 @@ export function addMessage(conversationId: string, m: UIMessage): void {
     m.content,
     m.images ? JSON.stringify(m.images) : null,
     m.videos ? JSON.stringify(m.videos) : null,
+    m.files ? JSON.stringify(m.files) : null,
     m.citations ? JSON.stringify(m.citations) : null,
     now,
   );

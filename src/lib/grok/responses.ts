@@ -1,8 +1,9 @@
-import { config } from "../config";
-import type { Citation, UIMessage } from "../types";
+﻿import { config } from "../config";
+import type { Citation, UIMessage, SandboxFileMeta } from "../types";
 import { mapGrokCitations } from "./search";
 import { generateImage } from "./image";
 import { generateVideo } from "./video";
+import { runCode } from "../sandbox/run";
 
 /**
  * Native xAI Responses API agent (POST /v1/responses).
@@ -15,10 +16,9 @@ import { generateVideo } from "./video";
 
 const IMAGE_FN = "generate_image";
 const VIDEO_FN = "generate_video";
+const CODE_FN = "run_code";
 
-// Tools sent to the Responses API. web/x search are server-side; generate_image
-// and generate_video are client-side functions we execute. Note the flat shape.
-const RESPONSES_TOOLS = [
+const BASE_TOOLS = [
   { type: "web_search" },
   { type: "x_search" },
   {
@@ -54,6 +54,26 @@ const RESPONSES_TOOLS = [
     },
   },
 ];
+
+const RUN_CODE_TOOL = {
+  type: "function",
+  name: CODE_FN,
+  description:
+    "Execute bash or python code in a per-conversation sandbox workspace and get stdout/stderr back. Use it to compute, test code, or process data. Files you create in the working directory are shown to the user. State persists within the conversation.",
+  parameters: {
+    type: "object",
+    properties: {
+      language: { type: "string", enum: ["bash", "python"] },
+      code: { type: "string", description: "The code to execute." },
+    },
+    required: ["language", "code"],
+  },
+};
+
+/** Tools sent to the Responses API (run_code only when the sandbox is enabled). */
+function toolset() {
+  return config.sandbox.enabled ? [...BASE_TOOLS, RUN_CODE_TOOL] : BASE_TOOLS;
+}
 
 interface OutItem {
   type?: string;
@@ -165,6 +185,7 @@ export function streamGrokResponses(
   instructions: string,
   messages: UIMessage[],
   baseCitations: Citation[] = [],
+  conversationId = "default",
 ): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
   return new ReadableStream<Uint8Array>({
@@ -172,6 +193,7 @@ export function streamGrokResponses(
       const enq = (s: string) => controller.enqueue(enc.encode(s));
       const images: string[] = [];
       const videos: string[] = [];
+      const files: SandboxFileMeta[] = [];
       let citations: Citation[] = [...baseCitations];
       let thinkOpen = false;
       let contentStarted = false;
@@ -180,7 +202,7 @@ export function streamGrokResponses(
         model: config.grok.model,
         instructions,
         input: toInput(messages),
-        tools: RESPONSES_TOOLS,
+        tools: toolset(),
         stream: true,
       };
 
@@ -250,16 +272,16 @@ export function streamGrokResponses(
 
           const outputs: unknown[] = [];
           for (const c of calls) {
-            let prompt = "";
+            let args: { prompt?: string; language?: string; code?: string } = {};
             try {
-              prompt = JSON.parse(c.args || "{}").prompt ?? "";
+              args = JSON.parse(c.args || "{}");
             } catch {
               /* ignore */
             }
             let out: string;
             if (c.name === IMAGE_FN) {
               try {
-                images.push(await generateImage(prompt));
+                images.push(await generateImage(args.prompt ?? ""));
                 out = "Image generated and shown. Briefly confirm it.";
               } catch (err) {
                 out = `generate_image failed: ${
@@ -268,13 +290,31 @@ export function streamGrokResponses(
               }
             } else if (c.name === VIDEO_FN) {
               try {
-                videos.push(await generateVideo(prompt));
+                videos.push(await generateVideo(args.prompt ?? ""));
                 out = "Video generated and shown. Briefly confirm it.";
               } catch (err) {
                 out = `generate_video failed: ${
                   err instanceof Error ? err.message : "error"
                 }`;
               }
+            } else if (c.name === CODE_FN) {
+              const lang = args.language === "bash" ? "bash" : "python";
+              const r = await runCode(conversationId, lang, args.code ?? "");
+              for (const f of r.files) {
+                if (!files.some((x) => x.name === f.name)) files.push(f);
+              }
+              out = r.error
+                ? `error: ${r.error}`
+                : [
+                    `exit_code: ${r.exitCode}${r.timedOut ? " (timed out)" : ""}`,
+                    r.stdout ? `stdout:\n${r.stdout}` : "stdout: (empty)",
+                    r.stderr ? `stderr:\n${r.stderr}` : "",
+                    r.files.length
+                      ? `files: ${r.files.map((f) => f.name).join(", ")}`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join("\n");
             } else {
               out = `Unknown tool: ${c.name}`;
             }
@@ -287,7 +327,7 @@ export function streamGrokResponses(
 
           body = {
             model: config.grok.model,
-            tools: RESPONSES_TOOLS,
+            tools: toolset(),
             input: outputs,
             previous_response_id: respId,
             stream: true,
@@ -296,9 +336,14 @@ export function streamGrokResponses(
 
         if (thinkOpen && !contentStarted) enq("</think>\n\n");
 
-        if (citations.length || images.length || videos.length) {
+        if (
+          citations.length ||
+          images.length ||
+          videos.length ||
+          files.length
+        ) {
           const meta = Buffer.from(
-            JSON.stringify({ citations, images, videos }),
+            JSON.stringify({ citations, images, videos, files }),
             "utf-8",
           ).toString("base64");
           enq(`\n${MEDIA_MARKER}${meta}`);
@@ -347,7 +392,7 @@ export async function runGrokResponses(
     model: config.grok.model,
     instructions,
     input: toInput(messages),
-    tools: RESPONSES_TOOLS,
+    tools: toolset(),
   });
 
   for (let round = 0; round < config.grok.maxRounds; round++) {
@@ -395,7 +440,7 @@ export async function runGrokResponses(
 
     resp = await postResponses({
       model: config.grok.model,
-      tools: RESPONSES_TOOLS,
+      tools: toolset(),
       input: toolOutputs,
       previous_response_id: resp.id,
     });
@@ -411,3 +456,4 @@ export async function runGrokResponses(
     videos,
   };
 }
+

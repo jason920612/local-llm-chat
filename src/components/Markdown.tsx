@@ -6,18 +6,36 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 
-/** A code block that auto-collapses when it's tall, with an expand toggle. */
+/** A code block with a copy button that auto-collapses when it's tall. */
 function CodeBlock({ children }: { children?: React.ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
   const [collapsed, setCollapsed] = useState(true);
   const [overflows, setOverflows] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (ref.current) setOverflows(ref.current.scrollHeight > 380);
   }, [children]);
 
+  const copy = async () => {
+    const text = ref.current?.textContent ?? "";
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+
   return (
     <div className="group/code relative">
+      <button
+        onClick={copy}
+        className="absolute right-2 top-2 z-10 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px] text-muted opacity-0 transition hover:text-foreground group-hover/code:opacity-100"
+      >
+        {copied ? "已複製" : "複製"}
+      </button>
       <pre
         ref={ref}
         className={

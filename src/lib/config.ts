@@ -34,6 +34,18 @@ export const config = {
     maxRounds: 3, // max tool-call rounds per turn
   },
   /**
+   * Code execution sandbox. Runs model-written bash/python in a per-conversation
+   * working dir, with a timeout, and auto-deletes old workspaces. NOTE: this runs
+   * real code on this machine with the server's permissions — it is workspace
+   * isolation + TTL, NOT a security boundary. Off by default.
+   */
+  sandbox: {
+    enabled: envBool("SANDBOX_ENABLED", false),
+    timeoutMs: 30000,
+    ttlMs: 2 * 60 * 60 * 1000, // delete workspaces older than 2 hours
+    maxOutputChars: 20000,
+  },
+  /**
    * SOP control layer. The SOP is enforced in CODE, not by trusting the prompt.
    * These flags toggle the code-controlled gates around every chat turn.
    */

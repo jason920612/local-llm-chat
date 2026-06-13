@@ -1,4 +1,10 @@
-import type { Citation, Conversation, RagDocument, UIMessage } from "./types";
+import type {
+  Citation,
+  Conversation,
+  RagDocument,
+  SandboxFileMeta,
+  UIMessage,
+} from "./types";
 
 export async function fetchConversations(): Promise<Conversation[]> {
   const res = await fetch("/api/conversations");
@@ -210,22 +216,26 @@ export interface StreamMedia {
   citations: Citation[];
   images: string[];
   videos: string[];
+  files: SandboxFileMeta[];
 }
 
 /** Split a streamed body into answer text and trailing media metadata. */
 export function parseMediaSentinel(full: string): StreamMedia {
   const idx = full.indexOf(MEDIA_MARKER);
-  if (idx < 0) return { text: full, citations: [], images: [], videos: [] };
+  if (idx < 0)
+    return { text: full, citations: [], images: [], videos: [], files: [] };
   const text = full.slice(0, idx).replace(/\s+$/, "");
   const media = decodeB64Json<{
     citations?: Citation[];
     images?: string[];
     videos?: string[];
+    files?: SandboxFileMeta[];
   }>(full.slice(idx + MEDIA_MARKER.length), {});
   return {
     text,
     citations: media.citations ?? [],
     images: media.images ?? [],
     videos: media.videos ?? [],
+    files: media.files ?? [],
   };
 }

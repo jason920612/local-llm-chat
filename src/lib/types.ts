@@ -9,9 +9,17 @@ export interface UIMessage {
   images?: string[];
   /** Generated video URLs (Grok Imagine). */
   videos?: string[];
+  /** Files produced in the conversation sandbox by code execution. */
+  files?: SandboxFileMeta[];
   /** Citations resolved from RAG retrieval, if any. */
   citations?: Citation[];
   createdAt?: number;
+}
+
+export interface SandboxFileMeta {
+  name: string;
+  size: number;
+  isText: boolean;
 }
 
 export interface Citation {

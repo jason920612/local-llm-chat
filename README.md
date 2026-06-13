@@ -95,6 +95,14 @@ On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`
   browser engines when a key is present (falling back to browser TTS/Whisper otherwise).
 - **Realtime voice agent**: the **Voice** button opens a speech-to-speech session
   over WebSocket (`wss://api.x.ai/v1/realtime`) using an ephemeral token.
+- **Code sandbox** (`run_code`, opt-in via `SANDBOX_ENABLED`): the model runs
+  bash/python in a per-conversation workspace (timeout + auto-cleanup), and files
+  it creates appear in the chat — text files open in a viewer, others download.
+  ⚠️ This runs real code on the host with the server's permissions; it is workspace
+  isolation, **not** a security boundary. Enable only if you trust the model.
+
+Code blocks have syntax highlighting, a copy button, and auto-collapse when long;
+images open in a lightbox.
 
 ## Prerequisites
 

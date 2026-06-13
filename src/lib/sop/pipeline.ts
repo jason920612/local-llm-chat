@@ -76,7 +76,12 @@ export async function runControlledChat(
       });
       // Streamed: text tokens, then a trailing media marker with
       // citations/images/videos (parsed by the client).
-      const stream = streamGrokResponses(systemPrompt, messages, citations);
+      const stream = streamGrokResponses(
+        systemPrompt,
+        messages,
+        citations,
+        body.conversationId,
+      );
       return streamResponse(stream);
     }
 
