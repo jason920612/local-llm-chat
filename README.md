@@ -103,7 +103,7 @@ data/                SQLite DB + uploaded files (git-ignored)
 - [x] Phase 3 — image / vision input
 - [x] Phase 4 — RAG (document upload + retrieval + citations)
 - [x] Phase 5 — voice in (Whisper) / out (TTS)
-- [ ] Phase 6 — settings & polish
+- [x] Phase 6 — settings, health check & polish
 
 ## License
 

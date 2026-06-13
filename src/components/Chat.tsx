@@ -13,6 +13,7 @@ import {
 import { fileToResizedDataURL, isImageFile } from "@/lib/image";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
+import { ConnectionStatus } from "./ConnectionStatus";
 
 export function Chat({
   conversationId,
@@ -201,6 +202,7 @@ export function Chat({
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted">
           {title ?? "New chat"}
         </span>
+        <ConnectionStatus />
         <button
           onClick={onToggleRag}
           disabled={docCount === 0}

@@ -7,6 +7,7 @@ import {
   Pencil,
   Bot,
   Library,
+  Settings,
 } from "lucide-react";
 import type { Conversation } from "@/lib/types";
 
@@ -19,6 +20,7 @@ export function Sidebar({
   onRename,
   onDelete,
   onOpenDocs,
+  onOpenSettings,
 }: {
   conversations: Conversation[];
   activeId: string | null;
@@ -28,6 +30,7 @@ export function Sidebar({
   onRename: (id: string, current: string) => void;
   onDelete: (id: string) => void;
   onOpenDocs: () => void;
+  onOpenSettings: () => void;
 }) {
   return (
     <aside className="flex h-screen w-64 shrink-0 flex-col border-r border-border bg-surface">
@@ -101,6 +104,13 @@ export function Sidebar({
               {docCount}
             </span>
           )}
+        </button>
+        <button
+          onClick={onOpenSettings}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted hover:bg-surface-2 hover:text-foreground"
+        >
+          <Settings size={15} />
+          <span className="flex-1 text-left">Settings</span>
         </button>
         <div className="px-3 pt-1 text-[11px] text-muted">
           Private · runs on your machine

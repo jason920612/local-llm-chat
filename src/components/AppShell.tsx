@@ -11,6 +11,7 @@ import {
 import { Sidebar } from "./Sidebar";
 import { Chat } from "./Chat";
 import { DocumentsModal } from "./DocumentsModal";
+import { SettingsModal } from "./SettingsModal";
 
 export function AppShell() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -18,6 +19,7 @@ export function AppShell() {
   const [documents, setDocuments] = useState<RagDocument[]>([]);
   const [useRag, setUseRag] = useState(false);
   const [docsOpen, setDocsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -84,6 +86,7 @@ export function AppShell() {
         onRename={handleRename}
         onDelete={handleDelete}
         onOpenDocs={() => setDocsOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <Chat
         conversationId={activeId}
@@ -99,6 +102,10 @@ export function AppShell() {
         onClose={() => setDocsOpen(false)}
         documents={documents}
         onChanged={refreshDocuments}
+      />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
       />
     </div>
   );

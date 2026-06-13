@@ -77,6 +77,47 @@ export async function deleteDocumentApi(id: string): Promise<void> {
   await fetch(`/api/documents/${id}`, { method: "DELETE" });
 }
 
+// --- Health & config -------------------------------------------------------
+
+export interface HealthStatus {
+  ok: boolean;
+  models?: string[];
+  chatModel?: string;
+  embeddingModel?: string;
+  chatLoaded?: boolean;
+  embedLoaded?: boolean;
+  error?: string;
+  baseURL?: string;
+}
+
+export async function fetchHealth(): Promise<HealthStatus> {
+  try {
+    const res = await fetch("/api/health");
+    return res.json();
+  } catch {
+    return { ok: false, error: "network error" };
+  }
+}
+
+export interface AppConfig {
+  baseURL: string;
+  chatModel: string;
+  embeddingModel: string;
+  rag: { chunkSize: number; chunkOverlap: number; topK: number };
+  sop: {
+    intentGate: boolean;
+    verifyGate: boolean;
+    blocking: boolean;
+    maxStructuredRetries: number;
+  };
+}
+
+export async function fetchAppConfig(): Promise<AppConfig> {
+  const res = await fetch("/api/config");
+  if (!res.ok) throw new Error("Failed to load config");
+  return res.json();
+}
+
 /** Decode the base64(UTF-8 JSON) X-Citations response header. */
 export function parseCitationsHeader(header: string | null): Citation[] {
   if (!header) return [];
