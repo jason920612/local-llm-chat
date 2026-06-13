@@ -1,4 +1,5 @@
 import { config } from "../config";
+import { generateImage } from "./image";
 
 const VIDEO_MODEL = "grok-imagine-video-1.5-preview";
 const POLL_INTERVAL_MS = 5000;
@@ -20,6 +21,10 @@ export async function generateVideo(
     throw new Error("XAI_API_KEY is not set — video generation is disabled.");
   }
 
+  // grok-imagine video is image-to-video only. If no source image is given,
+  // first generate one from the prompt, then animate it.
+  const image = opts.imageUrl ?? (await generateImage(prompt));
+
   const start = await fetch(`${config.grok.baseURL}/videos/generations`, {
     method: "POST",
     headers: {
@@ -29,10 +34,10 @@ export async function generateVideo(
     body: JSON.stringify({
       model: VIDEO_MODEL,
       prompt,
+      image: { url: image }, // xAI expects an ImageUrl object, not a string
       duration: 6,
       resolution: "720p",
       aspect_ratio: "16:9",
-      ...(opts.imageUrl ? { image: opts.imageUrl } : {}),
     }),
   });
   if (!start.ok) {

@@ -41,7 +41,7 @@ const BASE_TOOLS = [
     type: "function",
     name: VIDEO_FN,
     description:
-      "Generate a short video (~6s) from a text prompt using Grok Imagine. Use only when the user explicitly asks for a video/animation/clip. Takes a couple of minutes; the video is shown automatically.",
+      "Generate a short video (~6s) from a text prompt using Grok Imagine (it auto-creates a still image from the prompt and animates it). Use only when the user explicitly asks for a video/animation/clip. Takes a couple of minutes; the video is shown automatically.",
     parameters: {
       type: "object",
       properties: {
