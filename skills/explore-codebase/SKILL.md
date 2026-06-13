@@ -1,59 +1,62 @@
 ---
 name: explore-codebase
-description: Efficiently explore a code/text repository in the sandbox using tree-structured search (ripgrep/grep) instead of reading every file. Use whenever you must find where something is defined, used, or configured across many files.
+description: Efficiently explore a code/text repository in the sandbox using tree-structured search (grep/git grep) instead of reading every file. Use whenever you must find where something is defined, used, or configured across many files.
 ---
 
 # Explore a codebase efficiently
 
-You have a `run_code` tool with a bash shell. The sandbox has `rg` (ripgrep),
-`grep`, `git`, `sed`, `find`, `awk`, `head`, `tail`, `wc`. NEVER read files one by
-one or dump whole files to find something — that wastes context and is slow.
-Search first, then read only the matching lines.
+You have a `run_code` tool with a bash shell (Git Bash on Windows). Tools that are
+ALWAYS available: `grep`, `find`, `git`, `sed`, `awk`, `head`, `tail`, `wc`, `ls`.
+`rg` (ripgrep) is NOT guaranteed — do not rely on it; use `grep -rn` instead.
+NEVER read files one by one or dump whole files to find something — search first,
+then read only the matching lines.
 
 ## Procedure
 
 1. **Map the tree first — do not read files yet.**
    ```bash
    cd <repo-dir>
-   # directory layout, depth-limited, ignoring noise
-   rg --files --hidden -g '!.git' | head -200
-   # or a quick top-level view
-   ls -la && find . -maxdepth 2 -type d -not -path '*/.git*' | head -80
+   ls -la
+   find . -path ./.git -prune -o -type f -print | head -200   # the file list
+   find . -maxdepth 2 -type d -not -path '*/.git*' | head -80  # dir layout
    ```
 
-2. **Find by content with ripgrep** (fast, recursive, respects .gitignore):
+2. **Find by content with grep** (recursive, line numbers, the portable default):
    ```bash
-   rg -n "search_term"                 # all matches with line numbers
-   rg -n -i "term" -g '*.ts' -g '*.py' # filter by file type/glob
-   rg -l "term"                        # just the file names
-   rg -n -C 3 "functionName"           # 3 lines of context around each hit
-   rg -n "class \w+" -t py             # regex; -t selects a language
+   grep -rn "search_term" .                       # all matches with line numbers
+   grep -rn --include='*.ts' --include='*.py' "term" .   # filter by extension
+   grep -rln "term" .                             # just the file names
+   grep -rn -C 3 "functionName" .                 # 3 lines of context per hit
+   grep -rnE "class [A-Za-z_]+" .                 # extended regex
+   grep -rn --exclude-dir=.git --exclude-dir=node_modules "term" .  # skip noise
    ```
-   Prefer `git grep -n "term"` when inside a git repo (it's even faster and
-   scoped to tracked files).
+   Inside a git repo prefer `git grep -n "term"` — it's faster and auto-skips
+   .git / untracked junk. If `rg` happens to exist it's also fine, but grep is the
+   safe default.
 
 3. **Read ONLY the relevant slice**, never the whole file:
    ```bash
-   sed -n '120,180p' path/to/file.ts   # lines 120-180
-   rg -n "def main" -A 40 app.py        # the match plus 40 lines after
+   sed -n '120,180p' path/to/file.ts    # lines 120-180
+   grep -n "def main" -A 40 app.py       # the match plus 40 lines after
    ```
 
 4. **Understand structure** before diving in: read the README, package.json /
    pyproject.toml / go.mod, and the entry points first.
    ```bash
    sed -n '1,60p' README* 2>/dev/null
-   cat package.json 2>/dev/null | head -60
+   head -60 package.json 2>/dev/null
    ```
 
-5. **Narrow iteratively.** Start broad (`rg -l`), then zoom (`rg -n -C`), then
-   read the exact lines (`sed -n`). Count first if a term is everywhere:
-   `rg -c "term" | sort -t: -k2 -n` shows which files have the most hits.
+5. **Narrow iteratively.** Start broad (`grep -rln`), then zoom (`grep -rn -C`),
+   then read exact lines (`sed -n`). To see which files have the most hits:
+   `grep -rc "term" . | grep -v ':0$' | sort -t: -k2 -n`.
 
 ## Rules
 
 - Tree-structured search ONLY. If you catch yourself about to `cat` a big file or
-  read files sequentially "to look around", stop and `rg` instead.
-- Quote your search terms; escape regex metacharacters (`rg -F` for literal).
+  read files sequentially "to look around", stop and `grep -rn` instead.
+- Do NOT assume `rg` exists. Default to `grep -rn` / `git grep`.
+- Quote search terms; use `grep -F` for literal strings with regex metacharacters.
 - Cap output: pipe to `head`, use `-m 50` to limit matches, so you don't flood
   context.
 - If the repo is on GitHub and not yet local, first use the **clone-github**

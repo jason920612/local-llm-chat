@@ -25,9 +25,9 @@ real code into the sandbox and read it.
    repo dir and use tree-structured search (ripgrep/grep), never sequential reads:
    ```bash
    cd repo
-   sed -n '1,60p' README* 2>/dev/null     # what is this project?
-   rg --files -g '!.git' | head -200      # the file tree
-   rg -n "the thing you care about"       # find it
+   sed -n '1,60p' README* 2>/dev/null                       # what is this project?
+   find . -path ./.git -prune -o -type f -print | head -200  # the file tree
+   git grep -n "the thing you care about"                    # find it (or: grep -rn)
    ```
 
 3. **Answer from what you actually read**, citing concrete files and line numbers
