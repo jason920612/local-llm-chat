@@ -198,12 +198,17 @@ export function streamGrokResponses(
       let thinkOpen = false;
       let contentStarted = false;
 
+      // Stable cache key per conversation so xAI reuses the cached prompt prefix
+      // (system prompt + history) across turns — cheaper and lower latency.
+      const cacheKey = `conv:${conversationId}`;
+
       let body: Record<string, unknown> = {
         model: config.grok.model,
         instructions,
         input: toInput(messages),
         tools: toolset(),
         stream: true,
+        prompt_cache_key: cacheKey,
       };
 
       try {
@@ -331,6 +336,7 @@ export function streamGrokResponses(
             input: outputs,
             previous_response_id: respId,
             stream: true,
+            prompt_cache_key: cacheKey,
           };
         }
 
