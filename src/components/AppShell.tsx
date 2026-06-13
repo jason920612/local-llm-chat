@@ -13,16 +13,45 @@ import { Sidebar } from "./Sidebar";
 import { Chat } from "./Chat";
 import { DocumentsModal } from "./DocumentsModal";
 import { SettingsModal } from "./SettingsModal";
+import { ConfirmDialog } from "./ConfirmDialog";
 
-export function AppShell() {
+/** Build the URL path for a conversation (or the root for "no conversation"). */
+function pathFor(id: string | null): string {
+  return id ? `/c/${encodeURIComponent(id)}` : "/";
+}
+
+/** Read the conversation id out of the current URL path, if any. */
+function idFromPath(): string | null {
+  const m = window.location.pathname.match(/^\/c\/([^/]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+export function AppShell({ initialId = null }: { initialId?: string | null }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(initialId);
   const [documents, setDocuments] = useState<RagDocument[]>([]);
   const [useRag, setUseRag] = useState(false);
   const [useGrok, setUseGrok] = useState(false);
   const [grokEnabled, setGrokEnabled] = useState(false);
   const [docsOpen, setDocsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null);
+
+  // Select a conversation AND reflect it in the URL (so it's bookmarkable /
+  // shareable and the back button works). Use replace on first navigation.
+  const navigateTo = useCallback((id: string | null) => {
+    setActiveId(id);
+    if (typeof window === "undefined") return;
+    if (idFromPath() === id) return; // already there
+    window.history.pushState({ convId: id }, "", pathFor(id));
+  }, []);
+
+  // Keep state in sync when the user uses the browser back/forward buttons.
+  useEffect(() => {
+    const onPop = () => setActiveId(idFromPath());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -57,10 +86,13 @@ export function AppShell() {
     if (documents.length === 0 && useRag) setUseRag(false);
   }, [documents.length, useRag]);
 
-  const handleCreated = useCallback((conv: Conversation) => {
-    setConversations((prev) => [conv, ...prev]);
-    setActiveId(conv.id);
-  }, []);
+  const handleCreated = useCallback(
+    (conv: Conversation) => {
+      setConversations((prev) => [conv, ...prev]);
+      navigateTo(conv.id);
+    },
+    [navigateTo],
+  );
 
   const handleRename = useCallback(
     async (id: string, current: string) => {
@@ -72,15 +104,23 @@ export function AppShell() {
     [refresh],
   );
 
+  // Open the custom confirm dialog instead of the browser's window.confirm.
   const handleDelete = useCallback(
-    async (id: string) => {
-      if (!window.confirm("Delete this conversation?")) return;
-      await deleteConversationApi(id);
-      if (activeId === id) setActiveId(null);
-      await refresh();
+    (id: string) => {
+      const conv = conversations.find((c) => c.id === id) ?? null;
+      if (conv) setPendingDelete(conv);
     },
-    [activeId, refresh],
+    [conversations],
   );
+
+  const confirmDelete = useCallback(async () => {
+    const id = pendingDelete?.id;
+    setPendingDelete(null);
+    if (!id) return;
+    await deleteConversationApi(id);
+    if (activeId === id) navigateTo(null);
+    await refresh();
+  }, [pendingDelete, activeId, navigateTo, refresh]);
 
   const activeTitle =
     conversations.find((c) => c.id === activeId)?.title ?? null;
@@ -91,8 +131,8 @@ export function AppShell() {
         conversations={conversations}
         activeId={activeId}
         docCount={documents.length}
-        onNew={() => setActiveId(null)}
-        onSelect={setActiveId}
+        onNew={() => navigateTo(null)}
+        onSelect={navigateTo}
         onRename={handleRename}
         onDelete={handleDelete}
         onOpenDocs={() => setDocsOpen(true)}
@@ -119,6 +159,19 @@ export function AppShell() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        danger
+        title="刪除對話"
+        message={
+          pendingDelete
+            ? `確定要刪除「${pendingDelete.title}」嗎？此動作無法復原。`
+            : undefined
+        }
+        confirmLabel="刪除"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
       />
     </div>
   );

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Plus,
   MessageSquare,
@@ -8,6 +9,8 @@ import {
   Bot,
   Library,
   Settings,
+  Link2,
+  Check,
 } from "lucide-react";
 import type { Conversation } from "@/lib/types";
 
@@ -32,6 +35,19 @@ export function Sidebar({
   onOpenDocs: () => void;
   onOpenSettings: () => void;
 }) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const copyLink = async (id: string) => {
+    const url = `${window.location.origin}/c/${encodeURIComponent(id)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      /* clipboard blocked — ignore */
+    }
+    setCopiedId(id);
+    setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1500);
+  };
+
   return (
     <aside className="flex h-screen w-64 shrink-0 flex-col border-r border-border bg-surface">
       <div className="flex items-center gap-2 px-4 py-3">
@@ -70,6 +86,21 @@ export function Sidebar({
                   >
                     <MessageSquare size={14} className="shrink-0" />
                     <span className="truncate">{c.title}</span>
+                  </button>
+                  <button
+                    onClick={() => copyLink(c.id)}
+                    className={`shrink-0 transition hover:text-accent group-hover:opacity-100 ${
+                      copiedId === c.id
+                        ? "text-accent opacity-100"
+                        : "text-muted opacity-0"
+                    }`}
+                    title={copiedId === c.id ? "已複製連結" : "複製此對話連結"}
+                  >
+                    {copiedId === c.id ? (
+                      <Check size={13} />
+                    ) : (
+                      <Link2 size={13} />
+                    )}
                   </button>
                   <button
                     onClick={() => onRename(c.id, c.title)}
