@@ -1,4 +1,4 @@
-import type { Conversation, UIMessage } from "./types";
+import type { Citation, Conversation, RagDocument, UIMessage } from "./types";
 
 export async function fetchConversations(): Promise<Conversation[]> {
   const res = await fetch("/api/conversations");
@@ -50,4 +50,41 @@ export async function saveMessage(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(message),
   });
+}
+
+// --- Documents (RAG) -------------------------------------------------------
+
+export async function fetchDocuments(): Promise<RagDocument[]> {
+  const res = await fetch("/api/documents");
+  if (!res.ok) throw new Error("Failed to load documents");
+  return res.json();
+}
+
+export async function uploadDocuments(
+  files: File[],
+): Promise<{ documents: RagDocument[]; errors: { name: string; error: string }[] }> {
+  const form = new FormData();
+  files.forEach((f) => form.append("files", f));
+  const res = await fetch("/api/documents", { method: "POST", body: form });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Upload failed");
+  }
+  return res.json();
+}
+
+export async function deleteDocumentApi(id: string): Promise<void> {
+  await fetch(`/api/documents/${id}`, { method: "DELETE" });
+}
+
+/** Decode the base64(UTF-8 JSON) X-Citations response header. */
+export function parseCitationsHeader(header: string | null): Citation[] {
+  if (!header) return [];
+  try {
+    const bytes = Uint8Array.from(atob(header), (c) => c.charCodeAt(0));
+    const json = new TextDecoder().decode(bytes);
+    return JSON.parse(json) as Citation[];
+  } catch {
+    return [];
+  }
 }

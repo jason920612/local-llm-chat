@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { nanoid } from "nanoid";
-import { Bot } from "lucide-react";
+import { Bot, BookOpen } from "lucide-react";
 import type { Conversation, UIMessage } from "@/lib/types";
 import {
   createConversationApi,
   fetchConversation,
+  parseCitationsHeader,
   saveMessage,
 } from "@/lib/api";
 import { fileToResizedDataURL, isImageFile } from "@/lib/image";
@@ -16,11 +17,17 @@ import { Composer } from "./Composer";
 export function Chat({
   conversationId,
   title,
+  useRag,
+  docCount,
+  onToggleRag,
   onCreated,
   onPersisted,
 }: {
   conversationId: string | null;
   title: string | null;
+  useRag: boolean;
+  docCount: number;
+  onToggleRag: () => void;
   onCreated: (conv: Conversation) => void;
   onPersisted: () => void;
 }) {
@@ -120,6 +127,7 @@ export function Chat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conversationId: cid,
+          useRag,
           messages: history.map((m) => ({
             role: m.role,
             content: m.content,
@@ -135,6 +143,7 @@ export function Chat({
       }
       if (!res.body) throw new Error("No response stream.");
 
+      const citations = parseCitationsHeader(res.headers.get("X-Citations"));
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let acc = "";
@@ -149,7 +158,15 @@ export function Chat({
         );
       }
 
-      await saveMessage(cid, { ...assistantMsg, content: acc });
+      const finalAssistant: UIMessage = {
+        ...assistantMsg,
+        content: acc,
+        citations: citations.length > 0 ? citations : undefined,
+      };
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),
+      );
+      await saveMessage(cid, finalAssistant);
       onPersisted();
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -171,6 +188,7 @@ export function Chat({
     streaming,
     messages,
     conversationId,
+    useRag,
     onCreated,
     onPersisted,
   ]);
@@ -180,9 +198,26 @@ export function Chat({
   return (
     <div className="flex h-screen flex-1 flex-col">
       <header className="flex h-12 items-center gap-2 border-b border-border px-4">
-        <span className="truncate text-sm font-medium text-muted">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted">
           {title ?? "New chat"}
         </span>
+        <button
+          onClick={onToggleRag}
+          disabled={docCount === 0}
+          title={
+            docCount === 0
+              ? "Upload documents to enable"
+              : "Ground answers in your documents"
+          }
+          className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            useRag && docCount > 0
+              ? "border-accent bg-accent/15 text-accent"
+              : "border-border text-muted hover:text-foreground"
+          }`}
+        >
+          <BookOpen size={13} />
+          Docs{docCount > 0 ? ` (${docCount})` : ""}
+        </button>
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">

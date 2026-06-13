@@ -36,6 +36,25 @@ function init(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_messages_conv
       ON messages(conversation_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS documents (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      type        TEXT NOT NULL,
+      size        INTEGER NOT NULL,
+      chunk_count INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chunks (
+      id          TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      idx         INTEGER NOT NULL,
+      content     TEXT NOT NULL,
+      embedding   BLOB NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(document_id);
   `);
 
   return db;

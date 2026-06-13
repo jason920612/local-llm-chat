@@ -26,6 +26,15 @@ export interface Conversation {
   updatedAt: number;
 }
 
+export interface RagDocument {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  chunkCount: number;
+  createdAt: number;
+}
+
 export interface ChatRequestBody {
   messages: Pick<UIMessage, "role" | "content" | "images">[];
   conversationId?: string;

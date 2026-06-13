@@ -1,22 +1,33 @@
 "use client";
 
-import { Plus, MessageSquare, Trash2, Pencil, Bot } from "lucide-react";
+import {
+  Plus,
+  MessageSquare,
+  Trash2,
+  Pencil,
+  Bot,
+  Library,
+} from "lucide-react";
 import type { Conversation } from "@/lib/types";
 
 export function Sidebar({
   conversations,
   activeId,
+  docCount,
   onNew,
   onSelect,
   onRename,
   onDelete,
+  onOpenDocs,
 }: {
   conversations: Conversation[];
   activeId: string | null;
+  docCount: number;
   onNew: () => void;
   onSelect: (id: string) => void;
   onRename: (id: string, current: string) => void;
   onDelete: (id: string) => void;
+  onOpenDocs: () => void;
 }) {
   return (
     <aside className="flex h-screen w-64 shrink-0 flex-col border-r border-border bg-surface">
@@ -78,8 +89,22 @@ export function Sidebar({
         )}
       </nav>
 
-      <div className="border-t border-border px-4 py-2 text-[11px] text-muted">
-        Private · runs on your machine
+      <div className="border-t border-border p-2">
+        <button
+          onClick={onOpenDocs}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted hover:bg-surface-2 hover:text-foreground"
+        >
+          <Library size={15} />
+          <span className="flex-1 text-left">Knowledge base</span>
+          {docCount > 0 && (
+            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px]">
+              {docCount}
+            </span>
+          )}
+        </button>
+        <div className="px-3 pt-1 text-[11px] text-muted">
+          Private · runs on your machine
+        </div>
       </div>
     </aside>
   );

@@ -1,6 +1,13 @@
 import { nanoid } from "nanoid";
 import { db } from "./db";
-import type { Conversation, UIMessage, Role, Citation } from "./types";
+import { vectorToBlob, blobToVector } from "./embeddings";
+import type {
+  Conversation,
+  UIMessage,
+  Role,
+  Citation,
+  RagDocument,
+} from "./types";
 
 interface MessageRow {
   id: string;
@@ -96,4 +103,93 @@ export function addMessage(conversationId: string, m: UIMessage): void {
     Date.now(),
     conversationId,
   );
+}
+
+// --- RAG documents ---------------------------------------------------------
+
+export function listDocuments(): RagDocument[] {
+  return db
+    .prepare(
+      `SELECT id, name, type, size, chunk_count AS chunkCount,
+              created_at AS createdAt
+       FROM documents ORDER BY created_at DESC`,
+    )
+    .all() as RagDocument[];
+}
+
+export function deleteDocument(id: string): void {
+  db.prepare(`DELETE FROM documents WHERE id = ?`).run(id);
+}
+
+/** Insert a document and its embedded chunks atomically. */
+export function createDocumentWithChunks(
+  meta: { name: string; type: string; size: number },
+  chunks: { content: string; embedding: number[] }[],
+): RagDocument {
+  const id = nanoid();
+  const now = Date.now();
+
+  const insertDoc = db.prepare(
+    `INSERT INTO documents (id, name, type, size, chunk_count, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  const insertChunk = db.prepare(
+    `INSERT INTO chunks (id, document_id, idx, content, embedding)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+
+  const tx = db.transaction(() => {
+    insertDoc.run(id, meta.name, meta.type, meta.size, chunks.length, now);
+    chunks.forEach((c, i) => {
+      insertChunk.run(nanoid(), id, i, c.content, vectorToBlob(c.embedding));
+    });
+  });
+  tx();
+
+  return {
+    id,
+    name: meta.name,
+    type: meta.type,
+    size: meta.size,
+    chunkCount: chunks.length,
+    createdAt: now,
+  };
+}
+
+export interface StoredChunk {
+  id: string;
+  documentId: string;
+  documentName: string;
+  idx: number;
+  content: string;
+  embedding: Float32Array;
+}
+
+interface ChunkJoinRow {
+  id: string;
+  document_id: string;
+  documentName: string;
+  idx: number;
+  content: string;
+  embedding: Buffer;
+}
+
+/** Load every chunk with its parent document name (for in-memory retrieval). */
+export function getAllChunks(): StoredChunk[] {
+  const rows = db
+    .prepare(
+      `SELECT c.id, c.document_id, c.idx, c.content, c.embedding,
+              d.name AS documentName
+       FROM chunks c JOIN documents d ON d.id = c.document_id`,
+    )
+    .all() as ChunkJoinRow[];
+
+  return rows.map((r) => ({
+    id: r.id,
+    documentId: r.document_id,
+    documentName: r.documentName,
+    idx: r.idx,
+    content: r.content,
+    embedding: blobToVector(r.embedding),
+  }));
 }

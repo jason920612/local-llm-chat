@@ -4,6 +4,8 @@ import { config } from "../config";
 import { buildSystemPrompt } from "../prompts";
 import { toOpenAIMessages } from "../openai-format";
 import type { ChatRequestBody, UIMessage } from "../types";
+import { retrieve } from "../rag/retrieve";
+import type { Citation } from "../types";
 import { callStructured } from "./structured";
 import {
   IntentResult,
@@ -42,14 +44,27 @@ export async function runControlledChat(
   const hasImages = messages.some(
     (m) => m.role === "user" && m.images && m.images.length > 0,
   );
-  const ragContext = undefined; // wired up in Phase 4
-  const allowedSources = 0;
 
   try {
     // GATE 1 — intent (code short-circuit). Runs before any answer is produced.
     if (config.sop.intentGate) {
       const clarification = await runIntentGate(messages);
       if (clarification) return textResponse(clarification);
+    }
+
+    // RAG retrieval (Phase 4). Grounding + citation enforcement kick in only
+    // when documents are toggled on and something is actually retrieved.
+    let ragContext: string | undefined;
+    let citations: Citation[] = [];
+    let allowedSources = 0;
+    if (body.useRag) {
+      const query = lastUserText(messages);
+      const result = await retrieve(query);
+      if (result.context) {
+        ragContext = result.context;
+        citations = result.citations;
+        allowedSources = citations.length;
+      }
     }
 
     const systemPrompt = buildSystemPrompt({ hasImages, ragContext });
@@ -59,8 +74,8 @@ export async function runControlledChat(
     ];
 
     return config.sop.blocking
-      ? await runBlocking(openaiMessages, allowedSources)
-      : await runStreaming(openaiMessages, allowedSources);
+      ? await runBlocking(openaiMessages, allowedSources, citations)
+      : await runStreaming(openaiMessages, allowedSources, citations);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return Response.json(
@@ -70,6 +85,13 @@ export async function runControlledChat(
       { status: 502 },
     );
   }
+}
+
+function lastUserText(messages: UIMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") return messages[i].content ?? "";
+  }
+  return "";
 }
 
 // --- Gate 1: intent --------------------------------------------------------
@@ -121,6 +143,7 @@ async function runIntentGate(messages: UIMessage[]): Promise<string | null> {
 async function runStreaming(
   openaiMessages: ChatParam[],
   allowedSources: number,
+  citations: Citation[],
 ): Promise<Response> {
   const completion = await llm.chat.completions.create({
     model: config.llm.model,
@@ -161,7 +184,7 @@ async function runStreaming(
     },
   });
 
-  return streamResponse(stream);
+  return streamResponse(stream, citations);
 }
 
 // --- Blocking path (full code enforcement) ---------------------------------
@@ -169,6 +192,7 @@ async function runStreaming(
 async function runBlocking(
   openaiMessages: ChatParam[],
   allowedSources: number,
+  citations: Citation[],
 ): Promise<Response> {
   const res = await llm.chat.completions.create({
     model: config.llm.model,
@@ -208,7 +232,7 @@ async function runBlocking(
       ? `\n\n> ⚠️ Control check flagged: ${[...new Set(violations)].join("; ")}`
       : "";
 
-  return textResponse(text + footer);
+  return textResponse(text + footer, citations);
 }
 
 const VERIFY_SYSTEM = `You are a STRICT answer auditor. Given the user's request and a DRAFT answer, output JSON only per the schema. Set "passed" false if the draft: invents facts/citations, answers something not asked, pads with disclaimers/flattery, or is in the wrong language. List concrete failures in "violations".`;
@@ -267,21 +291,33 @@ async function regenerate(
 
 // --- Response helpers ------------------------------------------------------
 
-function streamResponse(stream: ReadableStream<Uint8Array>): Response {
+/** Base64(UTF-8 JSON) of citations, for the X-Citations response header. */
+function citationsHeader(citations: Citation[]): Record<string, string> {
+  if (!citations || citations.length === 0) return {};
+  const json = JSON.stringify(citations);
+  return { "X-Citations": Buffer.from(json, "utf-8").toString("base64") };
+}
+
+function streamResponse(
+  stream: ReadableStream<Uint8Array>,
+  citations: Citation[] = [],
+): Response {
   return new Response(stream, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
+      ...citationsHeader(citations),
     },
   });
 }
 
-function textResponse(text: string): Response {
+function textResponse(text: string, citations: Citation[] = []): Response {
   return new Response(text, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
+      ...citationsHeader(citations),
     },
   });
 }

@@ -53,6 +53,27 @@ export function MessageBubble({
         {streaming && (
           <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-accent align-middle" />
         )}
+
+        {!isUser && message.citations && message.citations.length > 0 && (
+          <div className="mt-3 border-t border-border/60 pt-2">
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
+              Sources
+            </div>
+            <ol className="space-y-1">
+              {message.citations.map((c) => (
+                <li key={c.index} className="flex gap-2 text-xs text-muted">
+                  <span className="shrink-0 font-semibold text-accent">
+                    [{c.index}]
+                  </span>
+                  <span className="min-w-0">
+                    <span className="text-foreground">{c.documentName}</span>
+                    {c.snippet ? ` — ${c.snippet}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
       </div>
     </div>
   );
