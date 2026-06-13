@@ -258,8 +258,12 @@ export function streamGrokResponses(
   messages: UIMessage[],
   baseCitations: Citation[] = [],
   conversationId = "default",
+  contextSummary = "",
 ): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
+  const fullInstructions = contextSummary
+    ? `${instructions}\n\n# EARLIER CONVERSATION (compacted summary — treat as established context you already know)\n${contextSummary}`
+    : instructions;
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const enq = (s: string) => controller.enqueue(enc.encode(s));
@@ -289,7 +293,7 @@ export function streamGrokResponses(
 
       let body: Record<string, unknown> = {
         model: config.grok.model,
-        instructions,
+        instructions: fullInstructions,
         input: toInput(messages),
         tools: toolset(),
         stream: true,
@@ -687,5 +691,41 @@ export async function runGrokResponses(
     images,
     videos,
   };
+}
+
+const COMPACTION_INSTRUCTIONS = `You are compacting a long conversation so it fits the model's context window. Write a concise but COMPLETE summary that lets the assistant continue seamlessly. Capture: the user's goals and requests; key decisions, preferences, and constraints; specifics needed to continue (names, file names, sandbox files, IDs, URLs, numbers, code identifiers); what has been done so far and the current state; and any open tasks or next steps. Do not omit details later turns may rely on. Output plain prose (short bullet lists are fine). Reply in the conversation's main language.`;
+
+/**
+ * Summarize older messages into a rolling compaction summary (text only — images
+ * are dropped). `priorSummary` extends an existing summary instead of restarting.
+ */
+export async function summarizeForCompaction(
+  messages: UIMessage[],
+  priorSummary?: string,
+): Promise<string> {
+  const input: unknown[] = [];
+  if (priorSummary) {
+    input.push({
+      role: "user",
+      content: `Summary of the conversation so far:\n${priorSummary}`,
+    });
+  }
+  for (const m of messages) {
+    if (m.role === "system") continue;
+    input.push({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content,
+    });
+  }
+  input.push({
+    role: "user",
+    content: "Produce the updated summary now, per your instructions.",
+  });
+  const resp = await postResponses({
+    model: config.grok.model,
+    instructions: COMPACTION_INSTRUCTIONS,
+    input,
+  });
+  return extractText(resp.output ?? []);
 }
 

@@ -70,4 +70,16 @@ export const config = {
     // malformed output and retry, then fail (open or closed) deterministically.
     maxStructuredRetries: 2,
   },
+  /**
+   * Automatic memory compaction (Codex-style). When the conversation history sent
+   * to the model exceeds the token threshold, older turns are summarized into a
+   * rolling summary and replaced by it, keeping the most recent turns verbatim.
+   */
+  compaction: {
+    enabled: envBool("COMPACTION", true),
+    // Estimated-token threshold (chars/4) above which we compact before sending.
+    thresholdTokens: Number(process.env.COMPACTION_THRESHOLD ?? 24000),
+    // Number of most-recent messages kept verbatim (never summarized).
+    keepRecent: Number(process.env.COMPACTION_KEEP_RECENT ?? 6),
+  },
 } as const;

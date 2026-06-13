@@ -167,6 +167,35 @@ export function forkConversation(
   return conv;
 }
 
+/** Read a conversation's rolling compaction summary + how far it covers. */
+export function getCompaction(
+  conversationId: string,
+): { summary: string | null; summaryThroughId: string | null } {
+  const row = db
+    .prepare(
+      `SELECT summary, summary_through_id AS throughId
+       FROM conversations WHERE id = ?`,
+    )
+    .get(conversationId) as
+    | { summary: string | null; throughId: string | null }
+    | undefined;
+  return {
+    summary: row?.summary ?? null,
+    summaryThroughId: row?.throughId ?? null,
+  };
+}
+
+/** Persist a conversation's rolling compaction summary. */
+export function setCompaction(
+  conversationId: string,
+  summary: string,
+  summaryThroughId: string,
+): void {
+  db.prepare(
+    `UPDATE conversations SET summary = ?, summary_through_id = ? WHERE id = ?`,
+  ).run(summary, summaryThroughId, conversationId);
+}
+
 export function renameConversation(id: string, title: string): void {
   db.prepare(`UPDATE conversations SET title = ? WHERE id = ?`).run(
     (title?.trim() || "Untitled").slice(0, 80),

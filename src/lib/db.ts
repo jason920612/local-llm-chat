@@ -97,6 +97,18 @@ function init(): Database.Database {
   } catch {
     /* column already exists */
   }
+  // Memory compaction: a rolling summary of older turns + the message id it
+  // covers up to (along the active path), so long conversations stay in-context.
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN summary TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN summary_through_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
 
   backfillTree(db);
   return db;
