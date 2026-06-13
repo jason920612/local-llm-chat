@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local LLM Chat · Static (Grok)</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <div class="brand">🤖 Grok Chat <span class="tag">static</span></div>
+        <button id="new-chat" class="btn-block">+ 新對話</button>
+        <nav id="convo-list"></nav>
+        <button id="open-settings" class="settings-link">⚙ 設定 / API Key</button>
+        <div class="foot">瀏覽器直連 xAI · 你的 key 只存在本機</div>
+      </aside>
+
+      <main id="main">
+        <header id="topbar">
+          <span id="convo-title">新對話</span>
+          <span id="status" class="status"></span>
+        </header>
+        <div id="messages"></div>
+        <div id="composer">
+          <div id="attachments"></div>
+          <div class="composer-row">
+            <button id="attach-btn" title="附加檔案">📎</button>
+            <input id="file-input" type="file" multiple hidden />
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="傳訊息給 Grok…（Enter 送出，Shift+Enter 換行）"
+            ></textarea>
+            <button id="send-btn" title="送出">➤</button>
+            <button id="stop-btn" title="停止" hidden>■</button>
+          </div>
+          <div class="hint">
+            純靜態 · 直連 Grok · 回應可能有誤，重要資訊請查證
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Settings modal -->
+    <div id="settings-modal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <b>設定</b><button class="modal-close">✕</button>
+        </div>
+        <label class="field">
+          <span>xAI API Key</span>
+          <input id="key-input" type="password" placeholder="xai-..." />
+        </label>
+        <label class="field">
+          <span>模型</span>
+          <input id="model-input" placeholder="grok-build-0.1" />
+        </label>
+        <label class="field-row">
+          <input id="sandbox-toggle" type="checkbox" />
+          <span>啟用 Python 沙盒（Pyodide，瀏覽器內執行）</span>
+        </label>
+        <p class="note">
+          Key 只儲存在這台電腦的瀏覽器（localStorage），不會上傳到任何伺服器。
+          取得 key：<a href="https://console.x.ai" target="_blank">console.x.ai</a>
+        </p>
+        <button id="save-settings" class="btn-block primary">儲存</button>
+      </div>
+    </div>
+
+    <!-- Lightbox -->
+    <div id="lightbox" class="modal" hidden>
+      <img id="lightbox-img" alt="" />
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.9/purify.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

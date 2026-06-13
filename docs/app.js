@@ -1,0 +1,758 @@
+/* Static Grok chat — browser-only. Talks directly to the xAI API with a
+ * user-supplied key. Tools: web/x search (server-side), generate_image, and
+ * run_code via Pyodide (Python WASM). History in localStorage. */
+"use strict";
+
+const XAI = "https://api.x.ai/v1";
+const LS = {
+  key: "xai_key",
+  model: "xai_model",
+  sandbox: "xai_sandbox",
+  convos: "xai_convos",
+};
+const MEDIA_RE = /\[\[(image|video|file):([^\]\n]+)\]\]/g;
+
+const $ = (id) => document.getElementById(id);
+const state = {
+  key: localStorage.getItem(LS.key) || "",
+  model: localStorage.getItem(LS.model) || "grok-build-0.1",
+  sandbox: localStorage.getItem(LS.sandbox) === "1",
+  convos: JSON.parse(localStorage.getItem(LS.convos) || "[]"),
+  activeId: null,
+  attachments: [], // {dataUrl} images for vision
+  uploads: [], // {name} files written to pyodide FS
+  streaming: false,
+  abort: null,
+};
+
+const SYSTEM = `You are Grok, a helpful AI assistant running in a static web app.
+- Reply in the user's language.
+- You can search X (Twitter) and the web automatically when a question needs real-time info; cite sources with [n].
+- generate_image: create an image from a prompt. After it succeeds, place it inline by writing a marker on its own line: [[image:N]] (N = the image number from the tool result). Do not output image markdown yourself.
+- run_code: execute Python in a sandbox; files you create are shown to the user (place inline with [[file:name]]).
+Be direct and useful.`;
+
+/* ---------- persistence ---------- */
+function saveConvos() {
+  localStorage.setItem(LS.convos, JSON.stringify(state.convos));
+}
+function activeConvo() {
+  return state.convos.find((c) => c.id === state.activeId) || null;
+}
+function newId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+/* ---------- markdown rendering ---------- */
+marked.setOptions({ breaks: false, gfm: true });
+
+function mdToHtml(text) {
+  return DOMPurify.sanitize(marked.parse(text || ""), {
+    ADD_ATTR: ["target"],
+  });
+}
+
+function enhance(container, onImg) {
+  container.querySelectorAll("pre").forEach((pre) => {
+    pre.querySelectorAll("code").forEach((c) => {
+      try {
+        window.hljs.highlightElement(c);
+      } catch {}
+    });
+    const codeText = pre.innerText; // capture before adding the button
+    const btn = document.createElement("button");
+    btn.className = "copy-btn";
+    btn.textContent = "複製";
+    btn.onclick = () => {
+      navigator.clipboard.writeText(codeText);
+      btn.textContent = "已複製";
+      setTimeout(() => (btn.textContent = "複製"), 1200);
+    };
+    pre.appendChild(btn);
+  });
+  container.querySelectorAll("img").forEach((img) => {
+    img.onclick = () => onImg(img.src);
+  });
+}
+
+/* Build the interleaved body (text + inline media) for an assistant message. */
+function renderAssistantBody(bodyEl, msg) {
+  bodyEl.innerHTML = "";
+
+  if (msg.thinking && msg.thinking.trim()) {
+    const d = document.createElement("details");
+    d.className = "panel";
+    d.innerHTML = `<summary>💭 思考過程</summary><div class="panel-body"></div>`;
+    d.querySelector(".panel-body").textContent = msg.thinking;
+    bodyEl.appendChild(d);
+  }
+  if (msg.toolCalls && msg.toolCalls.length) {
+    const labels = {
+      web_search: "🔍 網路搜尋",
+      x_search: "𝕏 搜尋",
+      generate_image: "🖼 生成圖片",
+      run_code: "▶ 執行 Python",
+    };
+    const d = document.createElement("details");
+    d.className = "panel";
+    const names = msg.toolCalls.map((t) => labels[t.tool] || t.tool).join("、");
+    d.innerHTML = `<summary>🔧 已呼叫 ${msg.toolCalls.length} 個工具：${names}</summary><div class="panel-body"></div>`;
+    const pb = d.querySelector(".panel-body");
+    msg.toolCalls.forEach((t) => {
+      const pre = document.createElement("pre");
+      pre.textContent =
+        (labels[t.tool] || t.tool) +
+        (t.args && Object.keys(t.args).length
+          ? "\n" + JSON.stringify(t.args, null, 2).slice(0, 1200)
+          : "");
+      pb.appendChild(pre);
+    });
+    bodyEl.appendChild(d);
+  }
+
+  const usedImg = new Set(),
+    usedVid = new Set(),
+    usedFile = new Set();
+  const text = msg.content || "";
+  let last = 0,
+    m;
+  MEDIA_RE.lastIndex = 0;
+  const pushText = (seg) => {
+    seg = seg.replace(/(?:image|video|file)\s*[:：]\s*$/i, "");
+    if (!seg.trim()) return;
+    const div = document.createElement("div");
+    div.className = "md";
+    div.innerHTML = mdToHtml(seg);
+    enhance(div, openLightbox);
+    bodyEl.appendChild(div);
+  };
+  while ((m = MEDIA_RE.exec(text))) {
+    pushText(text.slice(last, m.index));
+    const ref = m[2].trim();
+    if (m[1] === "image") {
+      const i = parseInt(ref, 10) - 1;
+      if (msg.images && msg.images[i]) {
+        usedImg.add(i);
+        bodyEl.appendChild(imgEl(msg.images[i]));
+      }
+    } else if (m[1] === "video") {
+      const i = parseInt(ref, 10) - 1;
+      if (msg.videos && msg.videos[i]) {
+        usedVid.add(i);
+        bodyEl.appendChild(vidEl(msg.videos[i]));
+      }
+    } else {
+      const f = (msg.files || []).find((x) => x.name === ref);
+      if (f) {
+        usedFile.add(f.name);
+        bodyEl.appendChild(fileEl(f));
+      }
+    }
+    last = m.index + m[0].length;
+  }
+  pushText(text.slice(last));
+  if (!bodyEl.childNodes.length && msg.content === "" && state.streaming) {
+    // placeholder while streaming
+  }
+  // leftover media
+  (msg.images || []).forEach((s, i) => {
+    if (!usedImg.has(i)) bodyEl.appendChild(imgEl(s));
+  });
+  (msg.videos || []).forEach((s, i) => {
+    if (!usedVid.has(i)) bodyEl.appendChild(vidEl(s));
+  });
+  (msg.files || []).forEach((f) => {
+    if (!usedFile.has(f.name)) bodyEl.appendChild(fileEl(f));
+  });
+}
+
+function imgEl(src) {
+  const img = document.createElement("img");
+  img.src = src;
+  img.className = "gen-img";
+  img.style.cssText =
+    "max-height:18rem;border-radius:10px;border:1px solid var(--border);cursor:zoom-in;margin:.5rem 0;display:block";
+  img.onclick = () => openLightbox(src);
+  return img;
+}
+function vidEl(src) {
+  const v = document.createElement("video");
+  v.src = src;
+  v.controls = true;
+  v.style.cssText =
+    "max-height:18rem;border-radius:10px;border:1px solid var(--border);margin:.5rem 0;display:block";
+  return v;
+}
+function fileEl(f) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText =
+    "display:flex;gap:8px;align-items:center;border:1px solid var(--border);background:var(--surface2);border-radius:10px;padding:6px 10px;font-size:12px;margin:.4rem 0";
+  wrap.innerHTML = `<span style="color:var(--accent)">📄</span><span style="flex:1;font-family:monospace;overflow:hidden;text-overflow:ellipsis">${f.name}</span>`;
+  const a = document.createElement("a");
+  a.textContent = "下載";
+  a.style.color = "var(--accent)";
+  a.href = URL.createObjectURL(
+    new Blob([f.bytes || f.text || ""], { type: "application/octet-stream" }),
+  );
+  a.download = f.name;
+  wrap.appendChild(a);
+  if (f.text != null) {
+    const v = document.createElement("button");
+    v.textContent = "檢視";
+    v.style.cssText = "background:none;border:none;color:var(--accent)";
+    v.onclick = () => alert(f.text.slice(0, 5000));
+    wrap.appendChild(v);
+  }
+  return wrap;
+}
+
+/* ---------- conversation list + messages ---------- */
+function renderSidebar() {
+  const list = $("convo-list");
+  list.innerHTML = "";
+  state.convos.forEach((c) => {
+    const el = document.createElement("div");
+    el.className = "convo" + (c.id === state.activeId ? " active" : "");
+    el.innerHTML = `<span class="title">💬 ${c.title || "新對話"}</span><button class="del">🗑</button>`;
+    el.querySelector(".title").onclick = () => selectConvo(c.id);
+    el.querySelector(".del").onclick = (e) => {
+      e.stopPropagation();
+      state.convos = state.convos.filter((x) => x.id !== c.id);
+      if (state.activeId === c.id) state.activeId = null;
+      saveConvos();
+      renderSidebar();
+      renderMessages();
+    };
+    list.appendChild(el);
+  });
+}
+
+function renderMessages() {
+  const root = $("messages");
+  root.innerHTML = "";
+  const convo = activeConvo();
+  $("convo-title").textContent = convo ? convo.title || "新對話" : "新對話";
+  if (!convo || !convo.messages.length) {
+    root.innerHTML = `<div class="empty"><h2>Grok Chat（純靜態）</h2><p>瀏覽器直連 xAI。先到 ⚙ 設定填入你的 API key，再開始對話。</p></div>`;
+    return;
+  }
+  convo.messages.forEach((msg) => root.appendChild(renderMsg(msg)));
+  root.scrollTop = root.scrollHeight;
+}
+
+function renderMsg(msg) {
+  const el = document.createElement("div");
+  el.className = "msg " + msg.role;
+  el.innerHTML = `<div class="avatar">${msg.role === "user" ? "🧑" : "🤖"}</div><div class="body"><div class="role">${msg.role === "user" ? "You" : "Grok"}</div><div class="content"></div></div>`;
+  const content = el.querySelector(".content");
+  if (msg.role === "user") {
+    if (msg.images && msg.images.length) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px";
+      msg.images.forEach((s) => row.appendChild(imgEl(s)));
+      content.appendChild(row);
+    }
+    const p = document.createElement("div");
+    p.className = "md";
+    p.innerHTML = mdToHtml(msg.content);
+    enhance(p, openLightbox);
+    content.appendChild(p);
+  } else {
+    renderAssistantBody(content, msg);
+  }
+  msg._el = content; // for live updates
+  return el;
+}
+
+/* ---------- xAI Responses agent (streaming + tools) ---------- */
+function toInput(messages) {
+  return messages.map((m) => {
+    if (m.role === "user" && m.images && m.images.length) {
+      return {
+        role: "user",
+        content: [
+          { type: "input_text", text: m.content },
+          ...m.images.map((url) => ({ type: "input_image", image_url: url })),
+        ],
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
+function tools() {
+  const t = [{ type: "web_search" }, { type: "x_search" }];
+  t.push({
+    type: "function",
+    name: "generate_image",
+    description:
+      "Generate an image from a text prompt. Returns an image shown to the user.",
+    parameters: {
+      type: "object",
+      properties: { prompt: { type: "string" } },
+      required: ["prompt"],
+    },
+  });
+  if (state.sandbox) {
+    t.push({
+      type: "function",
+      name: "run_code",
+      description:
+        "Execute Python code in a browser sandbox (Pyodide). Returns stdout/stderr; files you create are shown to the user.",
+      parameters: {
+        type: "object",
+        properties: { code: { type: "string" } },
+        required: ["code"],
+      },
+    });
+  }
+  return t;
+}
+
+async function* sse(body) {
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      const data = block
+        .split("\n")
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => l.slice(5).trim())
+        .join("");
+      if (!data || data === "[DONE]") continue;
+      try {
+        yield JSON.parse(data);
+      } catch {}
+    }
+  }
+}
+
+async function generateImage(prompt) {
+  const r = await fetch(`${XAI}/images/generations`, {
+    method: "POST",
+    headers: authJson(),
+    body: JSON.stringify({ model: "grok-imagine-image-quality", prompt, n: 1 }),
+  });
+  if (!r.ok) throw new Error("images " + r.status);
+  const d = await r.json();
+  const it = d.data[0];
+  return it.url || "data:image/jpeg;base64," + it.b64_json;
+}
+
+function authJson() {
+  return {
+    "Content-Type": "application/json",
+    Authorization: "Bearer " + state.key,
+  };
+}
+
+async function runAgent(convo, assistant) {
+  const cacheKey = "conv:" + convo.id;
+  let body = {
+    model: state.model,
+    instructions: SYSTEM,
+    input: toInput(convo.messages.filter((m) => m !== assistant)),
+    tools: tools(),
+    stream: true,
+    prompt_cache_key: cacheKey,
+  };
+  const seenServer = new Set();
+
+  for (let round = 0; round < 4; round++) {
+    const res = await fetch(`${XAI}/responses`, {
+      method: "POST",
+      headers: authJson(),
+      body: JSON.stringify(body),
+      signal: state.abort.signal,
+    });
+    if (!res.ok || !res.body) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`xAI ${res.status}: ${t.slice(0, 200)}`);
+    }
+    const fns = {};
+    let respId;
+    for await (const ev of sse(res.body)) {
+      const ty = ev.type;
+      if (ty === "response.output_text.delta") {
+        assistant.content += ev.delta || "";
+        updateLive(assistant);
+      } else if (
+        ty === "response.reasoning_text.delta" ||
+        ty === "response.reasoning_summary_text.delta"
+      ) {
+        assistant.thinking = (assistant.thinking || "") + (ev.delta || "");
+        updateLive(assistant);
+      } else if (ty === "response.output_item.added") {
+        const it = ev.item;
+        if (it && it.type === "function_call" && it.id)
+          fns[it.id] = { call_id: it.call_id || "", name: it.name, args: "" };
+        else if (it && it.type === "web_search_call") traceTool(assistant, "web_search");
+        else if (it && it.type === "x_search_call") traceTool(assistant, "x_search");
+      } else if (ty === "response.function_call_arguments.delta") {
+        if (fns[ev.item_id]) fns[ev.item_id].args += ev.delta || "";
+      } else if (ty === "response.completed") {
+        respId = ev.response && ev.response.id;
+        const cites = ev.response && ev.response.citations;
+        if (Array.isArray(cites) && cites.length) {
+          // append a sources list to the answer
+          assistant._cites = cites;
+        }
+        const out = (ev.response && ev.response.output) || [];
+        out.forEach((it) => {
+          if (it.type === "web_search_call") traceTool(assistant, "web_search");
+          else if (it.type === "x_search_call") traceTool(assistant, "x_search");
+        });
+        const used =
+          ev.response &&
+          ev.response.usage &&
+          ev.response.usage.num_server_side_tools_used;
+        if (used > 0 && !seenServer.has("web_search") && !seenServer.has("x_search"))
+          traceTool(assistant, "search");
+      }
+    }
+
+    const calls = Object.values(fns);
+    if (!calls.length) break;
+    const outputs = [];
+    for (const c of calls) {
+      let args = {};
+      try {
+        args = JSON.parse(c.args || "{}");
+      } catch {}
+      let out = "";
+      if (c.name === "generate_image") {
+        traceTool(assistant, "generate_image", { prompt: args.prompt });
+        try {
+          assistant.images = assistant.images || [];
+          assistant.images.push(await generateImage(args.prompt || ""));
+          out = `Image #${assistant.images.length} generated. Place it with [[image:${assistant.images.length}]].`;
+        } catch (e) {
+          out = "generate_image failed: " + e.message;
+        }
+      } else if (c.name === "run_code") {
+        traceTool(assistant, "run_code", { code: args.code });
+        const r = await runPython(args.code || "");
+        assistant.files = (assistant.files || []).concat(r.files);
+        out =
+          `exit: ${r.error ? "error" : 0}\n` +
+          (r.stdout ? "stdout:\n" + r.stdout : "stdout: (empty)") +
+          (r.stderr ? "\nstderr:\n" + r.stderr : "") +
+          (r.error ? "\nerror: " + r.error : "") +
+          (r.files.length
+            ? "\nfiles: " +
+              r.files.map((f) => f.name).join(", ") +
+              " (place with [[file:NAME]])"
+            : "");
+      } else out = "unknown tool";
+      outputs.push({ type: "function_call_output", call_id: c.call_id, output: out });
+      updateLive(assistant);
+    }
+    body = {
+      model: state.model,
+      tools: tools(),
+      input: outputs,
+      previous_response_id: respId,
+      stream: true,
+      prompt_cache_key: cacheKey,
+    };
+  }
+
+  if (assistant._cites && assistant._cites.length) {
+    const lines = assistant._cites
+      .map((c, i) => `[${i + 1}] ${typeof c === "string" ? c : c.url || ""}`)
+      .join("\n");
+    assistant.content += `\n\n---\n**Sources**\n${lines}`;
+  }
+}
+
+function traceTool(assistant, tool, args) {
+  assistant.toolCalls = assistant.toolCalls || [];
+  if (tool === "web_search" || tool === "x_search" || tool === "search") {
+    if (assistant.toolCalls.some((t) => t.tool === tool)) return;
+  }
+  assistant.toolCalls.push({ tool, args });
+  updateLive(assistant);
+}
+
+let liveRaf = 0;
+function updateLive(assistant) {
+  if (liveRaf) return;
+  liveRaf = requestAnimationFrame(() => {
+    liveRaf = 0;
+    if (assistant._el) renderAssistantBody(assistant._el, assistant);
+    const root = $("messages");
+    root.scrollTop = root.scrollHeight;
+  });
+}
+
+/* ---------- Pyodide (Python sandbox) ---------- */
+let pyodidePromise = null;
+function loadPyodide_() {
+  if (!pyodidePromise) {
+    pyodidePromise = (async () => {
+      await new Promise((res, rej) => {
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js";
+        s.onload = res;
+        s.onerror = rej;
+        document.head.appendChild(s);
+      });
+      return window.loadPyodide({
+        indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/",
+      });
+    })();
+  }
+  return pyodidePromise;
+}
+
+async function runPython(code) {
+  let py;
+  try {
+    py = await loadPyodide_();
+  } catch (e) {
+    return { stdout: "", stderr: "", error: "Pyodide 載入失敗", files: [] };
+  }
+  // write any uploaded files into the FS
+  for (const u of state.uploads) {
+    try {
+      py.FS.writeFile("/home/pyodide/" + u.name, u.bytes);
+    } catch {}
+  }
+  const before = new Set(listPyFiles(py));
+  let stdout = "",
+    stderr = "",
+    error = "";
+  py.setStdout({ batched: (s) => (stdout += s + "\n") });
+  py.setStderr({ batched: (s) => (stderr += s + "\n") });
+  try {
+    await py.runPythonAsync(code);
+  } catch (e) {
+    error = String(e.message || e).slice(0, 2000);
+  }
+  const files = [];
+  for (const name of listPyFiles(py)) {
+    if (before.has(name)) continue;
+    try {
+      const bytes = py.FS.readFile("/home/pyodide/" + name);
+      let text = null;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        text = null;
+      }
+      files.push({ name, bytes, text });
+    } catch {}
+  }
+  return { stdout: stdout.slice(0, 20000), stderr: stderr.slice(0, 20000), error, files };
+}
+function listPyFiles(py) {
+  try {
+    return py.FS.readdir("/home/pyodide").filter((n) => n !== "." && n !== "..");
+  } catch {
+    return [];
+  }
+}
+
+/* ---------- send flow ---------- */
+async function send() {
+  const inputEl = $("input");
+  const text = inputEl.value.trim();
+  if ((!text && !state.attachments.length) || state.streaming) return;
+  if (!state.key) {
+    openSettings();
+    return;
+  }
+  let convo = activeConvo();
+  if (!convo) {
+    convo = { id: newId(), title: text.slice(0, 40) || "新對話", messages: [] };
+    state.convos.unshift(convo);
+    state.activeId = convo.id;
+  }
+  const fileNote = state.uploads.length
+    ? `\n\n[已上傳檔案（工作目錄）：${state.uploads.map((u) => u.name).join(", ")}]`
+    : "";
+  const userMsg = {
+    role: "user",
+    content: text + fileNote,
+    images: state.attachments.map((a) => a.dataUrl),
+  };
+  convo.messages.push(userMsg);
+  const assistant = { role: "assistant", content: "" };
+  convo.messages.push(assistant);
+  inputEl.value = "";
+  inputEl.style.height = "auto";
+  state.attachments = [];
+  renderAttachments();
+  if (!convo.title || convo.title === "新對話")
+    convo.title = text.slice(0, 40) || "新對話";
+
+  state.streaming = true;
+  state.abort = new AbortController();
+  $("send-btn").hidden = true;
+  $("stop-btn").hidden = false;
+  renderSidebar();
+  renderMessages();
+
+  try {
+    await runAgent(convo, assistant);
+  } catch (e) {
+    if (e.name !== "AbortError")
+      assistant.content += `\n\n> ⚠️ 錯誤：${e.message}`;
+  } finally {
+    state.streaming = false;
+    state.uploads = [];
+    $("send-btn").hidden = false;
+    $("stop-btn").hidden = true;
+    if (assistant._el) renderAssistantBody(assistant._el, assistant);
+    saveConvos();
+  }
+}
+
+/* ---------- files / attachments ---------- */
+function fileToDataUrl(file) {
+  return new Promise((res) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.readAsDataURL(file);
+  });
+}
+async function handleFiles(files) {
+  for (const f of files) {
+    if (f.type.startsWith("image/")) {
+      state.attachments.push({ dataUrl: await fileToDataUrl(f) });
+    } else {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      state.uploads.push({ name: f.name.replace(/[^\w.-]/g, "_"), bytes: buf });
+    }
+  }
+  renderAttachments();
+}
+function renderAttachments() {
+  const root = $("attachments");
+  root.innerHTML = "";
+  state.attachments.forEach((a, i) => {
+    const img = document.createElement("img");
+    img.src = a.dataUrl;
+    img.title = "點擊移除";
+    img.onclick = () => {
+      state.attachments.splice(i, 1);
+      renderAttachments();
+    };
+    root.appendChild(img);
+  });
+  state.uploads.forEach((u, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.innerHTML = `📄 ${u.name} `;
+    const b = document.createElement("button");
+    b.textContent = "✕";
+    b.onclick = () => {
+      state.uploads.splice(i, 1);
+      renderAttachments();
+    };
+    chip.appendChild(b);
+    root.appendChild(chip);
+  });
+}
+
+/* ---------- settings / lightbox ---------- */
+function openSettings() {
+  $("key-input").value = state.key;
+  $("model-input").value = state.model;
+  $("sandbox-toggle").checked = state.sandbox;
+  $("settings-modal").hidden = false;
+}
+function openLightbox(src) {
+  $("lightbox-img").src = src;
+  $("lightbox").hidden = false;
+}
+function selectConvo(id) {
+  state.activeId = id;
+  renderSidebar();
+  renderMessages();
+}
+
+/* ---------- wiring ---------- */
+function init() {
+  $("send-btn").onclick = send;
+  $("stop-btn").onclick = () => state.abort && state.abort.abort();
+  $("new-chat").onclick = () => {
+    state.activeId = null;
+    renderSidebar();
+    renderMessages();
+  };
+  $("open-settings").onclick = openSettings;
+  $("save-settings").onclick = () => {
+    state.key = $("key-input").value.trim();
+    state.model = $("model-input").value.trim() || "grok-build-0.1";
+    state.sandbox = $("sandbox-toggle").checked;
+    localStorage.setItem(LS.key, state.key);
+    localStorage.setItem(LS.model, state.model);
+    localStorage.setItem(LS.sandbox, state.sandbox ? "1" : "0");
+    $("settings-modal").hidden = true;
+    updateStatus();
+  };
+  document.querySelector(".modal-close").onclick = () =>
+    ($("settings-modal").hidden = true);
+  $("lightbox").onclick = () => ($("lightbox").hidden = true);
+
+  const inp = $("input");
+  inp.addEventListener("input", () => {
+    inp.style.height = "auto";
+    inp.style.height = Math.min(inp.scrollHeight, 200) + "px";
+  });
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+  $("attach-btn").onclick = () => $("file-input").click();
+  $("file-input").onchange = (e) => {
+    handleFiles([...e.target.files]);
+    e.target.value = "";
+  };
+
+  const main = $("main");
+  let depth = 0;
+  main.addEventListener("dragenter", (e) => {
+    if (e.dataTransfer.types.includes("Files")) {
+      depth++;
+      main.classList.add("dragging");
+    }
+  });
+  main.addEventListener("dragover", (e) => {
+    if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+  });
+  main.addEventListener("dragleave", () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) main.classList.remove("dragging");
+  });
+  main.addEventListener("drop", (e) => {
+    e.preventDefault();
+    depth = 0;
+    main.classList.remove("dragging");
+    handleFiles([...e.dataTransfer.files]);
+  });
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", (e) => e.preventDefault());
+
+  updateStatus();
+  renderSidebar();
+  renderMessages();
+  if (!state.key) openSettings();
+}
+function updateStatus() {
+  $("status").innerHTML = state.key
+    ? `<span class="dot ok"></span>${state.model}`
+    : `<span class="dot bad"></span>未設定 API key`;
+}
+
+init();
