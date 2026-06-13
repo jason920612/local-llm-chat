@@ -20,6 +20,7 @@ import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import { parseThinking } from "@/lib/think";
 import { Markdown } from "./Markdown";
 import { Thinking } from "./Thinking";
+import { FilePreview, isPreviewable } from "./FilePreview";
 
 /**
  * Renders an assistant answer, placing generated media at the model's inline
@@ -75,7 +76,7 @@ function AssistantBody({
       <FileCode size={14} className="shrink-0 text-accent" />
       <span className="min-w-0 flex-1 truncate font-mono">{f.name}</span>
       <span className="shrink-0 text-muted">{f.size}B</span>
-      {f.isText ? (
+      {f.isText || isPreviewable(f.name) ? (
         <button
           onClick={() => onOpenFile(f.name)}
           className="shrink-0 text-accent hover:text-foreground"
@@ -226,26 +227,11 @@ export function MessageBubble({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [lightbox, setLightbox] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<{ name: string; content: string } | null>(
-    null,
-  );
+  const [viewer, setViewer] = useState<string | null>(null);
 
-  async function openFile(name: string) {
+  function openFile(name: string) {
     if (!conversationId) return;
-    try {
-      const res = await fetch(
-        `/api/sandbox/${conversationId}/file?name=${encodeURIComponent(name)}`,
-      );
-      const content = await res.text();
-      setViewer({ name, content });
-    } catch {
-      /* ignore */
-    }
-  }
-
-  function fileExt(name: string): string {
-    const m = name.match(/\.([a-z0-9]+)$/i);
-    return m ? m[1].toLowerCase() : "";
+    setViewer(name);
   }
 
   useEffect(() => setCanTts(ttsSupported()), []);
@@ -446,32 +432,34 @@ export function MessageBubble({
         </div>
       )}
 
-      {viewer && (
+      {viewer && conversationId && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
           onClick={() => setViewer(null)}
         >
           <div
-            className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-surface"
+            className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border bg-surface"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-border px-4 py-2">
-              <span className="truncate font-mono text-xs">{viewer.name}</span>
-              <button
-                onClick={() => setViewer(null)}
-                className="text-muted hover:text-foreground"
-              >
-                <X size={16} />
-              </button>
+              <span className="truncate font-mono text-xs">{viewer}</span>
+              <div className="flex items-center gap-3">
+                <a
+                  href={`/api/sandbox/${conversationId}/file?name=${encodeURIComponent(viewer)}&download=1`}
+                  className="text-xs text-accent hover:text-foreground"
+                >
+                  下載
+                </a>
+                <button
+                  onClick={() => setViewer(null)}
+                  className="text-muted hover:text-foreground"
+                >
+                  <X size={16} />
+                </button>
+              </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3">
-              <Markdown>
-                {"```" +
-                  fileExt(viewer.name) +
-                  "\n" +
-                  viewer.content +
-                  "\n```"}
-              </Markdown>
+            <div className="min-h-0 flex-1 overflow-auto">
+              <FilePreview conversationId={conversationId} name={viewer} />
             </div>
           </div>
         </div>

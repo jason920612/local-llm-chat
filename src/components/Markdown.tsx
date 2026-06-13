@@ -1,13 +1,47 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { isValidElement, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
+import { Artifact, artifactKind } from "./Artifact";
+import { RunnablePython } from "./RunnablePython";
+
+/** Recursively collect the raw text of a (possibly highlighted) node tree. */
+function extractText(node: React.ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (isValidElement(node)) {
+    return extractText((node.props as { children?: React.ReactNode }).children);
+  }
+  return "";
+}
+
+/** Read the `language-xxx` class off a fenced block's <code> child. */
+function langOf(node: React.ReactNode): string {
+  if (isValidElement(node)) {
+    const cn = (node.props as { className?: string }).className;
+    const m = cn?.match(/language-([\w-]+)/);
+    if (m) return m[1];
+  }
+  return "";
+}
 
 /** A code block with a copy button that auto-collapses when it's tall. */
 function CodeBlock({ children }: { children?: React.ReactNode }) {
+  const lang = langOf(children);
+  const kind = artifactKind(lang);
+  // Route special fenced blocks to live renderers; the rest fall through to the
+  // default collapsible code view below.
+  if (kind) return <Artifact kind={kind} code={extractText(children)} />;
+  if (lang === "python" || lang === "py")
+    return <RunnablePython>{children}</RunnablePython>;
+  return <PlainCodeBlock>{children}</PlainCodeBlock>;
+}
+
+function PlainCodeBlock({ children }: { children?: React.ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
   const [collapsed, setCollapsed] = useState(true);
   const [overflows, setOverflows] = useState(false);

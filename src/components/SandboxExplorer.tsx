@@ -4,17 +4,12 @@ import { useEffect, useState } from "react";
 import { X, FileCode, Download, RefreshCw, Package } from "lucide-react";
 import type { SandboxFileMeta } from "@/lib/types";
 import { fetchSandboxFiles, downloadSandboxArchive } from "@/lib/api";
-import { Markdown } from "./Markdown";
+import { FilePreview, isPreviewable } from "./FilePreview";
 
 function fmtSize(b: number): string {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function ext(name: string): string {
-  const m = name.match(/\.([a-z0-9]+)$/i);
-  return m ? m[1].toLowerCase() : "";
 }
 
 export function SandboxExplorer({
@@ -28,9 +23,7 @@ export function SandboxExplorer({
 }) {
   const [files, setFiles] = useState<SandboxFileMeta[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [viewer, setViewer] = useState<{ name: string; content: string } | null>(
-    null,
-  );
+  const [viewer, setViewer] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
@@ -69,10 +62,9 @@ export function SandboxExplorer({
       dl ? "&download=1" : ""
     }`;
 
-  async function view(name: string) {
+  function view(name: string) {
     if (!conversationId) return;
-    const res = await fetch(fileUrl(name));
-    setViewer({ name, content: await res.text() });
+    setViewer(name);
   }
 
   async function downloadTar() {
@@ -150,7 +142,7 @@ export function SandboxExplorer({
                     {f.name}
                   </span>
                   <span className="shrink-0 text-muted">{fmtSize(f.size)}</span>
-                  {f.isText && (
+                  {(f.isText || isPreviewable(f.name)) && (
                     <button
                       onClick={() => view(f.name)}
                       className="shrink-0 text-accent hover:text-foreground"
@@ -172,28 +164,34 @@ export function SandboxExplorer({
         </div>
       </div>
 
-      {viewer && (
+      {viewer && conversationId && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6"
           onClick={() => setViewer(null)}
         >
           <div
-            className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-surface"
+            className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border bg-surface"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-border px-4 py-2">
-              <span className="truncate font-mono text-xs">{viewer.name}</span>
-              <button
-                onClick={() => setViewer(null)}
-                className="text-muted hover:text-foreground"
-              >
-                <X size={16} />
-              </button>
+              <span className="truncate font-mono text-xs">{viewer}</span>
+              <div className="flex items-center gap-3">
+                <a
+                  href={fileUrl(viewer, true)}
+                  className="text-xs text-accent hover:text-foreground"
+                >
+                  下載
+                </a>
+                <button
+                  onClick={() => setViewer(null)}
+                  className="text-muted hover:text-foreground"
+                >
+                  <X size={16} />
+                </button>
+              </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3">
-              <Markdown>
-                {"```" + ext(viewer.name) + "\n" + viewer.content + "\n```"}
-              </Markdown>
+            <div className="min-h-0 flex-1 overflow-auto">
+              <FilePreview conversationId={conversationId} name={viewer} />
             </div>
           </div>
         </div>

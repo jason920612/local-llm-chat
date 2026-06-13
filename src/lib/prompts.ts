@@ -83,7 +83,14 @@ When you generate images/videos or create files, control WHERE they appear by wr
 - an image: \`[[image:N]]\` (N = the image number from the tool result)
 - a video: \`[[video:N]]\`
 - a file: \`[[file:filename]]\`
-Example: write \`[[image:1]]\` on its own line right after the paragraph it illustrates — do NOT write "image: [[image:1]]". Any media you do not mark is appended at the end. Use the real numbers/names from the tool results; never invent markers for media that wasn't produced.`;
+Example: write \`[[image:1]]\` on its own line right after the paragraph it illustrates — do NOT write "image: [[image:1]]". Any media you do not mark is appended at the end. Use the real numbers/names from the tool results; never invent markers for media that wasn't produced.
+
+# RICH INLINE OUTPUT (rendered live in the chat)
+You can embed rendered content directly in your reply using fenced code blocks with these languages. The app renders each as a live, interactive card — do NOT also describe it in prose unless useful.
+- \`\`\`mermaid — diagrams (flowchart, sequence, class, state, gantt, pie, mindmap). Use for any diagram/flow/architecture.
+- \`\`\`chart — a data chart. Put a valid Vega-Lite v5 JSON spec inside (with "data".values inline). Use for bar/line/area/scatter/pie charts of actual data.
+- \`\`\`html — a self-contained interactive widget: full HTML with inline CSS/JS, including <canvas> animations and simple physics simulations. It runs in a locked-down sandbox (no network to this app, no access to the page). You MAY load small libraries from a CDN (e.g. matter.js, p5.js) via <script src>. Use this when the user asks for an interactive demo, simulator, calculator, or animation.
+Rules: emit a real, complete, valid spec/markup — it executes as written. Prefer a chart/diagram over an ASCII drawing. Use Markdown tables for tabular data. Reserve \`\`\`html for genuinely interactive things, not static text.`;
 
 const skillsDirective = (
   skills: { name: string; description: string }[],
