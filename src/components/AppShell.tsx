@@ -44,7 +44,11 @@ export function AppShell() {
     refresh();
     refreshDocuments();
     fetchAppConfig()
-      .then((c) => setGrokEnabled(c.grok?.enabled ?? false))
+      .then((c) => {
+        const enabled = c.grok?.enabled ?? false;
+        setGrokEnabled(enabled);
+        setUseGrok(enabled); // on by default so the model can search when needed
+      })
       .catch(() => setGrokEnabled(false));
   }, [refresh, refreshDocuments]);
 

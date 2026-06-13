@@ -155,9 +155,13 @@ async function audit(
 export async function runMonitor(
   messages: ChatParam[],
   opts: MonitorOptions,
+  initialDraft?: string,
 ): Promise<MonitorResult> {
   let correctionRounds = 0;
-  let draft = await generate(messages, 0.4);
+  let draft =
+    initialDraft != null
+      ? stripBoilerplate(initialDraft)
+      : await generate(messages, 0.4);
 
   for (let round = 0; round <= config.sop.maxCorrections; round++) {
     const det = inspect(draft, opts);

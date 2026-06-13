@@ -259,6 +259,7 @@ async function runWithGrokTool(
   const messages = [...openaiMessages];
   const citations: Citation[] = [...baseCitations];
   let usedTool = false;
+  let directContent: string | null = null;
 
   for (let round = 0; round < config.grok.maxRounds; round++) {
     const resp = await llm.chat.completions.create({
@@ -274,8 +275,12 @@ async function runWithGrokTool(
 
     if (toolCalls.length === 0) {
       // Model answered directly without searching.
-      if (!usedTool && !config.sop.strictMonitor) {
-        return textResponse(msg?.content ?? "", citations);
+      if (!usedTool) {
+        if (!config.sop.strictMonitor) {
+          return textResponse(msg?.content ?? "", citations);
+        }
+        // Reuse this draft in the monitor instead of regenerating.
+        directContent = msg?.content ?? "";
       }
       break; // finalize below (streamed, or monitored under strict mode)
     }
@@ -324,10 +329,11 @@ async function runWithGrokTool(
   // citations unmanaged (-1): Grok already sourced the answer with inline links,
   // so numeric [n] stripping would mangle them and trigger false corrections.
   if (config.sop.strictMonitor) {
-    const result = await runMonitor(messages, {
-      allowedSources: -1,
-      requireCitations: false,
-    });
+    const result = await runMonitor(
+      messages,
+      { allowedSources: -1, requireCitations: false },
+      directContent ?? undefined,
+    );
     return monitorResponse(result, citations);
   }
   return streamFinal(messages, citations);
