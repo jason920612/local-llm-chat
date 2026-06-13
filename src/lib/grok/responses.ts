@@ -287,7 +287,8 @@ export function streamGrokResponses(
             if (c.name === IMAGE_FN) {
               try {
                 images.push(await generateImage(args.prompt ?? ""));
-                out = "Image generated and shown. Briefly confirm it.";
+                const n = images.length;
+                out = `Image #${n} generated. Place it inline by writing the marker [[image:${n}]] at the exact point in your reply where it should appear (omit it to append at the end).`;
               } catch (err) {
                 out = `generate_image failed: ${
                   err instanceof Error ? err.message : "error"
@@ -296,7 +297,8 @@ export function streamGrokResponses(
             } else if (c.name === VIDEO_FN) {
               try {
                 videos.push(await generateVideo(args.prompt ?? ""));
-                out = "Video generated and shown. Briefly confirm it.";
+                const n = videos.length;
+                out = `Video #${n} generated. Place it inline by writing the marker [[video:${n}]] where it should appear in your reply (omit it to append at the end).`;
               } catch (err) {
                 out = `generate_video failed: ${
                   err instanceof Error ? err.message : "error"
@@ -315,7 +317,11 @@ export function streamGrokResponses(
                     r.stdout ? `stdout:\n${r.stdout}` : "stdout: (empty)",
                     r.stderr ? `stderr:\n${r.stderr}` : "",
                     r.files.length
-                      ? `files: ${r.files.map((f) => f.name).join(", ")}`
+                      ? `files: ${r.files
+                          .map((f) => f.name)
+                          .join(
+                            ", ",
+                          )}. Place a file inline with the marker [[file:NAME]] where it should appear.`
                       : "",
                   ]
                     .filter(Boolean)

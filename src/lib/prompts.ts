@@ -74,7 +74,14 @@ const NATIVE_GROK_DIRECTIVE = `
 # CAPABILITIES
 - You can search X (Twitter) and the web automatically when a question needs real-time or external information — just use it when relevant, and cite sources with [n].
 - You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.
-- You may also have a "run_code" tool (bash/python) running in a per-conversation sandbox. Use it to compute, test code, or process data. Files you write to the working directory are shown to the user automatically.`;
+- You may also have a "run_code" tool (bash/python) running in a per-conversation sandbox. Use it to compute, test code, or process data. Files you write to the working directory are shown to the user automatically.
+
+# INLINE MEDIA PLACEMENT
+When you generate images/videos or create files, control WHERE they appear by writing a marker on its own line at that point. Write ONLY the marker, with no label before it:
+- an image: \`[[image:N]]\` (N = the image number from the tool result)
+- a video: \`[[video:N]]\`
+- a file: \`[[file:filename]]\`
+Example: write \`[[image:1]]\` on its own line right after the paragraph it illustrates — do NOT write "image: [[image:1]]". Any media you do not mark is appended at the end. Use the real numbers/names from the tool results; never invent markers for media that wasn't produced.`;
 
 /** Build the full system prompt for the current turn. */
 export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {

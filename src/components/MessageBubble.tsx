@@ -13,11 +13,143 @@ import {
   X,
   FileCode,
 } from "lucide-react";
-import type { UIMessage } from "@/lib/types";
+import type { UIMessage, SandboxFileMeta } from "@/lib/types";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import { parseThinking } from "@/lib/think";
 import { Markdown } from "./Markdown";
 import { Thinking } from "./Thinking";
+
+/**
+ * Renders an assistant answer, placing generated media at the model's inline
+ * markers ([[image:N]] / [[video:N]] / [[file:name]]); unreferenced media is
+ * appended at the end.
+ */
+function AssistantBody({
+  answer,
+  images,
+  videos,
+  files,
+  conversationId,
+  onImageClick,
+  onOpenFile,
+  streaming,
+}: {
+  answer: string;
+  images?: string[];
+  videos?: string[];
+  files?: SandboxFileMeta[];
+  conversationId?: string | null;
+  onImageClick: (src: string) => void;
+  onOpenFile: (name: string) => void;
+  streaming?: boolean;
+}) {
+  const imgs = images ?? [];
+  const vids = videos ?? [];
+  const fls = files ?? [];
+
+  const imageEl = (src: string, key: string) => (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      key={key}
+      src={src}
+      alt=""
+      onClick={() => onImageClick(src)}
+      className="my-2 max-h-72 cursor-zoom-in rounded-lg border border-border object-contain hover:opacity-90"
+    />
+  );
+  const videoEl = (src: string, key: string) => (
+    <video
+      key={key}
+      src={src}
+      controls
+      className="my-2 max-h-72 rounded-lg border border-border"
+    />
+  );
+  const fileEl = (f: SandboxFileMeta, key: string) => (
+    <div
+      key={key}
+      className="my-2 flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs"
+    >
+      <FileCode size={14} className="shrink-0 text-accent" />
+      <span className="min-w-0 flex-1 truncate font-mono">{f.name}</span>
+      <span className="shrink-0 text-muted">{f.size}B</span>
+      {f.isText ? (
+        <button
+          onClick={() => onOpenFile(f.name)}
+          className="shrink-0 text-accent hover:text-foreground"
+        >
+          檢視
+        </button>
+      ) : (
+        <a
+          href={`/api/sandbox/${conversationId}/file?name=${encodeURIComponent(f.name)}&download=1`}
+          className="shrink-0 text-accent hover:text-foreground"
+        >
+          下載
+        </a>
+      )}
+    </div>
+  );
+
+  const usedImg = new Set<number>();
+  const usedVid = new Set<number>();
+  const usedFile = new Set<string>();
+  const nodes: React.ReactNode[] = [];
+  const re = /\[\[(image|video|file):([^\]\n]+)\]\]/g;
+  let last = 0;
+  let k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(answer)) !== null) {
+    // Drop a stray "image:/video:/file:" label the model may write before a marker.
+    const seg = answer
+      .slice(last, m.index)
+      .replace(/(?:image|video|file)\s*[:：]\s*$/i, "");
+    if (seg.trim()) nodes.push(<Markdown key={`t${k}`}>{seg}</Markdown>);
+    const ref = m[2].trim();
+    if (m[1] === "image") {
+      const i = parseInt(ref, 10) - 1;
+      if (imgs[i]) {
+        usedImg.add(i);
+        nodes.push(imageEl(imgs[i], `m${k}`));
+      }
+    } else if (m[1] === "video") {
+      const i = parseInt(ref, 10) - 1;
+      if (vids[i]) {
+        usedVid.add(i);
+        nodes.push(videoEl(vids[i], `m${k}`));
+      }
+    } else {
+      const f = fls.find((x) => x.name === ref);
+      if (f) {
+        usedFile.add(f.name);
+        nodes.push(fileEl(f, `m${k}`));
+      }
+    }
+    last = m.index + m[0].length;
+    k++;
+  }
+  const tail = answer.slice(last);
+  if (tail.trim() || nodes.length === 0) {
+    nodes.push(
+      <Markdown key={`t${k}`}>
+        {tail || (streaming ? "" : "_(empty response)_")}
+      </Markdown>,
+    );
+  }
+
+  const leftImgs = imgs.filter((_, i) => !usedImg.has(i));
+  const leftVids = vids.filter((_, i) => !usedVid.has(i));
+  const leftFiles = fls.filter((f) => !usedFile.has(f.name));
+
+  return (
+    <>
+      {nodes}
+      {leftImgs.map((s, i) => imageEl(s, `li${i}`))}
+      {leftVids.map((s, i) => videoEl(s, `lv${i}`))}
+      {leftFiles.map((f, i) => fileEl(f, `lf${i}`))}
+    </>
+  );
+}
 
 export function MessageBubble({
   message,
@@ -148,7 +280,7 @@ export function MessageBubble({
           )}
         </div>
 
-        {message.images && message.images.length > 0 && (
+        {isUser && message.images && message.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {message.images.map((src, i) => (
               // eslint-disable-next-line @next/next/no-img-element
@@ -159,54 +291,6 @@ export function MessageBubble({
                 onClick={() => setLightbox(src)}
                 className="max-h-64 cursor-zoom-in rounded-lg border border-border object-contain transition hover:opacity-90"
               />
-            ))}
-          </div>
-        )}
-
-        {message.videos && message.videos.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {message.videos.map((src, i) => (
-              <video
-                key={i}
-                src={src}
-                controls
-                className="max-h-72 rounded-lg border border-border"
-              />
-            ))}
-          </div>
-        )}
-
-        {message.files && message.files.length > 0 && conversationId && (
-          <div className="mb-2 space-y-1">
-            <div className="text-[11px] font-medium uppercase tracking-wide text-muted">
-              Files
-            </div>
-            {message.files.map((f) => (
-              <div
-                key={f.name}
-                className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs"
-              >
-                <FileCode size={14} className="shrink-0 text-accent" />
-                <span className="min-w-0 flex-1 truncate font-mono">
-                  {f.name}
-                </span>
-                <span className="shrink-0 text-muted">{f.size}B</span>
-                {f.isText ? (
-                  <button
-                    onClick={() => openFile(f.name)}
-                    className="shrink-0 text-accent hover:text-foreground"
-                  >
-                    檢視
-                  </button>
-                ) : (
-                  <a
-                    href={`/api/sandbox/${conversationId}/file?name=${encodeURIComponent(f.name)}&download=1`}
-                    className="shrink-0 text-accent hover:text-foreground"
-                  >
-                    下載
-                  </a>
-                )}
-              </div>
             ))}
           </div>
         )}
@@ -247,9 +331,16 @@ export function MessageBubble({
               content={thinking}
               live={streaming && thinkingStreaming}
             />
-            <Markdown>
-              {answer || (streaming ? "" : "_(empty response)_")}
-            </Markdown>
+            <AssistantBody
+              answer={answer}
+              images={message.images}
+              videos={message.videos}
+              files={message.files}
+              conversationId={conversationId}
+              onImageClick={setLightbox}
+              onOpenFile={openFile}
+              streaming={streaming}
+            />
           </>
         )}
 
