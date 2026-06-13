@@ -1,5 +1,11 @@
 # Local LLM Chat
 
+> **Static demo (no install, runs in your browser):** <https://jason920612.github.io/local-llm-chat/>
+> — a pure-static GitHub Pages build (`docs/`) that talks directly to the xAI/Grok
+> API with your own key (stored only in your browser). Python sandbox via Pyodide.
+> The full app below (LM Studio, RAG, server sandbox, etc.) is the Next.js project.
+
+
 A private, fully-local multimodal chat web app. It talks to a model running in
 **LM Studio** (or any `llama.cpp` server exposing an OpenAI-compatible API) — no
 data leaves your machine, no cloud API keys.
