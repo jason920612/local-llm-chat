@@ -52,6 +52,30 @@ export async function saveMessage(
   });
 }
 
+export async function truncateAfter(
+  conversationId: string,
+  afterMessageId: string,
+): Promise<void> {
+  await fetch(`/api/conversations/${conversationId}/truncate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ afterMessageId }),
+  });
+}
+
+export async function forkConversationApi(
+  conversationId: string,
+  messageId: string,
+): Promise<Conversation> {
+  const res = await fetch(`/api/conversations/${conversationId}/fork`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messageId }),
+  });
+  if (!res.ok) throw new Error("Fork failed");
+  return res.json();
+}
+
 // --- Documents (RAG) -------------------------------------------------------
 
 export async function fetchDocuments(): Promise<RagDocument[]> {

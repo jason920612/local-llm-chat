@@ -7,6 +7,8 @@ import type { Conversation, UIMessage } from "@/lib/types";
 import {
   createConversationApi,
   fetchConversation,
+  truncateAfter,
+  forkConversationApi,
   parseCitationsHeader,
   parseImagesHeader,
   parseVideosHeader,
@@ -92,6 +94,102 @@ export function Chat({
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  // Core streaming turn: takes the full history (ending with the user turn to
+  // answer), shows an assistant placeholder, streams the reply, and persists it.
+  const runTurn = useCallback(
+    async (history: UIMessage[], cid: string) => {
+      const assistantMsg: UIMessage = {
+        id: nanoid(),
+        role: "assistant",
+        content: "",
+        createdAt: Date.now(),
+      };
+      setMessages([...history, assistantMsg]);
+      setStreaming(true);
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversationId: cid,
+            useRag,
+            useGrok,
+            messages: history.map((m) => ({
+              role: m.role,
+              content: m.content,
+              images: m.images,
+            })),
+          }),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Request failed (${res.status})`);
+        }
+        if (!res.body) throw new Error("No response stream.");
+
+        const citations = parseCitationsHeader(res.headers.get("X-Citations"));
+        const genImages = parseImagesHeader(res.headers.get("X-Images"));
+        const genVideos = parseVideosHeader(res.headers.get("X-Videos"));
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let acc = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          acc += decoder.decode(value, { stream: true });
+          const visible = acc.split(MEDIA_MARKER)[0];
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsg.id ? { ...m, content: visible } : m,
+            ),
+          );
+        }
+
+        const media = parseMediaSentinel(acc);
+        const finalAssistant: UIMessage = {
+          ...assistantMsg,
+          content: media.text,
+          citations:
+            citations.length || media.citations.length
+              ? [...citations, ...media.citations]
+              : undefined,
+          images:
+            genImages.length || media.images.length
+              ? [...genImages, ...media.images]
+              : undefined,
+          videos:
+            genVideos.length || media.videos.length
+              ? [...genVideos, ...media.videos]
+              : undefined,
+        };
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),
+        );
+        await saveMessage(cid, finalAssistant);
+        onPersisted();
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          // user stopped — keep partial output
+        } else {
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          setError(msg);
+          setMessages((prev) =>
+            prev.filter((m) => !(m.id === assistantMsg.id && m.content === "")),
+          );
+        }
+      } finally {
+        setStreaming(false);
+        abortRef.current = null;
+      }
+    },
+    [useRag, useGrok, onPersisted],
+  );
+
   const send = useCallback(async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || streaming) return;
@@ -105,126 +203,59 @@ export function Chat({
       images: images.length > 0 ? images : undefined,
       createdAt: Date.now(),
     };
-    const assistantMsg: UIMessage = {
-      id: nanoid(),
-      role: "assistant",
-      content: "",
-      createdAt: Date.now(),
-    };
-
     const history = [...messages, userMsg];
-    setMessages([...history, assistantMsg]);
     setInput("");
     setAttachments([]);
-    setStreaming(true);
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      // Ensure a conversation exists before persisting anything.
-      let cid = conversationId;
-      if (!cid) {
-        const conv = await createConversationApi(
-          text.slice(0, 40) || "Image chat",
-        );
-        cid = conv.id;
-        loadedId.current = cid; // don't reload over our own stream
-        onCreated(conv);
-      }
-
-      await saveMessage(cid, userMsg);
-
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conversationId: cid,
-          useRag,
-          useGrok,
-          messages: history.map((m) => ({
-            role: m.role,
-            content: m.content,
-            images: m.images,
-          })),
-        }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Request failed (${res.status})`);
-      }
-      if (!res.body) throw new Error("No response stream.");
-
-      const citations = parseCitationsHeader(res.headers.get("X-Citations"));
-      const genImages = parseImagesHeader(res.headers.get("X-Images"));
-      const genVideos = parseVideosHeader(res.headers.get("X-Videos"));
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let acc = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        acc += decoder.decode(value, { stream: true });
-        // Hide the trailing media marker while streaming.
-        const visible = acc.split(MEDIA_MARKER)[0];
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsg.id ? { ...m, content: visible } : m,
-          ),
-        );
-      }
-
-      // Streamed Grok responses carry citations/images/videos in a trailing
-      // marker; header-based ones (local/tool paths) carry them in headers.
-      const media = parseMediaSentinel(acc);
-      const finalAssistant: UIMessage = {
-        ...assistantMsg,
-        content: media.text,
-        citations:
-          citations.length || media.citations.length
-            ? [...citations, ...media.citations]
-            : undefined,
-        images:
-          genImages.length || media.images.length
-            ? [...genImages, ...media.images]
-            : undefined,
-        videos:
-          genVideos.length || media.videos.length
-            ? [...genVideos, ...media.videos]
-            : undefined,
-      };
-      setMessages((prev) =>
-        prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),
-      );
-      await saveMessage(cid, finalAssistant);
-      onPersisted();
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        // user stopped — keep partial output
-      } else {
-        const msg = err instanceof Error ? err.message : "Unknown error";
-        setError(msg);
-        setMessages((prev) =>
-          prev.filter((m) => !(m.id === assistantMsg.id && m.content === "")),
-        );
-      }
-    } finally {
-      setStreaming(false);
-      abortRef.current = null;
+    let cid = conversationId;
+    if (!cid) {
+      const conv = await createConversationApi(text.slice(0, 40) || "Image chat");
+      cid = conv.id;
+      loadedId.current = cid; // don't reload over our own stream
+      onCreated(conv);
     }
-  }, [
-    input,
-    attachments,
-    streaming,
-    messages,
-    conversationId,
-    useRag,
-    useGrok,
-    onCreated,
-    onPersisted,
-  ]);
+    await saveMessage(cid, userMsg);
+    await runTurn(history, cid);
+  }, [input, attachments, streaming, messages, conversationId, onCreated, runTurn]);
+
+  // Edit any turn. Editing a user turn truncates what follows and regenerates;
+  // editing an assistant turn just keeps the edited text (and truncates after).
+  const editMessage = useCallback(
+    async (messageId: string, newText: string) => {
+      if (streaming || !conversationId) return;
+      const idx = messages.findIndex((m) => m.id === messageId);
+      if (idx < 0) return;
+      setError(null);
+
+      const edited: UIMessage = { ...messages[idx], content: newText };
+      const history = [...messages.slice(0, idx), edited];
+
+      await saveMessage(conversationId, edited);
+      await truncateAfter(conversationId, messageId);
+
+      if (edited.role === "user") {
+        await runTurn(history, conversationId);
+      } else {
+        setMessages(history);
+        onPersisted();
+      }
+    },
+    [streaming, conversationId, messages, runTurn, onPersisted],
+  );
+
+  // Fork: branch a new conversation containing everything up to this message.
+  const forkAt = useCallback(
+    async (messageId: string) => {
+      if (!conversationId) return;
+      try {
+        const conv = await forkConversationApi(conversationId, messageId);
+        onCreated(conv); // adds to sidebar + switches; effect loads the fork
+      } catch {
+        setError("Fork failed");
+      }
+    },
+    [conversationId, onCreated],
+  );
 
   const isEmpty = messages.length === 0;
 
@@ -306,6 +337,9 @@ export function Chat({
                   i === messages.length - 1 &&
                   m.role === "assistant"
                 }
+                canEdit={!streaming}
+                onEdit={editMessage}
+                onFork={forkAt}
               />
             ))}
           </div>

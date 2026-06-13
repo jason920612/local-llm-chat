@@ -74,6 +74,48 @@ export function getConversation(
   return { conversation, messages: rows.map(rowToMessage) };
 }
 
+/** Delete all messages after the given message (by insertion order). */
+export function truncateMessagesAfter(
+  conversationId: string,
+  messageId: string,
+): void {
+  db.prepare(
+    `DELETE FROM messages
+     WHERE conversation_id = ?
+       AND rowid > (SELECT rowid FROM messages WHERE id = ?)`,
+  ).run(conversationId, messageId);
+}
+
+/** Copy a conversation up to and including `messageId` into a new conversation. */
+export function forkConversation(
+  conversationId: string,
+  messageId: string,
+  title?: string,
+): Conversation | null {
+  const src = getConversation(conversationId);
+  if (!src) return null;
+
+  const rows = db
+    .prepare(
+      `SELECT * FROM messages
+       WHERE conversation_id = ?
+         AND rowid <= (SELECT rowid FROM messages WHERE id = ?)
+       ORDER BY rowid ASC`,
+    )
+    .all(conversationId, messageId) as MessageRow[];
+
+  const conv = createConversation(title || `${src.conversation.title} (fork)`);
+  const base = Date.now();
+  rows.forEach((r, i) => {
+    addMessage(conv.id, {
+      ...rowToMessage(r),
+      id: nanoid(),
+      createdAt: base + i,
+    });
+  });
+  return conv;
+}
+
 export function renameConversation(id: string, title: string): void {
   db.prepare(`UPDATE conversations SET title = ? WHERE id = ?`).run(
     (title?.trim() || "Untitled").slice(0, 80),
