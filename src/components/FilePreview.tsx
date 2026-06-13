@@ -9,6 +9,7 @@ import {
   PDF_CMAP_URL,
 } from "@/lib/artifacts/loaders";
 import { Markdown } from "./Markdown";
+import { ImageViewer, AudioPlayer, VideoPlayer } from "./MediaViewer";
 
 function ext(name: string): string {
   const m = name.match(/\.([a-z0-9]+)$/i);
@@ -264,25 +265,9 @@ export function FilePreview({
     );
   if (e === "docx") return <DocxView url={url} />;
   if (e === "html" || e === "htm") return <HtmlView url={url} />;
-  if (IMG.includes(e))
-    return (
-      <div className="flex justify-center bg-[#0d0f15] p-4">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={name} className="max-h-[80vh] max-w-full" />
-      </div>
-    );
-  if (AUDIO.includes(e))
-    return (
-      <div className="p-6">
-        <audio controls src={url} className="w-full" />
-      </div>
-    );
-  if (VIDEO.includes(e))
-    return (
-      <div className="flex justify-center bg-black p-2">
-        <video controls src={url} className="max-h-[80vh] max-w-full" />
-      </div>
-    );
+  if (IMG.includes(e)) return <ImageViewer src={url} alt={name} />;
+  if (AUDIO.includes(e)) return <AudioPlayer src={url} name={name} />;
+  if (VIDEO.includes(e)) return <VideoPlayer src={url} />;
   if (SHEET.includes(e)) return <SheetView url={url} name={name} />;
   if (OFFICE_PDF.includes(e))
     return <PptxView conversationId={conversationId} name={name} />;

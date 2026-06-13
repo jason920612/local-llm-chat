@@ -23,6 +23,7 @@ import { parseThinking } from "@/lib/think";
 import { Markdown } from "./Markdown";
 import { Thinking } from "./Thinking";
 import { FilePreview, isPreviewable } from "./FilePreview";
+import { ImageViewer, VideoPlayer } from "./MediaViewer";
 
 /**
  * Renders an assistant answer, placing generated media at the model's inline
@@ -63,12 +64,9 @@ function AssistantBody({
     />
   );
   const videoEl = (src: string, key: string) => (
-    <video
-      key={key}
-      src={src}
-      controls
-      className="my-2 max-h-72 rounded-lg border border-border"
-    />
+    <div key={key} className="my-2 max-w-md">
+      <VideoPlayer src={src} inline />
+    </div>
   );
   const fileEl = (f: SandboxFileMeta, key: string) => (
     <div
@@ -461,12 +459,12 @@ export function MessageBubble({
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6"
           onClick={() => setLightbox(null)}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={lightbox}
-            alt="preview"
-            className="max-h-full max-w-full rounded-lg object-contain"
-          />
+          <div
+            className="w-full max-w-5xl overflow-hidden rounded-2xl border border-border bg-surface"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ImageViewer src={lightbox} alt="preview" />
+          </div>
           <button
             onClick={() => setLightbox(null)}
             className="absolute right-4 top-4 text-white/80 hover:text-white"
