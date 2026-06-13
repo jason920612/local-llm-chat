@@ -9,6 +9,7 @@ import type {
   Citation,
   RagDocument,
   SandboxFileMeta,
+  ToolCallTrace,
 } from "./types";
 
 interface MessageRow {
@@ -19,6 +20,7 @@ interface MessageRow {
   images: string | null;
   videos: string | null;
   files: string | null;
+  tool_calls: string | null;
   citations: string | null;
   created_at: number;
 }
@@ -32,6 +34,9 @@ function rowToMessage(row: MessageRow): UIMessage {
     videos: row.videos ? (JSON.parse(row.videos) as string[]) : undefined,
     files: row.files
       ? (JSON.parse(row.files) as SandboxFileMeta[])
+      : undefined,
+    toolCalls: row.tool_calls
+      ? (JSON.parse(row.tool_calls) as ToolCallTrace[])
       : undefined,
     citations: row.citations
       ? (JSON.parse(row.citations) as Citation[])
@@ -139,8 +144,8 @@ export function addMessage(conversationId: string, m: UIMessage): void {
   // OR REPLACE so a finalized assistant message can overwrite a placeholder.
   db.prepare(
     `INSERT OR REPLACE INTO messages
-       (id, conversation_id, role, content, images, videos, files, citations, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, conversation_id, role, content, images, videos, files, tool_calls, citations, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     m.id,
     conversationId,
@@ -149,6 +154,7 @@ export function addMessage(conversationId: string, m: UIMessage): void {
     m.images ? JSON.stringify(m.images) : null,
     m.videos ? JSON.stringify(m.videos) : null,
     m.files ? JSON.stringify(m.files) : null,
+    m.toolCalls ? JSON.stringify(m.toolCalls) : null,
     m.citations ? JSON.stringify(m.citations) : null,
     now,
   );

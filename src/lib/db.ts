@@ -74,6 +74,11 @@ function init(): Database.Database {
   } catch {
     /* column already exists */
   }
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN tool_calls TEXT`);
+  } catch {
+    /* column already exists */
+  }
 
   return db;
 }

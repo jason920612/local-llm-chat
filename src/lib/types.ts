@@ -11,9 +11,16 @@ export interface UIMessage {
   videos?: string[];
   /** Files produced in the conversation sandbox by code execution. */
   files?: SandboxFileMeta[];
+  /** Trace of tools the model invoked this turn (with their arguments). */
+  toolCalls?: ToolCallTrace[];
   /** Citations resolved from RAG retrieval, if any. */
   citations?: Citation[];
   createdAt?: number;
+}
+
+export interface ToolCallTrace {
+  tool: string;
+  args?: Record<string, unknown>;
 }
 
 export interface SandboxFileMeta {

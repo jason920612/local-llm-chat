@@ -12,8 +12,10 @@ import {
   Check,
   X,
   FileCode,
+  Wrench,
+  ChevronRight,
 } from "lucide-react";
-import type { UIMessage, SandboxFileMeta } from "@/lib/types";
+import type { UIMessage, SandboxFileMeta, ToolCallTrace } from "@/lib/types";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import { parseThinking } from "@/lib/think";
 import { Markdown } from "./Markdown";
@@ -148,6 +150,54 @@ function AssistantBody({
       {leftVids.map((s, i) => videoEl(s, `lv${i}`))}
       {leftFiles.map((f, i) => fileEl(f, `lf${i}`))}
     </>
+  );
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  search: "🔍 搜尋",
+  web_search: "🔍 網路搜尋",
+  x_search: "𝕏 搜尋",
+  grok_search: "🔍 Grok 搜尋",
+  generate_image: "🖼 生成圖片",
+  generate_video: "🎬 生成影片",
+  run_code: "▶ 執行程式",
+};
+
+/** Collapsible panel showing which tools the model called this turn + args. */
+function ToolCallsPanel({ calls }: { calls: ToolCallTrace[] }) {
+  const [open, setOpen] = useState(false);
+  if (!calls.length) return null;
+  const labelOf = (t: ToolCallTrace) => TOOL_LABELS[t.tool] ?? t.tool;
+  return (
+    <div className="mb-2 overflow-hidden rounded-lg border border-border/70 bg-surface-2/50 text-xs">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-muted hover:text-foreground"
+      >
+        <ChevronRight
+          size={12}
+          className={`transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        <Wrench size={12} />
+        <span className="truncate">
+          已呼叫 {calls.length} 個工具：{calls.map(labelOf).join("、")}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border/70 px-3 py-2">
+          {calls.map((c, i) => (
+            <div key={i}>
+              <div className="font-medium text-foreground">{labelOf(c)}</div>
+              {c.args && Object.keys(c.args).length > 0 && (
+                <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-[#0d0f15] p-2 text-[11px] text-muted">
+                  {JSON.stringify(c.args, null, 2).slice(0, 1500)}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -331,6 +381,9 @@ export function MessageBubble({
               content={thinking}
               live={streaming && thinkingStreaming}
             />
+            {message.toolCalls && message.toolCalls.length > 0 && (
+              <ToolCallsPanel calls={message.toolCalls} />
+            )}
             <AssistantBody
               answer={answer}
               images={message.images}

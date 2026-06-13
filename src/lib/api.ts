@@ -3,6 +3,7 @@ import type {
   Conversation,
   RagDocument,
   SandboxFileMeta,
+  ToolCallTrace,
   UIMessage,
 } from "./types";
 
@@ -261,8 +262,25 @@ export function parseVideosHeader(header: string | null): string[] {
   return decodeB64Json<string[]>(header, []);
 }
 
-// Trailing marker on streamed Grok responses (kept in sync with grok/responses.ts).
+// Markers on streamed Grok responses (kept in sync with grok/responses.ts).
 export const MEDIA_MARKER = "<<<XAI_MEDIA>>>";
+export const TOOL_MARKER = "<<<XAI_TOOL>>>";
+
+/** Extract live tool-call traces from the stream and return clean text. */
+export function parseStreamingText(raw: string): {
+  text: string;
+  toolCalls: ToolCallTrace[];
+} {
+  const beforeMedia = raw.split(MEDIA_MARKER)[0];
+  const toolCalls: ToolCallTrace[] = [];
+  const re = new RegExp(`\\n?${TOOL_MARKER}([A-Za-z0-9+/=]+)\\n?`, "g");
+  const text = beforeMedia.replace(re, (_full, b64: string) => {
+    const t = decodeB64Json<ToolCallTrace | null>(b64, null);
+    if (t) toolCalls.push(t);
+    return "";
+  });
+  return { text, toolCalls };
+}
 
 export interface StreamMedia {
   text: string;

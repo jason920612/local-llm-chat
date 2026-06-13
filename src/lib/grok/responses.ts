@@ -140,6 +140,9 @@ function extractReasoning(output: OutItem[]): string {
 /** Sentinel that separates the streamed answer from trailing media metadata. */
 export const MEDIA_MARKER = "<<<XAI_MEDIA>>>";
 
+/** Inline marker emitted live when a tool is invoked: marker + base64(JSON). */
+export const TOOL_MARKER = "<<<XAI_TOOL>>>";
+
 /** Parse an SSE byte stream into decoded event objects. */
 async function* sseEvents(
   body: ReadableStream<Uint8Array>,
@@ -191,6 +194,19 @@ export function streamGrokResponses(
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const enq = (s: string) => controller.enqueue(enc.encode(s));
+      const emitTool = (tool: string, args: Record<string, unknown> = {}) => {
+        const b64 = Buffer.from(
+          JSON.stringify({ tool, args }),
+          "utf-8",
+        ).toString("base64");
+        enq(`\n${TOOL_MARKER}${b64}\n`);
+      };
+      const seenServer = new Set<string>();
+      const emitServerTool = (name: string) => {
+        if (seenServer.has(name)) return;
+        seenServer.add(name);
+        emitTool(name);
+      };
       const images: string[] = [];
       const videos: string[] = [];
       const files: SandboxFileMeta[] = [];
@@ -254,13 +270,22 @@ export function streamGrokResponses(
                   name: item.name ?? "",
                   args: "",
                 };
+              } else if (item?.type === "web_search_call") {
+                emitServerTool("web_search");
+              } else if (item?.type === "x_search_call") {
+                emitServerTool("x_search");
               }
             } else if (type === "response.function_call_arguments.delta") {
               const id = ev.item_id as string;
               if (fns[id]) fns[id].args += (ev.delta as string) ?? "";
             } else if (type === "response.completed") {
               const r = ev.response as
-                | { id?: string; citations?: unknown[] }
+                | {
+                    id?: string;
+                    citations?: unknown[];
+                    output?: { type?: string }[];
+                    usage?: { num_server_side_tools_used?: number };
+                  }
                 | undefined;
               respId = r?.id;
               if (Array.isArray(r?.citations)) {
@@ -268,6 +293,20 @@ export function streamGrokResponses(
                   ...citations,
                   ...mapGrokCitations(r.citations, citations.length),
                 ];
+              }
+              // Server-side search trace: prefer specific call items, else fall
+              // back to the usage counter (the reliable signal xAI provides).
+              for (const it of r?.output ?? []) {
+                if (it?.type === "web_search_call") emitServerTool("web_search");
+                else if (it?.type === "x_search_call")
+                  emitServerTool("x_search");
+              }
+              if (
+                (r?.usage?.num_server_side_tools_used ?? 0) > 0 &&
+                !seenServer.has("web_search") &&
+                !seenServer.has("x_search")
+              ) {
+                emitServerTool("search");
               }
             }
           }
@@ -285,6 +324,7 @@ export function streamGrokResponses(
             }
             let out: string;
             if (c.name === IMAGE_FN) {
+              emitTool("generate_image", { prompt: args.prompt ?? "" });
               try {
                 images.push(await generateImage(args.prompt ?? ""));
                 const n = images.length;
@@ -295,6 +335,7 @@ export function streamGrokResponses(
                 }`;
               }
             } else if (c.name === VIDEO_FN) {
+              emitTool("generate_video", { prompt: args.prompt ?? "" });
               try {
                 videos.push(await generateVideo(args.prompt ?? ""));
                 const n = videos.length;
@@ -306,6 +347,7 @@ export function streamGrokResponses(
               }
             } else if (c.name === CODE_FN) {
               const lang = args.language === "bash" ? "bash" : "python";
+              emitTool("run_code", { language: lang, code: args.code ?? "" });
               const r = await runCode(conversationId, lang, args.code ?? "");
               for (const f of r.files) {
                 if (!files.some((x) => x.name === f.name)) files.push(f);

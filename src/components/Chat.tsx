@@ -14,7 +14,7 @@ import {
   parseImagesHeader,
   parseVideosHeader,
   parseMediaSentinel,
-  MEDIA_MARKER,
+  parseStreamingText,
   saveMessage,
 } from "@/lib/api";
 import { fileToResizedDataURL, isImageFile } from "@/lib/image";
@@ -217,18 +217,28 @@ export function Chat({
           const { done, value } = await reader.read();
           if (done) break;
           acc += decoder.decode(value, { stream: true });
-          const visible = acc.split(MEDIA_MARKER)[0];
+          const live = parseStreamingText(acc);
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantMsg.id ? { ...m, content: visible } : m,
+              m.id === assistantMsg.id
+                ? {
+                    ...m,
+                    content: live.text,
+                    toolCalls:
+                      live.toolCalls.length > 0 ? live.toolCalls : undefined,
+                  }
+                : m,
             ),
           );
         }
 
         const media = parseMediaSentinel(acc);
+        const parsed = parseStreamingText(acc);
         const finalAssistant: UIMessage = {
           ...assistantMsg,
-          content: media.text,
+          content: parsed.text,
+          toolCalls:
+            parsed.toolCalls.length > 0 ? parsed.toolCalls : undefined,
           citations:
             citations.length || media.citations.length
               ? [...citations, ...media.citations]
