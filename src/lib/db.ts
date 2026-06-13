@@ -61,6 +61,16 @@ function init(): Database.Database {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS compactions (
+      through_id      TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      summary         TEXT NOT NULL,
+      created_at      INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_compactions_conv
+      ON compactions(conversation_id);
   `);
 
   // Migrations: add columns to pre-existing messages tables (no-op if present).

@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
-import { setActiveChild } from "@/lib/repo";
+import { setActiveChild, getConversation } from "@/lib/repo";
+import { computePath } from "@/lib/tree";
+import { compactConversation } from "@/lib/compaction";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,5 +19,17 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return Response.json({ error: "childId required" }, { status: 400 });
   }
   setActiveChild(id, body.parentId ?? null, body.childId);
+
+  // Switching a branch can change the active path, so eagerly compact it now: the
+  // summary then always matches the branch you're on (cached per node, so this is
+  // cheap on subsequent switches and reuses shared-history summaries).
+  try {
+    const data = getConversation(id);
+    if (data) {
+      await compactConversation(id, computePath(data.messages, data.rootChildId));
+    }
+  } catch {
+    /* best-effort pre-warm */
+  }
   return Response.json({ ok: true });
 }

@@ -8,9 +8,9 @@ import { chatClient, strictMonitorEnabled, chatTarget } from "../settings";
 import { askGrok, mapGrokCitations } from "../grok/search";
 import { generateImage } from "../grok/image";
 import { grokSearchTool, generateImageTool } from "../grok/tool";
-import { streamGrokResponses, summarizeForCompaction } from "../grok/responses";
+import { streamGrokResponses } from "../grok/responses";
 import { skillsSummary } from "../skills";
-import { getCompaction, setCompaction } from "../repo";
+import { compactConversation } from "../compaction";
 import type { Citation } from "../types";
 import { callStructured } from "./structured";
 import {
@@ -81,7 +81,7 @@ export async function runControlledChat(
       });
       // Auto-compact long histories: summarize older turns and send
       // [summary + recent turns] instead of the full transcript.
-      const { messages: effective, summary } = await compactIfNeeded(
+      const { messages: effective, summary } = await compactConversation(
         body.conversationId ?? "",
         messages,
       );
@@ -143,61 +143,6 @@ export async function runControlledChat(
       { status: 502 },
     );
   }
-}
-
-/** Rough token estimate (≈ chars / 4) for text content + summary. */
-function estTokens(messages: UIMessage[], summary: string): number {
-  const chars =
-    summary.length +
-    messages.reduce((a, m) => a + (m.content?.length ?? 0), 0);
-  return Math.ceil(chars / 4);
-}
-
-/**
- * Codex-style auto-compaction. Returns the messages to actually send (older turns
- * dropped) plus a rolling summary representing everything dropped. The summary is
- * persisted so we don't re-summarize the same turns next time.
- */
-async function compactIfNeeded(
-  conversationId: string,
-  messages: UIMessage[],
-): Promise<{ messages: UIMessage[]; summary: string }> {
-  if (!config.compaction.enabled || !conversationId) {
-    return { messages, summary: "" };
-  }
-  let { summary, summaryThroughId } = getCompaction(conversationId);
-
-  // Drop the prefix already covered by the summary (if it's on this path).
-  let recent = messages;
-  if (summary && summaryThroughId) {
-    const idx = messages.findIndex((m) => m.id === summaryThroughId);
-    if (idx >= 0) recent = messages.slice(idx + 1);
-    else summary = null; // branch switched; old summary doesn't apply
-  }
-
-  const { thresholdTokens, keepRecent } = config.compaction;
-  // Compact (usually once) until we're under budget or only recent turns remain.
-  while (
-    estTokens(recent, summary ?? "") > thresholdTokens &&
-    recent.length > keepRecent + 1
-  ) {
-    const cut = recent.length - keepRecent;
-    const toSummarize = recent.slice(0, cut);
-    try {
-      const next = await summarizeForCompaction(
-        toSummarize,
-        summary ?? undefined,
-      );
-      if (!next.trim()) break;
-      summary = next;
-      summaryThroughId = toSummarize[toSummarize.length - 1].id;
-      setCompaction(conversationId, summary, summaryThroughId);
-      recent = recent.slice(cut);
-    } catch {
-      break; // summarization failed — fall back to sending what we have
-    }
-  }
-  return { messages: recent, summary: summary ?? "" };
 }
 
 function lastUserText(messages: UIMessage[]): string {

@@ -167,33 +167,28 @@ export function forkConversation(
   return conv;
 }
 
-/** Read a conversation's rolling compaction summary + how far it covers. */
-export function getCompaction(
-  conversationId: string,
-): { summary: string | null; summaryThroughId: string | null } {
-  const row = db
-    .prepare(
-      `SELECT summary, summary_through_id AS throughId
-       FROM conversations WHERE id = ?`,
-    )
-    .get(conversationId) as
-    | { summary: string | null; throughId: string | null }
-    | undefined;
-  return {
-    summary: row?.summary ?? null,
-    summaryThroughId: row?.throughId ?? null,
-  };
+/**
+ * Per-node compaction cache: a summary keyed by the message id it covers up to.
+ * Because tree nodes are immutable, a summary keyed by a node id is valid for any
+ * branch/path that includes that node — so switching branches reuses cached
+ * summaries instead of re-summarizing.
+ */
+export function getCachedSummary(throughId: string): string | null {
+  const r = db
+    .prepare(`SELECT summary FROM compactions WHERE through_id = ?`)
+    .get(throughId) as { summary: string } | undefined;
+  return r?.summary ?? null;
 }
 
-/** Persist a conversation's rolling compaction summary. */
-export function setCompaction(
+export function setCachedSummary(
   conversationId: string,
+  throughId: string,
   summary: string,
-  summaryThroughId: string,
 ): void {
   db.prepare(
-    `UPDATE conversations SET summary = ?, summary_through_id = ? WHERE id = ?`,
-  ).run(summary, summaryThroughId, conversationId);
+    `INSERT OR REPLACE INTO compactions (through_id, conversation_id, summary, created_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(throughId, conversationId, summary, Date.now());
 }
 
 export function renameConversation(id: string, title: string): void {
