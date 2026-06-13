@@ -37,6 +37,10 @@ export function enforceCitations(
   refusalMarker: string,
 ): ValidationResult {
   const violations: string[] = [];
+  // Negative count = citations are not managed here (e.g. Grok already sourced
+  // the answer with its own inline links) — leave the text untouched.
+  if (allowedCount < 0) return { text, violations };
+
   const refused = text.trim().startsWith(refusalMarker.trim().slice(0, 12));
 
   // Any [n] outside 1..allowedCount is fabricated and removed. When there are

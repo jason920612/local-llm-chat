@@ -320,12 +320,13 @@ async function runWithGrokTool(
     }
   }
 
-  // Final answer. Under strict monitor, run the scold-correction loop and
-  // enforce citations on Grok's sources; otherwise stream it.
+  // Final answer. Under strict monitor, run the scold-correction loop but leave
+  // citations unmanaged (-1): Grok already sourced the answer with inline links,
+  // so numeric [n] stripping would mangle them and trigger false corrections.
   if (config.sop.strictMonitor) {
     const result = await runMonitor(messages, {
-      allowedSources: citations.length,
-      requireCitations: citations.length > 0,
+      allowedSources: -1,
+      requireCitations: false,
     });
     return monitorResponse(result, citations);
   }
