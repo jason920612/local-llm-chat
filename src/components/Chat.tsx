@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { nanoid } from "nanoid";
-import { Bot, BookOpen, Globe, AudioLines } from "lucide-react";
+import { Bot, BookOpen, Globe, AudioLines, FolderOpen } from "lucide-react";
 import type { Conversation, UIMessage, SandboxFileMeta } from "@/lib/types";
 import {
   createConversationApi,
@@ -22,6 +22,7 @@ import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { VoiceMode } from "./VoiceMode";
+import { SandboxExplorer } from "./SandboxExplorer";
 
 export function Chat({
   conversationId,
@@ -52,6 +53,7 @@ export function Chat({
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [explorerOpen, setExplorerOpen] = useState(false);
   const [sandboxFiles, setSandboxFiles] = useState<SandboxFileMeta[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -397,6 +399,16 @@ export function Chat({
           <BookOpen size={13} />
           Docs{docCount > 0 ? ` (${docCount})` : ""}
         </button>
+        {conversationId && (
+          <button
+            onClick={() => setExplorerOpen(true)}
+            title="沙盒檔案總管"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground"
+          >
+            <FolderOpen size={13} />
+            Files
+          </button>
+        )}
         {grokEnabled && (
           <button
             onClick={() => setVoiceOpen(true)}
@@ -483,6 +495,11 @@ export function Chat({
       />
 
       <VoiceMode open={voiceOpen} onClose={() => setVoiceOpen(false)} />
+      <SandboxExplorer
+        open={explorerOpen}
+        onClose={() => setExplorerOpen(false)}
+        conversationId={conversationId}
+      />
     </div>
   );
 }

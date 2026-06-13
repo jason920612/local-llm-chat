@@ -95,14 +95,11 @@ function listFiles(dir: string, since: number): SandboxFile[] {
   return out.slice(0, 50);
 }
 
-function resolveCmd(language: "python" | "bash"): {
-  cmd: string;
-  ext: string;
-} | null {
+function resolveCmd(language: "python" | "bash"): string {
   if (language === "python") {
-    return { cmd: process.platform === "win32" ? "python" : "python3", ext: "py" };
+    return process.platform === "win32" ? "python" : "python3";
   }
-  return { cmd: "bash", ext: "sh" };
+  return "bash";
 }
 
 /** Execute model-written code in the conversation's sandbox workspace. */
@@ -115,26 +112,20 @@ export async function runCode(
   const dir = workspaceDir(conversationId);
   fs.mkdirSync(dir, { recursive: true });
 
-  const resolved = resolveCmd(language);
-  if (!resolved) {
-    return emptyResult({ error: `Unsupported language: ${language}` });
-  }
-  const scriptPath = path.join(dir, `__script_${Date.now()}.${resolved.ext}`);
-  fs.writeFileSync(scriptPath, code, "utf-8");
-
+  const cmd = resolveCmd(language);
   const start = Date.now();
-  const result = await new Promise<RunResult>((resolve) => {
+
+  return new Promise<RunResult>((resolve) => {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let child;
     try {
-      child = spawn(resolved.cmd, [scriptPath], {
-        cwd: dir,
-        windowsHide: true,
-      });
+      // Pass the program on stdin (python/bash both read it). Avoids writing a
+      // script file and the Windows->WSL path issues that breaks file-path bash.
+      child = spawn(cmd, [], { cwd: dir, windowsHide: true });
     } catch {
-      resolve(emptyResult({ error: `${resolved.cmd} not found` }));
+      resolve(emptyResult({ error: `${cmd} not found` }));
       return;
     }
 
@@ -150,11 +141,18 @@ export async function runCode(
         emptyResult({
           error:
             err instanceof Error && "code" in err && err.code === "ENOENT"
-              ? `${resolved.cmd} not found on this machine`
+              ? `${cmd} not found on this machine`
               : String(err),
         }),
       );
     });
+
+    try {
+      child.stdin.write(code);
+      child.stdin.end();
+    } catch {
+      /* child may have failed to spawn; error handler covers it */
+    }
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -163,11 +161,6 @@ export async function runCode(
 
     child.on("close", (exitCode) => {
       clearTimeout(timer);
-      try {
-        fs.rmSync(scriptPath, { force: true });
-      } catch {
-        /* ignore */
-      }
       resolve({
         stdout: stdout.slice(0, cap),
         stderr: stderr.slice(0, cap),
@@ -178,8 +171,6 @@ export async function runCode(
       });
     });
   });
-
-  return result;
 }
 
 function emptyResult(extra: Partial<RunResult>): RunResult {
@@ -218,6 +209,56 @@ export function writeSandboxFiles(
     });
   }
   return out;
+}
+
+/** List every file currently in a conversation's sandbox workspace. */
+export function listSandboxFiles(conversationId: string): SandboxFile[] {
+  const dir = workspaceDir(conversationId);
+  if (!fs.existsSync(dir)) return [];
+  return listFiles(dir, 0);
+}
+
+/** Build a minimal ustar tar header (512 bytes) for one file. */
+function tarHeader(name: string, size: number): Buffer {
+  const h = Buffer.alloc(512);
+  h.write(name.slice(0, 100), 0, "utf-8");
+  h.write("0000644\0", 100); // mode
+  h.write("0000000\0", 108); // uid
+  h.write("0000000\0", 116); // gid
+  h.write(size.toString(8).padStart(11, "0") + "\0", 124); // size (octal)
+  h.write(
+    Math.floor(Date.now() / 1000)
+      .toString(8)
+      .padStart(11, "0") + "\0",
+    136,
+  ); // mtime
+  h.write("        ", 148); // checksum placeholder (8 spaces)
+  h.write("0", 156); // typeflag: regular file
+  h.write("ustar\0", 257);
+  h.write("00", 263); // version
+  let sum = 0;
+  for (let i = 0; i < 512; i++) sum += h[i];
+  h.write(sum.toString(8).padStart(6, "0") + "\0 ", 148); // checksum
+  return h;
+}
+
+/** Pack the selected sandbox files into a tar archive (Buffer). */
+export function packTar(conversationId: string, names: string[]): Buffer {
+  const dir = workspaceDir(conversationId);
+  const root = path.resolve(dir);
+  const parts: Buffer[] = [];
+  for (const name of names) {
+    const target = path.resolve(dir, name);
+    if (!target.startsWith(root)) continue;
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) continue;
+    const data = fs.readFileSync(target);
+    parts.push(tarHeader(name, data.length));
+    parts.push(data);
+    const pad = (512 - (data.length % 512)) % 512;
+    if (pad) parts.push(Buffer.alloc(pad));
+  }
+  parts.push(Buffer.alloc(1024)); // end-of-archive: two zero blocks
+  return Buffer.concat(parts);
 }
 
 /** Read a file from a conversation's sandbox (with path-traversal guard). */

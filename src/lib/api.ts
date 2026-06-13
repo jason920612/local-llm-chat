@@ -87,6 +87,41 @@ export async function uploadSandboxFiles(
   return (data.files ?? []) as SandboxFileMeta[];
 }
 
+export async function fetchSandboxFiles(
+  conversationId: string,
+): Promise<SandboxFileMeta[]> {
+  const res = await fetch(`/api/sandbox/${conversationId}/files`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.files ?? []) as SandboxFileMeta[];
+}
+
+/** Download selected sandbox files packed into a tar. */
+export async function downloadSandboxArchive(
+  conversationId: string,
+  names: string[],
+): Promise<void> {
+  const res = await fetch(`/api/sandbox/${conversationId}/archive`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ names }),
+  });
+  if (!res.ok) throw new Error("archive failed");
+  const blob = await res.blob();
+  triggerDownload(blob, "sandbox.tar");
+}
+
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export async function forkConversationApi(
   conversationId: string,
   messageId: string,
