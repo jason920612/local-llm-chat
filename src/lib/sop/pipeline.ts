@@ -9,6 +9,7 @@ import { askGrok, mapGrokCitations } from "../grok/search";
 import { generateImage } from "../grok/image";
 import { grokSearchTool, generateImageTool } from "../grok/tool";
 import { streamGrokResponses } from "../grok/responses";
+import { skillsSummary } from "../skills";
 import type { Citation } from "../types";
 import { callStructured } from "./structured";
 import {
@@ -73,6 +74,9 @@ export async function runControlledChat(
         hasImages,
         ragContext,
         grokNative: true,
+        // Skills depend on the sandbox tools (run_code/clone_repo), so only
+        // advertise them when the sandbox is enabled.
+        skills: config.sandbox.enabled ? skillsSummary() : [],
       });
       // Streamed: text tokens, then a trailing media marker with
       // citations/images/videos (parsed by the client).

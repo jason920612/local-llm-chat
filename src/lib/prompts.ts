@@ -17,6 +17,8 @@ export interface SystemPromptOptions {
   hasGrokTool?: boolean;
   /** True when running natively on the Grok Responses API (search is automatic). */
   grokNative?: boolean;
+  /** Available skills (name + one-line description) to advertise to the model. */
+  skills?: { name: string; description: string }[];
 }
 
 /**
@@ -83,12 +85,30 @@ When you generate images/videos or create files, control WHERE they appear by wr
 - a file: \`[[file:filename]]\`
 Example: write \`[[image:1]]\` on its own line right after the paragraph it illustrates — do NOT write "image: [[image:1]]". Any media you do not mark is appended at the end. Use the real numbers/names from the tool results; never invent markers for media that wasn't produced.`;
 
+const skillsDirective = (
+  skills: { name: string; description: string }[],
+) => `
+
+# SKILLS — load a playbook before doing the matching task
+You have reusable skill playbooks. When the user's request matches one, FIRST call
+the "use_skill" tool with its name to load the full step-by-step playbook, THEN
+follow it. Do not improvise a worse approach when a skill exists for the task.
+Available skills:
+${skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
+
+Hard rules:
+- Need to search/explore a codebase or many files → load "explore-codebase" and use tree-structured search (ripgrep/grep via run_code), never read every file.
+- User gives a GitHub repo / asks you to look at a project → load "clone-github", then "clone_repo" it, then explore.`;
+
 /** Build the full system prompt for the current turn. */
 export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {
   let prompt = CORE_DIRECTIVE;
   if (opts.hasImages) prompt += VISION_DIRECTIVE;
   if (opts.grokNative) prompt += NATIVE_GROK_DIRECTIVE;
   else if (opts.hasGrokTool) prompt += GROK_DIRECTIVE;
+  if (opts.skills && opts.skills.length > 0) {
+    prompt += skillsDirective(opts.skills);
+  }
   if (opts.ragContext && opts.ragContext.trim().length > 0) {
     prompt += ragDirective(opts.ragContext);
   }

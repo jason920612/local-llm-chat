@@ -38,6 +38,94 @@ const SYSTEM = `You are Grok, a helpful AI assistant running in a static web app
 - run_code: execute Python in a sandbox; files you create are shown to the user (place inline with [[file:name]]).
 Be direct and useful.`;
 
+/* ---------- Skills framework (Claude-style) ----------
+ * The model sees a compact list (name + description) appended to its
+ * instructions, and loads a full playbook ON DEMAND via the use_skill tool.
+ * Static flavor: Python (Pyodide) instead of ripgrep/bash; clone via GitHub API. */
+const SKILLS = {
+  "explore-codebase": {
+    description:
+      "Efficiently explore a code/text repo in the sandbox using structured search (Python os.walk + re), not by reading every file. Use to find where something is defined/used across many files.",
+    body: `# Explore a codebase efficiently (Python sandbox)
+
+There is no shell here — use the run_code Python tool to search. NEVER read files
+one by one. Search first, then read only matching lines.
+
+1. Map the tree (no file contents yet):
+\`\`\`python
+import os
+for root, dirs, files in os.walk("repo"):
+    dirs[:] = [d for d in dirs if d != ".git"]
+    print(root + "/", len(files), "files")
+\`\`\`
+
+2. Grep by content with a regex, printing file:line:
+\`\`\`python
+import os, re
+pat = re.compile(r"search_term")
+for root, dirs, files in os.walk("repo"):
+    dirs[:] = [d for d in dirs if d != ".git"]
+    for f in files:
+        p = os.path.join(root, f)
+        try:
+            for i, line in enumerate(open(p, encoding="utf-8", errors="ignore"), 1):
+                if pat.search(line):
+                    print(f"{p}:{i}: {line.rstrip()[:160]}")
+        except Exception:
+            pass
+\`\`\`
+
+3. Read ONLY the relevant slice of a file (e.g. lines 120-180):
+\`\`\`python
+print("".join(open("repo/path.py", encoding="utf-8", errors="ignore").readlines()[119:180]))
+\`\`\`
+
+4. Read the README / package.json / pyproject first to understand structure.
+5. Narrow iteratively: list files → grep → read exact lines. Cap output (slice
+   lines, limit matches) so you don't flood context.
+
+Rules: structured search only; if a repo is on GitHub and not local yet, use the
+clone-github skill first.`,
+  },
+  "clone-github": {
+    description:
+      "Fetch a GitHub repo into the sandbox (via the GitHub API) so you can explore its real files, instead of guessing. Use when the user gives a repo URL or asks you to look at a project.",
+    body: `# Clone a GitHub repo, then explore it
+
+When the user points you at a repository, bring the real files into the sandbox —
+do not answer from memory or web snippets.
+
+1. Use the clone_repo tool with the repo URL (https://github.com/owner/repo or
+   owner/repo). It downloads the files into the Python sandbox under a folder named
+   after the repo and returns the file tree. (It uses the GitHub API; very large
+   repos are truncated.)
+2. Then use the explore-codebase skill: run_code Python to os.walk + regex-search
+   the cloned folder, reading only relevant lines.
+3. Answer from what you actually read, citing concrete files and line numbers. If
+   something isn't in the repo, say so.
+
+Rules: after cloning, immediately switch to efficient structured search — the
+point of cloning is local search, not reading everything.`,
+  },
+};
+
+/** Compact skills list appended to instructions when the sandbox is on. */
+function skillsBlock() {
+  const names = Object.keys(SKILLS);
+  if (!names.length) return "";
+  const list = names.map((n) => `- ${n}: ${SKILLS[n].description}`).join("\n");
+  return `
+
+# SKILLS — load a playbook before doing the matching task
+When the request matches a skill, FIRST call use_skill with its name to load the
+full playbook, THEN follow it. Available skills:
+${list}
+
+Hard rules:
+- Search/explore a codebase or many files → load "explore-codebase" and search structurally (Python os.walk + re via run_code), never read every file.
+- User gives a GitHub repo / asks to look at a project → load "clone-github", then clone_repo it, then explore.`;
+}
+
 /* ---------- persistence ---------- */
 function saveConvos() {
   localStorage.setItem(LS.convos, JSON.stringify(state.convos));
@@ -100,6 +188,8 @@ function renderAssistantBody(bodyEl, msg) {
       generate_image: "🖼 生成圖片",
       generate_video: "🎬 生成影片",
       run_code: "▶ 執行 Python",
+      use_skill: "📖 載入技能",
+      clone_repo: "📦 拉取倉庫",
     };
     const d = document.createElement("details");
     d.className = "panel";
@@ -333,6 +423,34 @@ function tools() {
         required: ["code"],
       },
     });
+    t.push({
+      type: "function",
+      name: "clone_repo",
+      description:
+        "Download a GitHub repository into the sandbox (via the GitHub API) and get back its file tree, so you can explore the real files with run_code. Use when the user gives a repo URL or asks you to look at a project.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description:
+              "Repo reference: https://github.com/owner/repo or owner/repo.",
+          },
+        },
+        required: ["url"],
+      },
+    });
+    t.push({
+      type: "function",
+      name: "use_skill",
+      description:
+        "Load the full step-by-step playbook for a named skill before doing the matching task. Call this FIRST when the request matches an available skill (see the SKILLS section of your instructions).",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+    });
   }
   return t;
 }
@@ -491,6 +609,18 @@ async function runAgent(convo, assistant, instructions) {
               r.files.map((f) => f.name).join(", ") +
               " (place with [[file:NAME]])"
             : "");
+      } else if (c.name === "use_skill") {
+        traceTool(assistant, "use_skill", { name: args.name });
+        const sk = SKILLS[(args.name || "").trim()];
+        out = sk
+          ? `Skill "${args.name}" loaded. Follow this playbook:\n\n${sk.body}`
+          : `Unknown skill: ${args.name || ""}`;
+      } else if (c.name === "clone_repo") {
+        traceTool(assistant, "clone_repo", { url: args.url });
+        const r = await cloneRepoBrowser(args.url || "");
+        out = r.ok
+          ? `Cloned into "${r.dir}/". Top-level tree:\n${r.tree}\n\nNow explore it with run_code (os.walk + regex over "${r.dir}"). Do NOT read every file.`
+          : `clone_repo failed: ${r.error || "error"}`;
       } else out = "unknown tool";
       outputs.push({ type: "function_call_output", call_id: c.call_id, output: out });
       updateLive(assistant);
@@ -638,6 +768,95 @@ function listPyFiles(py) {
   }
 }
 
+/* Normalize a repo reference into {owner, repo, branch?}. */
+function parseRepo(input) {
+  let s = (input || "").trim().replace(/\.git$/, "");
+  const m = s.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\/tree\/([^/]+))?\/?$/);
+  if (m) return { owner: m[1], repo: m[2], branch: m[3] };
+  const short = s.match(/^([\w.-]+)\/([\w.-]+)$/);
+  if (short) return { owner: short[1], repo: short[2] };
+  return null;
+}
+
+/* Download a GitHub repo into the Pyodide FS (via the GitHub API) and return its
+ * tree. Limits file count/size so the browser and context stay sane. */
+async function cloneRepoBrowser(url) {
+  const r = parseRepo(url);
+  if (!r) return { ok: false, dir: "", tree: "", error: "invalid repo: " + url };
+  let py;
+  try {
+    py = await loadPyodide_();
+  } catch {
+    return { ok: false, dir: "", tree: "", error: "Pyodide 載入失敗" };
+  }
+  const api = `https://api.github.com/repos/${r.owner}/${r.repo}`;
+  try {
+    let branch = r.branch;
+    if (!branch) {
+      const meta = await fetch(api);
+      if (!meta.ok) throw new Error("repo not found (" + meta.status + ")");
+      branch = (await meta.json()).default_branch || "main";
+    }
+    const tr = await fetch(`${api}/git/trees/${branch}?recursive=1`);
+    if (!tr.ok) throw new Error("tree fetch " + tr.status);
+    const data = await tr.json();
+    const blobs = (data.tree || []).filter(
+      (n) => n.type === "blob" && n.size != null && n.size < 200000,
+    );
+    const MAX = 250;
+    const picked = blobs.slice(0, MAX);
+    const dir = r.repo.replace(/[^A-Za-z0-9._-]/g, "_") || "repo";
+    const base = "/home/pyodide/" + dir;
+    // Fetch raw file contents in parallel batches and write into the FS.
+    let written = 0;
+    const batch = 12;
+    for (let i = 0; i < picked.length; i += batch) {
+      const slice = picked.slice(i, i + batch);
+      await Promise.all(
+        slice.map(async (n) => {
+          try {
+            const raw = await fetch(
+              `https://raw.githubusercontent.com/${r.owner}/${r.repo}/${branch}/${n.path}`,
+            );
+            if (!raw.ok) return;
+            const buf = new Uint8Array(await raw.arrayBuffer());
+            const full = base + "/" + n.path;
+            const parts = full.split("/");
+            let cur = "";
+            for (let k = 1; k < parts.length - 1; k++) {
+              cur += "/" + parts[k];
+              try {
+                py.FS.mkdir(cur);
+              } catch {}
+            }
+            py.FS.writeFile(full, buf);
+            written++;
+          } catch {}
+        }),
+      );
+    }
+    // Build a compact top-level tree from the API listing.
+    const top = new Set();
+    (data.tree || []).forEach((n) => {
+      const seg = n.path.split("/");
+      top.add(seg[0] + (seg.length > 1 || n.type === "tree" ? "/" : ""));
+    });
+    const tree =
+      `${dir}/\n` +
+      [...top]
+        .sort()
+        .slice(0, 60)
+        .map((t) => "  " + t)
+        .join("\n") +
+      (data.truncated || blobs.length > MAX
+        ? `\n  …(truncated; ${written}/${blobs.length} files downloaded)`
+        : `\n  (${written} files downloaded)`);
+    return { ok: true, dir, tree };
+  } catch (e) {
+    return { ok: false, dir: "", tree: "", error: String(e.message || e) };
+  }
+}
+
 /* ---------- send flow ---------- */
 async function send() {
   const inputEl = $("input");
@@ -678,13 +897,14 @@ async function send() {
   renderSidebar();
   renderMessages();
 
-  let instructions = SYSTEM;
+  // Skills depend on the sandbox tools (run_code/clone_repo), so only advertise
+  // them when the sandbox is enabled.
+  let instructions = state.sandbox ? SYSTEM + skillsBlock() : SYSTEM;
   if (state.useRag) {
     try {
       const ctx = await retrieveRag(text);
       if (ctx)
-        instructions =
-          SYSTEM +
+        instructions +=
           `\n\n# RETRIEVED CONTEXT (use ONLY this for facts; cite [n]; if it lacks the answer, say so)\n${ctx}`;
     } catch (e) {
       console.warn("RAG retrieve failed", e);

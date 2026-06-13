@@ -3,7 +3,8 @@ import type { Citation, UIMessage, SandboxFileMeta } from "../types";
 import { mapGrokCitations } from "./search";
 import { generateImage } from "./image";
 import { generateVideo } from "./video";
-import { runCode } from "../sandbox/run";
+import { runCode, cloneRepo } from "../sandbox/run";
+import { getSkill } from "../skills";
 
 /**
  * Native xAI Responses API agent (POST /v1/responses).
@@ -17,6 +18,8 @@ import { runCode } from "../sandbox/run";
 const IMAGE_FN = "generate_image";
 const VIDEO_FN = "generate_video";
 const CODE_FN = "run_code";
+const SKILL_FN = "use_skill";
+const CLONE_FN = "clone_repo";
 
 const BASE_TOOLS = [
   { type: "web_search" },
@@ -70,9 +73,50 @@ const RUN_CODE_TOOL = {
   },
 };
 
-/** Tools sent to the Responses API (run_code only when the sandbox is enabled). */
+const USE_SKILL_TOOL = {
+  type: "function",
+  name: SKILL_FN,
+  description:
+    "Load the full step-by-step playbook for a named skill before doing the matching task. Call this FIRST when the request matches an available skill (see the SKILLS section of your instructions).",
+  parameters: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "The skill name to load." },
+    },
+    required: ["name"],
+  },
+};
+
+const CLONE_REPO_TOOL = {
+  type: "function",
+  name: CLONE_FN,
+  description:
+    "Shallow-clone a GitHub (or any git) repository into the conversation sandbox and get back its top-level file tree, so you can then explore the real files with run_code (ripgrep/grep). Use when the user gives a repo URL or asks you to look at a project.",
+  parameters: {
+    type: "object",
+    properties: {
+      url: {
+        type: "string",
+        description:
+          "Repo reference: a full git URL, https://github.com/owner/repo, or owner/repo.",
+      },
+    },
+    required: ["url"],
+  },
+};
+
+/**
+ * Tools sent to the Responses API. The sandbox-backed tools (run_code, clone_repo,
+ * use_skill) are only offered when the sandbox is enabled, since they depend on it.
+ */
 function toolset() {
-  return config.sandbox.enabled ? [...BASE_TOOLS, RUN_CODE_TOOL] : BASE_TOOLS;
+  if (!config.sandbox.enabled) return BASE_TOOLS;
+  return [
+    ...BASE_TOOLS,
+    RUN_CODE_TOOL,
+    CLONE_REPO_TOOL,
+    USE_SKILL_TOOL,
+  ];
 }
 
 interface OutItem {
@@ -320,7 +364,13 @@ export function streamGrokResponses(
 
           const outputs: unknown[] = [];
           for (const c of calls) {
-            let args: { prompt?: string; language?: string; code?: string } = {};
+            let args: {
+              prompt?: string;
+              language?: string;
+              code?: string;
+              name?: string;
+              url?: string;
+            } = {};
             try {
               args = JSON.parse(c.args || "{}");
             } catch {
@@ -372,6 +422,18 @@ export function streamGrokResponses(
                   ]
                     .filter(Boolean)
                     .join("\n");
+            } else if (c.name === SKILL_FN) {
+              emitTool("use_skill", { name: args.name ?? "" });
+              const skill = getSkill(args.name ?? "");
+              out = skill
+                ? `Skill "${skill.name}" loaded. Follow this playbook:\n\n${skill.body}`
+                : `Unknown skill: ${args.name ?? ""}`;
+            } else if (c.name === CLONE_FN) {
+              emitTool("clone_repo", { url: args.url ?? "" });
+              const r = await cloneRepo(conversationId, args.url ?? "");
+              out = r.ok
+                ? `Cloned into "${r.dir}/". Top-level tree:\n${r.tree}\n\nNow explore it with run_code (cd ${r.dir} && rg ...). Do NOT read every file.`
+                : `clone_repo failed: ${r.error ?? "error"}`;
             } else {
               out = `Unknown tool: ${c.name}`;
             }

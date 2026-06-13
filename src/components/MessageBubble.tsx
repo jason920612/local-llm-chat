@@ -161,6 +161,8 @@ const TOOL_LABELS: Record<string, string> = {
   generate_image: "🖼 生成圖片",
   generate_video: "🎬 生成影片",
   run_code: "▶ 執行程式",
+  use_skill: "📖 載入技能",
+  clone_repo: "📦 拉取倉庫",
 };
 
 /** Collapsible panel showing which tools the model called this turn + args. */

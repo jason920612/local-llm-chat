@@ -173,6 +173,126 @@ export async function runCode(
   });
 }
 
+export interface CloneResult {
+  ok: boolean;
+  dir: string; // path relative to the workspace (e.g. "repo")
+  tree: string; // top-level file/dir listing
+  error?: string;
+}
+
+/** Normalize user-supplied repo references into a clonable git URL. */
+function normalizeRepoUrl(input: string): string | null {
+  const url = input.trim();
+  if (!url) return null;
+  // Full URL (https / git / ssh) — accept as-is.
+  if (/^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/.test(url)) return url;
+  // "owner/repo" shorthand → GitHub https.
+  if (/^[\w.-]+\/[\w.-]+$/.test(url)) return `https://github.com/${url}`;
+  return null;
+}
+
+/** Shallow-clone a git repo into the conversation sandbox; return its tree. */
+export async function cloneRepo(
+  conversationId: string,
+  repoUrl: string,
+): Promise<CloneResult> {
+  cleanupOld();
+  const url = normalizeRepoUrl(repoUrl);
+  if (!url) {
+    return { ok: false, dir: "", tree: "", error: `invalid repo: ${repoUrl}` };
+  }
+  const dir = workspaceDir(conversationId);
+  fs.mkdirSync(dir, { recursive: true });
+
+  // Derive a safe destination folder name from the repo.
+  const base =
+    (url.split(/[/]/).pop() || "repo")
+      .replace(/\.git$/, "")
+      .replace(/[^A-Za-z0-9._-]/g, "_") || "repo";
+  const dest = path.join(dir, base);
+  // Re-clone fresh to avoid stale state / "already exists" errors.
+  try {
+    fs.rmSync(dest, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+
+  return new Promise<CloneResult>((resolve) => {
+    let stderr = "";
+    let child;
+    try {
+      child = spawn(
+        "git",
+        ["clone", "--depth", "1", url, base],
+        { cwd: dir, windowsHide: true },
+      );
+    } catch {
+      resolve({ ok: false, dir: base, tree: "", error: "git not found" });
+      return;
+    }
+    child.stderr.on("data", (d) => {
+      if (stderr.length < 8000) stderr += d.toString();
+    });
+    child.on("error", (err) => {
+      resolve({
+        ok: false,
+        dir: base,
+        tree: "",
+        error:
+          err instanceof Error && "code" in err && err.code === "ENOENT"
+            ? "git not found on this machine"
+            : String(err),
+      });
+    });
+    // Cloning can take a while; allow up to 2 minutes.
+    const timer = setTimeout(() => child.kill("SIGKILL"), 120000);
+    child.on("close", (exitCode) => {
+      clearTimeout(timer);
+      if (exitCode !== 0) {
+        resolve({
+          ok: false,
+          dir: base,
+          tree: "",
+          error: stderr.slice(-600) || `git clone exited ${exitCode}`,
+        });
+        return;
+      }
+      resolve({ ok: true, dir: base, tree: cloneTree(dest, base) });
+    });
+  });
+}
+
+/** Build a compact top-level tree (2 levels) of a freshly cloned repo. */
+function cloneTree(repoDir: string, base: string): string {
+  const lines: string[] = [`${base}/`];
+  const walk = (d: string, prefix: string, depth: number) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries = entries
+      .filter((e) => e.name !== ".git")
+      .sort((a, b) =>
+        a.isDirectory() === b.isDirectory()
+          ? a.name.localeCompare(b.name)
+          : a.isDirectory()
+            ? -1
+            : 1,
+      )
+      .slice(0, 40);
+    for (const e of entries) {
+      lines.push(`${prefix}${e.name}${e.isDirectory() ? "/" : ""}`);
+      if (e.isDirectory() && depth > 0) {
+        walk(path.join(d, e.name), `${prefix}  `, depth - 1);
+      }
+    }
+  };
+  walk(repoDir, "  ", 1);
+  return lines.slice(0, 120).join("\n");
+}
+
 function emptyResult(extra: Partial<RunResult>): RunResult {
   return {
     stdout: "",
