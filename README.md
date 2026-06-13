@@ -4,8 +4,8 @@ A private, fully-local multimodal chat web app. It talks to a model running in
 **LM Studio** (or any `llama.cpp` server exposing an OpenAI-compatible API) — no
 data leaves your machine, no cloud API keys.
 
-> Built with non-Chinese, open models. Default chat model is Google **Gemma 3 4B**
-> (vision-capable); RAG embeddings use **nomic-embed-text**.
+> Built with non-Chinese, open models. Recommended chat model is Google **Gemma 4 12B**
+> (vision-capable; **Gemma 3 4B** for low VRAM); RAG embeddings use **nomic-embed-text**.
 
 ## Features
 
@@ -85,7 +85,9 @@ configurable via `GROK_MODEL` (default `grok-build-0.1`). The legacy Live Search
 
 1. **[LM Studio](https://lmstudio.ai/)** (or `llama.cpp` server).
 2. In LM Studio, download and load:
-   - A chat model — recommended **`gemma-3-4b-it`** (vision-capable, ~8GB VRAM friendly).
+   - A chat model — recommended **`google/gemma-4-12b`** (vision-capable, non-Chinese,
+     best quality on ~8GB VRAM). For low VRAM / faster responses use
+     **`google/gemma-3-4b`**. Use the exact key shown by `lms ls`.
    - An embedding model — recommended **`nomic-embed-text-v1.5`** (for RAG).
 3. Start the **Local Server** in LM Studio (default `http://localhost:1234`).
 4. Node.js 20+.
