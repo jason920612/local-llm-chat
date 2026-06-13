@@ -9,6 +9,7 @@ import {
   fetchConversation,
   saveMessage,
 } from "@/lib/api";
+import { fileToResizedDataURL, isImageFile } from "@/lib/image";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
 
@@ -25,6 +26,7 @@ export function Chat({
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -60,15 +62,27 @@ export function Chat({
     setStreaming(false);
   }, []);
 
+  const addAttachments = useCallback(async (files: File[]) => {
+    const images = files.filter(isImageFile);
+    const urls = await Promise.all(images.map((f) => fileToResizedDataURL(f)));
+    setAttachments((prev) => [...prev, ...urls]);
+  }, []);
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if ((!text && attachments.length === 0) || streaming) return;
     setError(null);
 
+    const images = attachments;
     const userMsg: UIMessage = {
       id: nanoid(),
       role: "user",
       content: text,
+      images: images.length > 0 ? images : undefined,
       createdAt: Date.now(),
     };
     const assistantMsg: UIMessage = {
@@ -81,6 +95,7 @@ export function Chat({
     const history = [...messages, userMsg];
     setMessages([...history, assistantMsg]);
     setInput("");
+    setAttachments([]);
     setStreaming(true);
 
     const controller = new AbortController();
@@ -90,7 +105,9 @@ export function Chat({
       // Ensure a conversation exists before persisting anything.
       let cid = conversationId;
       if (!cid) {
-        const conv = await createConversationApi(text.slice(0, 40));
+        const conv = await createConversationApi(
+          text.slice(0, 40) || "Image chat",
+        );
         cid = conv.id;
         loadedId.current = cid; // don't reload over our own stream
         onCreated(conv);
@@ -148,7 +165,15 @@ export function Chat({
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [input, streaming, messages, conversationId, onCreated, onPersisted]);
+  }, [
+    input,
+    attachments,
+    streaming,
+    messages,
+    conversationId,
+    onCreated,
+    onPersisted,
+  ]);
 
   const isEmpty = messages.length === 0;
 
@@ -205,6 +230,9 @@ export function Chat({
         onSend={send}
         onStop={stop}
         streaming={streaming}
+        attachments={attachments}
+        onAttachFiles={addAttachments}
+        onRemoveAttachment={removeAttachment}
       />
     </div>
   );
