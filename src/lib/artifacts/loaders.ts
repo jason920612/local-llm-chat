@@ -29,8 +29,16 @@ export interface PdfDoc {
 }
 export interface PdfjsApi {
   GlobalWorkerOptions: { workerSrc: string };
-  getDocument: (o: { data: ArrayBuffer }) => { promise: Promise<PdfDoc> };
+  getDocument: (o: {
+    data: ArrayBuffer;
+    cMapUrl?: string;
+    cMapPacked?: boolean;
+  }) => { promise: Promise<PdfDoc> };
 }
+
+/** CMap pack for rendering non-embedded CJK (CID) fonts in the browser. */
+export const PDF_CMAP_URL =
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/";
 export interface MammothApi {
   convertToHtml: (
     input: { arrayBuffer: ArrayBuffer },

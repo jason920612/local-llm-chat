@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { loadPdfjs, loadMammoth } from "@/lib/artifacts/loaders";
+import { loadPdfjs, loadMammoth, PDF_CMAP_URL } from "@/lib/artifacts/loaders";
 import { Markdown } from "./Markdown";
 
 function ext(name: string): string {
@@ -28,7 +28,11 @@ function PdfView({ url }: { url: string }) {
       try {
         const pdfjs = await loadPdfjs();
         const data = await (await fetch(url)).arrayBuffer();
-        const pdf = await pdfjs.getDocument({ data }).promise;
+        const pdf = await pdfjs.getDocument({
+          data,
+          cMapUrl: PDF_CMAP_URL,
+          cMapPacked: true,
+        }).promise;
         if (!alive || !ref.current) return;
         ref.current.innerHTML = "";
         for (let p = 1; p <= pdf.numPages; p++) {
