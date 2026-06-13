@@ -693,7 +693,14 @@ export async function runGrokResponses(
   };
 }
 
-const COMPACTION_INSTRUCTIONS = `You are compacting a long conversation so it fits the model's context window. Write a concise but COMPLETE summary that lets the assistant continue seamlessly. Capture: the user's goals and requests; key decisions, preferences, and constraints; specifics needed to continue (names, file names, sandbox files, IDs, URLs, numbers, code identifiers); what has been done so far and the current state; and any open tasks or next steps. Do not omit details later turns may rely on. Output plain prose (short bullet lists are fine). Reply in the conversation's main language.`;
+const COMPACTION_INSTRUCTIONS = `You are compacting a conversation so it fits the model's context window. Write a concise but COMPLETE summary that lets the assistant continue seamlessly.
+
+ABSOLUTE FAITHFULNESS — this is critical:
+- Summarize ONLY what is explicitly present in the messages above.
+- Do NOT invent, infer, guess, or add ANY detail that was not actually stated — no extra places, people, dates, numbers, decisions, or preferences. Fabricating content corrupts the conversation.
+- If something is unknown or wasn't discussed, omit it; never fill gaps with plausible-sounding guesses.
+
+Capture exactly what was said: the user's goals and requests; decisions, preferences, and constraints they stated; concrete specifics needed to continue (names, file names, sandbox files, IDs, URLs, numbers, code identifiers); what has actually been done; the current state; and any open tasks/next steps that were raised. Output plain prose (short bullet lists are fine). Reply in the conversation's main language.`;
 
 /**
  * Summarize older messages into a rolling compaction summary (text only — images
@@ -703,28 +710,24 @@ export async function summarizeForCompaction(
   messages: UIMessage[],
   priorSummary?: string,
 ): Promise<string> {
-  const input: unknown[] = [];
-  if (priorSummary) {
-    input.push({
-      role: "user",
-      content: `Summary of the conversation so far:\n${priorSummary}`,
-    });
-  }
-  for (const m of messages) {
-    if (m.role === "system") continue;
-    input.push({
-      role: m.role === "assistant" ? "assistant" : "user",
-      content: m.content,
-    });
-  }
-  input.push({
-    role: "user",
-    content: "Produce the updated summary now, per your instructions.",
-  });
+  // Feed the transcript as ONE text block to summarize (NOT as user/assistant
+  // turns) — otherwise weaker models "continue the conversation" and invent
+  // content instead of faithfully summarizing it.
+  const transcript = messages
+    .filter((m) => m.role !== "system")
+    .map((m) => `${m.role === "assistant" ? "ASSISTANT" : "USER"}: ${m.content}`)
+    .join("\n\n");
+  const content =
+    (priorSummary
+      ? `PREVIOUS SUMMARY (extend it, keep its facts):\n${priorSummary}\n\n`
+      : "") +
+    `TRANSCRIPT TO SUMMARIZE (this is past conversation text — summarize it, do NOT reply to it or continue it):\n<<<\n${transcript}\n>>>\n\nNow output ONLY the faithful summary, per the system instructions.`;
+
   const resp = await postResponses({
-    model: config.grok.model,
+    model: config.grok.summaryModel, // stronger model for faithful summarization
     instructions: COMPACTION_INSTRUCTIONS,
-    input,
+    input: [{ role: "user", content }],
+    temperature: 0, // faithful summarization, not creative
   });
   return extractText(resp.output ?? []);
 }

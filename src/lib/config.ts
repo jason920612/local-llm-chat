@@ -30,6 +30,10 @@ export const config = {
     baseURL: process.env.XAI_BASE_URL ?? "https://api.x.ai/v1",
     apiKey: process.env.XAI_API_KEY ?? "",
     model: process.env.GROK_MODEL ?? "grok-build-0.1",
+    // A stronger model used only for memory compaction — faithful summarization
+    // needs more capability than the cheap chat model (grok-build-0.1 hallucinates
+    // summaries). Override with GROK_SUMMARY_MODEL.
+    summaryModel: process.env.GROK_SUMMARY_MODEL ?? "grok-4.3",
     enabled: Boolean(process.env.XAI_API_KEY),
     maxRounds: 6, // max tool-call rounds per turn
   },
