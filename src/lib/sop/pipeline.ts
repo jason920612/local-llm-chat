@@ -20,6 +20,7 @@ import {
   isEmptyResponse,
   stripBoilerplate,
 } from "./validators";
+import { runMonitor, type MonitorResult } from "./monitor";
 
 type ChatParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
@@ -82,9 +83,18 @@ export async function runControlledChat(
     ];
 
     // Grok search tool path: let the model call grok_search; resolve it server
-    // side and stream the final answer with collected citations.
+    // side and finalize the answer with collected citations.
     if (useGrok) {
       return await runWithGrokTool(openaiMessages, citations);
+    }
+
+    // Strict monitor takes precedence: aggressive monitor + scold-correct path.
+    if (config.sop.strictMonitor) {
+      const result = await runMonitor(openaiMessages, {
+        allowedSources,
+        requireCitations: allowedSources > 0,
+      });
+      return monitorResponse(result, citations);
     }
 
     return config.sop.blocking
@@ -264,8 +274,10 @@ async function runWithGrokTool(
 
     if (toolCalls.length === 0) {
       // Model answered directly without searching.
-      if (!usedTool) return textResponse(msg?.content ?? "", citations);
-      break; // had tool results already → fall through to streamed final
+      if (!usedTool && !config.sop.strictMonitor) {
+        return textResponse(msg?.content ?? "", citations);
+      }
+      break; // finalize below (streamed, or monitored under strict mode)
     }
 
     usedTool = true;
@@ -308,8 +320,25 @@ async function runWithGrokTool(
     }
   }
 
-  // Final answer, streamed (tools withheld so the model must respond in text).
+  // Final answer. Under strict monitor, run the scold-correction loop and
+  // enforce citations on Grok's sources; otherwise stream it.
+  if (config.sop.strictMonitor) {
+    const result = await runMonitor(messages, {
+      allowedSources: citations.length,
+      requireCitations: citations.length > 0,
+    });
+    return monitorResponse(result, citations);
+  }
   return streamFinal(messages, citations);
+}
+
+/** Wrap a monitor result as a response: answer + neutral control note. */
+function monitorResponse(
+  result: MonitorResult,
+  citations: Citation[],
+): Response {
+  const footer = result.controlNote ? `\n\n> ${result.controlNote}` : "";
+  return textResponse(result.text + footer, citations);
 }
 
 // --- Blocking path (full code enforcement) ---------------------------------

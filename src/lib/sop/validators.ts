@@ -37,10 +37,10 @@ export function enforceCitations(
   refusalMarker: string,
 ): ValidationResult {
   const violations: string[] = [];
-  if (allowedCount <= 0) return { text, violations };
-
   const refused = text.trim().startsWith(refusalMarker.trim().slice(0, 12));
 
+  // Any [n] outside 1..allowedCount is fabricated and removed. When there are
+  // no sources at all (allowedCount = 0), every [n] is fabricated.
   const citationRe = /\[(\d+)\]/g;
   const valid = new Set<number>();
   let cleaned = text.replace(citationRe, (match, numStr) => {
@@ -52,9 +52,12 @@ export function enforceCitations(
     violations.push(`fabricated source citation [${n}] removed`);
     return "";
   });
-  cleaned = cleaned.replace(/[ ]{2,}/g, " ");
+  // Tidy spacing left by removed markers (e.g. "energy [1]." -> "energy.").
+  cleaned = cleaned
+    .replace(/[ \t]+([.,;:!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ");
 
-  if (!refused && valid.size === 0) {
+  if (allowedCount > 0 && !refused && valid.size === 0) {
     violations.push("answer makes claims with no valid citation");
   }
 

@@ -47,6 +47,13 @@ export const config = {
     // Blocking mode: generate the full answer, run deterministic + verify gates,
     // and enforce/refuse in code BEFORE sending. Trades streaming UX for control.
     blocking: envBool("SOP_BLOCKING", false),
+    // Strict monitor: the most aggressive path. Generate -> monitor (deterministic
+    // + LLM audit) -> harsh internal scold-correction on failure -> sanitize so
+    // the scolding never leaks -> refuse if still non-compliant. Requires concrete
+    // citations whenever sources are available. Implies blocking (non-streaming).
+    strictMonitor: envBool("SOP_STRICT_MONITOR", true),
+    // Max scold-correction rounds before the monitor gives up and refuses.
+    maxCorrections: 2,
     // Code-controlled retries for structured calls — we assume the model returns
     // malformed output and retry, then fail (open or closed) deterministically.
     maxStructuredRetries: 2,

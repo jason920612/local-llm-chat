@@ -137,6 +137,14 @@ export function SettingsModal({
               </h3>
               <div className="rounded-xl border border-border bg-surface-2 px-4 py-2">
                 <Row label="Intent gate" value={<Flag on={config.sop.intentGate} />} />
+                <Row
+                  label="Strict monitor"
+                  value={<Flag on={config.sop.strictMonitor} />}
+                />
+                <Row
+                  label="Max corrections"
+                  value={config.sop.maxCorrections}
+                />
                 <Row label="Blocking mode" value={<Flag on={config.sop.blocking} />} />
                 <Row label="Verify gate" value={<Flag on={config.sop.verifyGate} />} />
                 <Row

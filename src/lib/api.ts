@@ -108,6 +108,8 @@ export interface AppConfig {
     intentGate: boolean;
     verifyGate: boolean;
     blocking: boolean;
+    strictMonitor: boolean;
+    maxCorrections: number;
     maxStructuredRetries: number;
   };
   grok: { enabled: boolean; model: string };

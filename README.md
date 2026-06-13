@@ -48,11 +48,20 @@ left to a system prompt. Every chat turn runs through a control pipeline
 3. **Deterministic validators** — citation whitelist (fabricated `[n]` sources are
    stripped/flagged), disclaimer/flattery stripping, empty-response detection. Pure
    code, no model trust.
-4. **Verify gate (optional, blocking mode)** — a structured audit of the draft against
-   the SOP checklist, with one corrective regeneration before output.
+4. **Strict monitor (default on)** — the governing path. Generate → monitor
+   (deterministic checks) → on failure, issue a **harsh internal scold-correction**
+   that forces a fixed answer → **sanitize so the scolding never leaks to the user** →
+   refuse if still non-compliant. **Concrete citations are mandatory** whenever sources
+   exist (RAG/Grok): every `[n]` must map to a real source, fabricated ones are stripped,
+   and an uncited answer is rejected. The user only ever sees the corrected answer plus a
+   neutral control note — never the reprimand.
+5. **Verify gate (opt-in, `SOP_VERIFY_GATE`)** — an extra LLM self-audit that can also
+   trigger corrections. Off by default because a small model auditing itself is noisy;
+   useful with a larger model.
 
-Toggle via env (`SOP_INTENT_GATE`, `SOP_BLOCKING`, `SOP_VERIFY_GATE`). The system
-prompt still states the rules, but the gates above are what actually enforce them.
+Toggle via env (`SOP_INTENT_GATE`, `SOP_STRICT_MONITOR`, `SOP_BLOCKING`,
+`SOP_VERIFY_GATE`). The system prompt states the rules, but the gates above are what
+actually enforce them — in code, not on trust.
 
 ## Grok search tool (xAI)
 
