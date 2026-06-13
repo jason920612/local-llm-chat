@@ -392,8 +392,9 @@ async function runAgent(convo, assistant, instructions) {
     prompt_cache_key: cacheKey,
   };
   const seenServer = new Set();
+  let answered = false;
 
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 6; round++) {
     const res = await fetch(`${XAI}/responses`, {
       method: "POST",
       headers: authJson(),
@@ -447,7 +448,10 @@ async function runAgent(convo, assistant, instructions) {
     }
 
     const calls = Object.values(fns);
-    if (!calls.length) break;
+    if (!calls.length) {
+      answered = true;
+      break;
+    }
     const outputs = [];
     for (const c of calls) {
       let args = {};
@@ -499,6 +503,43 @@ async function runAgent(convo, assistant, instructions) {
       stream: true,
       prompt_cache_key: cacheKey,
     };
+  }
+
+  // Hit the round cap still calling tools → force one final answer (no tools).
+  if (!answered && !assistant.content) {
+    body.tool_choice = "none";
+    try {
+      const res = await fetch(`${XAI}/responses`, {
+        method: "POST",
+        headers: authJson(),
+        body: JSON.stringify(body),
+        signal: state.abort.signal,
+      });
+      if (res.ok && res.body) {
+        for await (const ev of sse(res.body)) {
+          if (ev.type === "response.output_text.delta") {
+            assistant.content += ev.delta || "";
+            updateLive(assistant);
+          } else if (
+            ev.type === "response.reasoning_text.delta" ||
+            ev.type === "response.reasoning_summary_text.delta"
+          ) {
+            assistant.thinking = (assistant.thinking || "") + (ev.delta || "");
+            updateLive(assistant);
+          } else if (ev.type === "response.completed") {
+            const c = ev.response && ev.response.citations;
+            if (Array.isArray(c) && c.length) assistant._cites = c;
+          }
+        }
+      }
+    } catch {}
+  }
+  if (
+    !assistant.content &&
+    !(assistant.images && assistant.images.length) &&
+    !(assistant.videos && assistant.videos.length)
+  ) {
+    assistant.content = "（未取得回覆，請再試一次或換個說法）";
   }
 
   if (assistant._cites && assistant._cites.length) {

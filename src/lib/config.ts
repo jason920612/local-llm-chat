@@ -31,7 +31,7 @@ export const config = {
     apiKey: process.env.XAI_API_KEY ?? "",
     model: process.env.GROK_MODEL ?? "grok-build-0.1",
     enabled: Boolean(process.env.XAI_API_KEY),
-    maxRounds: 3, // max tool-call rounds per turn
+    maxRounds: 6, // max tool-call rounds per turn
   },
   /**
    * Code execution sandbox. Runs model-written bash/python in a per-conversation

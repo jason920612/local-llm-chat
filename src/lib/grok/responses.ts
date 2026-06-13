@@ -227,6 +227,7 @@ export function streamGrokResponses(
         prompt_cache_key: cacheKey,
       };
 
+      let answered = false;
       try {
         for (let round = 0; round < config.grok.maxRounds; round++) {
           const res = await fetch(`${config.grok.baseURL}/responses`, {
@@ -312,7 +313,10 @@ export function streamGrokResponses(
           }
 
           const calls = Object.values(fns);
-          if (calls.length === 0) break;
+          if (calls.length === 0) {
+            answered = true;
+            break;
+          }
 
           const outputs: unknown[] = [];
           for (const c of calls) {
@@ -386,6 +390,53 @@ export function streamGrokResponses(
             stream: true,
             prompt_cache_key: cacheKey,
           };
+        }
+
+        // Hit the round cap while still calling tools → force one final answer
+        // (no tools) so the turn never ends with empty output.
+        if (!answered && !contentStarted) {
+          body.tool_choice = "none";
+          try {
+            const res = await fetch(`${config.grok.baseURL}/responses`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${config.grok.apiKey}`,
+              },
+              body: JSON.stringify(body),
+            });
+            if (res.ok && res.body) {
+              for await (const ev of sseEvents(res.body)) {
+                const t = ev.type as string;
+                if (t === "response.output_text.delta") {
+                  if (thinkOpen && !contentStarted) enq("</think>\n\n");
+                  contentStarted = true;
+                  enq((ev.delta as string) ?? "");
+                } else if (
+                  t === "response.reasoning_text.delta" ||
+                  t === "response.reasoning_summary_text.delta"
+                ) {
+                  if (!thinkOpen) {
+                    enq("<think>");
+                    thinkOpen = true;
+                  }
+                  enq((ev.delta as string) ?? "");
+                } else if (t === "response.completed") {
+                  const r = ev.response as { citations?: unknown[] } | undefined;
+                  if (Array.isArray(r?.citations))
+                    citations = [
+                      ...citations,
+                      ...mapGrokCitations(r.citations, citations.length),
+                    ];
+                }
+              }
+            }
+          } catch {
+            /* leave whatever we have */
+          }
+        }
+        if (!contentStarted && !images.length && !videos.length) {
+          enq("（未取得回覆，請再試一次或換個說法）");
         }
 
         if (thinkOpen && !contentStarted) enq("</think>\n\n");
