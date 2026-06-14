@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { Code2, Eye, Maximize2, X, AlertTriangle } from "lucide-react";
+import { Code2, Eye, Maximize2, X, AlertTriangle, Loader2 } from "lucide-react";
 import { loadMermaid, loadVega, type VegaEmbed } from "@/lib/artifacts/loaders";
+import { fixMermaidApi } from "@/lib/api";
 
 export type ArtifactKind = "mermaid" | "chart" | "html";
 
@@ -40,21 +41,58 @@ function HtmlFrame({ code, className }: { code: string; className?: string }) {
 function MermaidView({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [err, setErr] = useState("");
+  const [fixing, setFixing] = useState(false);
   const rawId = useId().replace(/[^a-zA-Z0-9]/g, "");
+  const renderSeq = useRef(0);
   useEffect(() => {
     let alive = true;
     setErr("");
-    loadMermaid()
-      .then((m) => m.render("mmd" + rawId, code))
-      .then(({ svg }) => {
+    setFixing(false);
+    const seq = ++renderSeq.current;
+    (async () => {
+      const m = await loadMermaid().catch(() => null);
+      if (!m) {
+        if (alive) setErr("mermaid 載入失敗");
+        return;
+      }
+      // Unique id per render attempt (mermaid rejects a reused id).
+      const draw = async (src: string, tag: string) => {
+        const { svg } = await m.render(`mmd${rawId}${seq}${tag}`, src);
+        return svg;
+      };
+      try {
+        const svg = await draw(code, "a");
         if (alive && ref.current) ref.current.innerHTML = svg;
-      })
-      .catch((e) => alive && setErr(String(e?.message || e)));
+      } catch {
+        // Render-failure fallback: ask the model to repair the syntax, retry once.
+        if (!alive) return;
+        setFixing(true);
+        const fixed = await fixMermaidApi(code);
+        if (!alive) return;
+        setFixing(false);
+        if (fixed && fixed.trim() && fixed.trim() !== code.trim()) {
+          try {
+            const svg = await draw(fixed, "b");
+            if (alive && ref.current) ref.current.innerHTML = svg;
+            return;
+          } catch {
+            /* fall through to error */
+          }
+        }
+        if (alive) setErr("圖表語法錯誤，無法渲染（可看原始碼）");
+      }
+    })();
     return () => {
       alive = false;
     };
   }, [code, rawId]);
   if (err) return <ErrLine msg={err} />;
+  if (fixing)
+    return (
+      <div className="flex items-center gap-2 p-3 text-xs text-muted">
+        <Loader2 size={13} className="animate-spin" /> 自動修正圖表語法中…
+      </div>
+    );
   return (
     <div
       ref={ref}

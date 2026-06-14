@@ -37,6 +37,22 @@ export async function fetchConversation(
   return res.json();
 }
 
+/** Repair invalid Mermaid via the model; null if unavailable. */
+export async function fixMermaidApi(code: string): Promise<string | null> {
+  try {
+    const res = await fetch("/api/fix-mermaid", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data.code === "string" ? data.code : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Select which child branch is active under a node (or the root if parentId null). */
 export async function setActiveBranch(
   conversationId: string,

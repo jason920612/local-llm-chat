@@ -693,6 +693,27 @@ export async function runGrokResponses(
   };
 }
 
+const MERMAID_FIX_INSTRUCTIONS = `You repair Mermaid diagram code that fails to parse. Output ONLY a corrected, valid Mermaid diagram — no markdown code fences, no explanation, nothing but the diagram. Preserve the diagram type, every node id, every edge, and the visible label text. Apply the fixes needed to make it parse:
+- Wrap EVERY node label in double quotes, e.g. A["text"], B(["text"]), C{"text"} — especially labels containing ( ) [ ] / : ; , • or <br/> or CJK.
+- Inside a quoted label, keep <br/> but replace any inner double-quote with a single quote.
+- Quote subgraph titles too: subgraph X["Title"].
+- Balance brackets and fix obvious syntax slips.
+Do NOT add or remove nodes/edges or change the structure.`;
+
+/** Ask the model to repair invalid Mermaid; returns cleaned diagram code. */
+export async function fixMermaid(code: string): Promise<string> {
+  const resp = await postResponses({
+    model: config.grok.model,
+    instructions: MERMAID_FIX_INSTRUCTIONS,
+    input: [{ role: "user", content: `Fix this Mermaid diagram:\n\n${code}` }],
+    temperature: 0,
+  });
+  return extractText(resp.output ?? [])
+    .replace(/^\s*```(?:mermaid)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+}
+
 const COMPACTION_INSTRUCTIONS = `You are compacting a conversation so it fits the model's context window. Write a concise but COMPLETE summary that lets the assistant continue seamlessly.
 
 ABSOLUTE FAITHFULNESS — this is critical:
