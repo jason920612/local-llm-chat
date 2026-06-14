@@ -114,6 +114,8 @@ export function loadMermaid(): Promise<MermaidApi> {
         startOnLoad: false,
         theme: "dark",
         securityLevel: "strict",
+        // Don't inject the "Syntax error" bomb graphic into the page on failure.
+        suppressErrorRendering: true,
       });
       return m;
     })();

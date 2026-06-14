@@ -200,8 +200,9 @@ function AssistantBody({
 
   const leftImgs = imgs.filter((_, i) => !usedImg.has(i));
   const leftVids = vids.filter((_, i) => !usedVid.has(i));
-  const leftFiles = fls.filter((f) => !usedFile.has(f.name));
   const leftArts = arts.filter((_, i) => !usedArt.has(i));
+  // Files the model didn't explicitly place with a [[file:NAME]] marker are NOT
+  // appended to the message (they remain in the sandbox file explorer).
 
   return (
     <>
@@ -209,7 +210,6 @@ function AssistantBody({
       {leftArts.map((a, i) => artifactEl(a, `la${i}`))}
       {leftImgs.map((s, i) => imageEl(s, `li${i}`))}
       {leftVids.map((s, i) => videoEl(s, `lv${i}`))}
-      {leftFiles.map((f, i) => fileEl(f, `lf${i}`))}
     </>
   );
 }

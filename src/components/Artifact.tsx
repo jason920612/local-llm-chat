@@ -55,10 +55,17 @@ function MermaidView({ code }: { code: string }) {
         if (alive) setErr("mermaid 載入失敗");
         return;
       }
-      // Unique id per render attempt (mermaid rejects a reused id).
+      // Unique id per render attempt (mermaid rejects a reused id). Clean up any
+      // temp/error node mermaid may leave attached to <body> on failure.
       const draw = async (src: string, tag: string) => {
-        const { svg } = await m.render(`mmd${rawId}${seq}${tag}`, src);
-        return svg;
+        const fullId = `mmd${rawId}${seq}${tag}`;
+        try {
+          const { svg } = await m.render(fullId, src);
+          return svg;
+        } finally {
+          document.getElementById(fullId)?.remove();
+          document.getElementById(`d${fullId}`)?.remove();
+        }
       };
       try {
         const svg = await draw(code, "a");
