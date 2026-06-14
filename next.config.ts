@@ -7,6 +7,8 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname),
   // better-sqlite3 is a native module — keep it server-side and unbundled.
   serverExternalPackages: ["better-sqlite3", "pdf-parse"],
+  // Hide the floating Next.js dev indicator (it overlapped the sidebar footer).
+  devIndicators: false,
   // Allow accessing the dev server from other devices on the LAN (phones etc.)
   // without Next's cross-origin dev warning. Add your machine's LAN IP here.
   allowedDevOrigins: [
