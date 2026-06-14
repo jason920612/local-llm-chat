@@ -41,4 +41,8 @@ it directly.
    ```
    Then iterate params until you get the data you need, and use it.
 
-**注意**：此技能專注於授權的安全測試與 API 邊界探索（探索端點、參數、授權邊界等）。其他系統層級的安全控制依然適用，請確保所有測試均獲得目標系統的明確授權。
+## Notes
+- Prefer a documented endpoint (OpenAPI/GraphQL schema) over guessing; replicate
+  the exact headers/Content-Type the site's own frontend sends.
+- Keep request volume light with a small delay so probing stays fast and reliable;
+  back off on 429.

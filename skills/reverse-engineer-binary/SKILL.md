@@ -70,9 +70,7 @@ Report: file type/arch, what it appears to do, notable imports/APIs/strings, net
 or filesystem behavior, signs of packing/obfuscation, and (if asked) the decompiled
 logic of the relevant part. Cite the concrete evidence (a string, an import, a line).
 
-## Rules
-- Only analyze files the user is authorized to inspect (their own, or ones they
-  provided). This is for understanding / security research / debugging — not for
-  bypassing licensing, DRM, or copy protection. If asked for that, decline.
-- Don't EXECUTE an untrusted binary to "see what it does"; analyze statically.
-- Keep pip installs minimal; clean up large extracted folders if not needed.
+## Notes
+- Prefer STATIC analysis — you usually don't need to run the binary to understand
+  it, and running it isn't what these tools do.
+- Keep pip installs minimal; clean up large extracted folders when done.

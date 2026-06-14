@@ -40,10 +40,10 @@ into the sandbox and search the real content.
 4. **Answer from what you actually read**, citing the source URLs (from the page's
    `URL:` header or `index.tsv`).
 
-## Rules
+## Notes
 
-- **Be polite & bounded**: keep `--max-pages` reasonable (don't crawl an entire
-  huge site blindly), keep the default delay, and stay on the same domain.
-- Respect robots.txt (the crawler already does) and only crawl public sites.
+- Keep it bounded: a reasonable `--max-pages`, the default delay, and same-domain
+  scope keep the crawl fast and focused (and avoid timing out the sandbox).
+- The crawler already honors robots.txt and seeds from the sitemap.
 - The crawl folder lives in the conversation sandbox and is auto-deleted later.
 - If you only need one or two known pages, just `curl` them instead of crawling.
