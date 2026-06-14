@@ -13,6 +13,8 @@ export interface ValidationResult {
   error?: string;
 }
 
+type ArtType = "mermaid" | "chart";
+
 let worker: Worker | null = null;
 let seq = 0;
 const pending = new Map<number, (r: ValidationResult) => void>();
@@ -43,23 +45,21 @@ function getWorker(): Worker | null {
   return worker;
 }
 
-/** Validate a Mermaid diagram; fails open (ok) if the validator is unavailable. */
-export function validateMermaid(spec: string): Promise<ValidationResult> {
+/** Compile/validate in the worker; fails open (ok) if the validator is down. */
+function runWorker(type: ArtType, spec: string): Promise<ValidationResult> {
   const w = getWorker();
   if (!w) return Promise.resolve({ ok: true });
   return new Promise<ValidationResult>((resolve) => {
     const id = ++seq;
-    pending.set(id, resolve);
     const timer = setTimeout(() => {
       if (pending.delete(id)) resolve({ ok: true });
-    }, 15000);
-    const wrapped = (r: ValidationResult) => {
+    }, 20000);
+    pending.set(id, (r) => {
       clearTimeout(timer);
       resolve(r);
-    };
-    pending.set(id, wrapped);
+    });
     try {
-      w.postMessage({ id, spec });
+      w.postMessage({ id, type, spec });
     } catch {
       clearTimeout(timer);
       pending.delete(id);
@@ -68,17 +68,14 @@ export function validateMermaid(spec: string): Promise<ValidationResult> {
   });
 }
 
-/** Validate a Vega-Lite spec as JSON (catches the common malformed-JSON error). */
-export function validateChart(spec: string): ValidationResult {
-  try {
-    const obj = JSON.parse(spec);
-    if (typeof obj !== "object" || obj === null) {
-      return { ok: false, error: "spec must be a JSON object" };
-    }
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: "invalid JSON: " + (e as Error).message };
-  }
+/** Validate a Mermaid diagram (mermaid.parse in an isolated worker). */
+export function validateMermaid(spec: string): Promise<ValidationResult> {
+  return runWorker("mermaid", spec);
+}
+
+/** Validate a chart by fully COMPILING the Vega-Lite spec (not just JSON). */
+export function validateChart(spec: string): Promise<ValidationResult> {
+  return runWorker("chart", spec);
 }
 
 /** Minimal HTML check (it runs in a sandboxed iframe; just ensure non-empty). */

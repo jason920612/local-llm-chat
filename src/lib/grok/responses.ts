@@ -532,7 +532,7 @@ export function streamGrokResponses(
                 t === "mermaid"
                   ? await validateMermaid(spec)
                   : t === "chart"
-                    ? validateChart(spec)
+                    ? await validateChart(spec)
                     : validateHtml(spec);
               if (!v.ok) {
                 out = `Artifact invalid (${t}): ${v.error}. Fix the ${t} and call ${ARTIFACT_FN} again.`;
