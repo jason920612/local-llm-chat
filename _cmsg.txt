@@ -1,16 +1,14 @@
-Artifacts via tool: model compiles/validates server-side, reply uses [[artifact:N]]
+Render generated files/documents inline at [[file:N]] markers (like artifacts)
 
-New create_artifact tool: the model submits a mermaid/chart/html spec, the server
-COMPILES/validates it (mermaid via jsdom+mermaid.parse in an isolated worker
-thread; chart via JSON; html non-empty) and returns any error so the model fixes
-and retries until valid. On success it gets index N and writes [[artifact:N]] in
-the reply, so the message stays clean and only validated artifacts render.
+Extend the artifact-style "marker + inline render" experience to documents and
+data files: a [[file:NAME]] marker for a previewable type (pdf/docx/pptx/xlsx/csv/
+image/audio/video/html/text) now renders an inline preview card in the reply —
+header with filename, expand-to-modal, and download — instead of just a chip.
+Unmarked/non-previewable files stay as chips.
 
-- New deps: mermaid + jsdom (server-side validation only; client still CDN-loads).
-- mermaid-worker.mjs runs jsdom/mermaid in a worker thread so browser globals
-  do not leak into the Next server; validate.ts wraps it (fails open if down).
-- artifacts persisted on messages (new column), streamed via MEDIA_MARKER, parsed
-  client-side, rendered through the existing Artifact component at [[artifact:N]].
-- Prompt now directs the model to use create_artifact instead of raw code blocks.
+FilePreview gains a `compact` prop (bounded heights ~26rem) for inline use;
+image -> img, video -> inline player, docx/html/sheet -> shorter iframes/tables,
+pdf/pptx -> scrollable. So charts, reports, spreadsheets and slides the model
+produces show rendered in-line, consistent with create_artifact.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

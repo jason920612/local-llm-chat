@@ -16,6 +16,8 @@ import {
   ChevronRight,
   ChevronLeft,
   RefreshCw,
+  Maximize2,
+  Download,
 } from "lucide-react";
 import type {
   UIMessage,
@@ -83,6 +85,9 @@ function AssistantBody({
       <VideoPlayer src={src} inline />
     </div>
   );
+  const dlUrl = (name: string) =>
+    `/api/sandbox/${conversationId}/file?name=${encodeURIComponent(name)}&download=1`;
+
   const fileEl = (f: SandboxFileMeta, key: string) => (
     <div
       key={key}
@@ -99,15 +104,41 @@ function AssistantBody({
           檢視
         </button>
       ) : (
-        <a
-          href={`/api/sandbox/${conversationId}/file?name=${encodeURIComponent(f.name)}&download=1`}
-          className="shrink-0 text-accent hover:text-foreground"
-        >
+        <a href={dlUrl(f.name)} className="shrink-0 text-accent hover:text-foreground">
           下載
         </a>
       )}
     </div>
   );
+
+  // Inline rendered preview card (used at [[file:NAME]] markers for previewable
+  // types), with expand-to-modal + download — same idea as artifacts.
+  const fileInline = (f: SandboxFileMeta, key: string) => {
+    if (!conversationId || !isPreviewable(f.name)) return fileEl(f, key);
+    return (
+      <div key={key} className="my-2 overflow-hidden rounded-lg border border-border">
+        <div className="flex items-center gap-2 border-b border-border bg-surface-2/60 px-3 py-1.5 text-xs">
+          <FileCode size={13} className="shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 truncate font-mono">{f.name}</span>
+          <button
+            onClick={() => onOpenFile(f.name)}
+            className="shrink-0 text-muted hover:text-foreground"
+            title="展開"
+          >
+            <Maximize2 size={13} />
+          </button>
+          <a
+            href={dlUrl(f.name)}
+            className="shrink-0 text-muted hover:text-foreground"
+            title="下載"
+          >
+            <Download size={13} />
+          </a>
+        </div>
+        <FilePreview conversationId={conversationId} name={f.name} compact />
+      </div>
+    );
+  };
 
   const usedImg = new Set<number>();
   const usedVid = new Set<number>();
@@ -152,7 +183,7 @@ function AssistantBody({
       const f = fls.find((x) => x.name === ref);
       if (f) {
         usedFile.add(f.name);
-        nodes.push(fileEl(f, `m${k}`));
+        nodes.push(fileInline(f, `m${k}`));
       }
     }
     last = m.index + m[0].length;

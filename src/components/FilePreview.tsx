@@ -94,7 +94,7 @@ function PdfCanvases({ fetchData }: { fetchData: () => Promise<ArrayBuffer> }) {
   return <div ref={ref} className="bg-[#0d0f15] p-3" />;
 }
 
-function DocxView({ url }: { url: string }) {
+function DocxView({ url, h }: { url: string; h: string }) {
   const [html, setHtml] = useState<string | null>(null);
   const [err, setErr] = useState("");
   useEffect(() => {
@@ -124,12 +124,12 @@ function DocxView({ url }: { url: string }) {
       title="docx preview"
       sandbox=""
       srcDoc={doc}
-      className="h-[78vh] w-full bg-white"
+      className={`w-full bg-white ${h}`}
     />
   );
 }
 
-function HtmlView({ url }: { url: string }) {
+function HtmlView({ url, h }: { url: string; h: string }) {
   const [code, setCode] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
@@ -147,13 +147,13 @@ function HtmlView({ url }: { url: string }) {
       title="html preview"
       sandbox="allow-scripts allow-popups allow-forms allow-modals"
       srcDoc={code}
-      className="h-[78vh] w-full bg-white"
+      className={`w-full bg-white ${h}`}
     />
   );
 }
 
 /** xlsx / xls / csv / tsv rendered as HTML tables via SheetJS. */
-function SheetView({ url, name }: { url: string; name: string }) {
+function SheetView({ url, name, h }: { url: string; name: string; h: string }) {
   const [sheets, setSheets] = useState<{ name: string; html: string }[] | null>(
     null,
   );
@@ -182,7 +182,7 @@ function SheetView({ url, name }: { url: string; name: string }) {
   if (err) return <ErrBox msg={err} />;
   if (!sheets) return <Spinner />;
   return (
-    <div className="flex h-[78vh] flex-col bg-white text-black">
+    <div className={`flex flex-col bg-white text-black ${h}`}>
       {sheets.length > 1 && (
         <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-gray-300 bg-gray-100 p-1">
           {sheets.map((s, i) => (
@@ -248,31 +248,51 @@ function TextView({ url, name }: { url: string; name: string }) {
   return <Markdown>{"```" + e + "\n" + text + "\n```"}</Markdown>;
 }
 
-/** Render a sandbox file by type. */
+/** Render a sandbox file by type. `compact` shrinks heights for inline use. */
 export function FilePreview({
   conversationId,
   name,
+  compact = false,
 }: {
   conversationId: string;
   name: string;
+  compact?: boolean;
 }) {
   const url = fileUrl(conversationId, name);
   const e = ext(name);
+  const h = compact ? "h-[26rem]" : "h-[78vh]";
 
   if (e === "pdf")
     return (
-      <PdfCanvases fetchData={() => fetch(url).then((r) => r.arrayBuffer())} />
+      <div className={compact ? "max-h-[26rem] overflow-auto" : ""}>
+        <PdfCanvases fetchData={() => fetch(url).then((r) => r.arrayBuffer())} />
+      </div>
     );
-  if (e === "docx") return <DocxView url={url} />;
-  if (e === "html" || e === "htm") return <HtmlView url={url} />;
-  if (IMG.includes(e)) return <ImageViewer src={url} alt={name} />;
+  if (e === "docx") return <DocxView url={url} h={h} />;
+  if (e === "html" || e === "htm") return <HtmlView url={url} h={h} />;
+  if (IMG.includes(e)) {
+    if (compact)
+      // eslint-disable-next-line @next/next/no-img-element
+      return (
+        <img
+          src={url}
+          alt={name}
+          className="mx-auto max-h-80 max-w-full bg-[#0d0f15]"
+        />
+      );
+    return <ImageViewer src={url} alt={name} />;
+  }
   if (AUDIO.includes(e)) return <AudioPlayer src={url} name={name} />;
-  if (VIDEO.includes(e)) return <VideoPlayer src={url} />;
-  if (SHEET.includes(e)) return <SheetView url={url} name={name} />;
+  if (VIDEO.includes(e)) return <VideoPlayer src={url} inline={compact} />;
+  if (SHEET.includes(e)) return <SheetView url={url} name={name} h={h} />;
   if (OFFICE_PDF.includes(e))
-    return <PptxView conversationId={conversationId} name={name} />;
+    return (
+      <div className={compact ? "max-h-[26rem] overflow-auto" : ""}>
+        <PptxView conversationId={conversationId} name={name} />
+      </div>
+    );
   return (
-    <div className="p-3">
+    <div className={compact ? "max-h-[26rem] overflow-auto p-3" : "p-3"}>
       <TextView url={url} name={name} />
     </div>
   );
