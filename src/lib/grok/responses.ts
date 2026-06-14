@@ -498,7 +498,7 @@ export function streamGrokResponses(
                           .map((f) => f.name)
                           .join(
                             ", ",
-                          )}. Place a file inline with the marker [[file:NAME]] where it should appear.`
+                          )}. You MUST present each deliverable to the user by writing the marker [[file:EXACT_NAME]] on its own line in your reply (use the exact filename). Don't just say it's done — emit the marker so the file is shown/downloadable.`
                       : "",
                   ]
                     .filter(Boolean)
@@ -511,7 +511,7 @@ export function streamGrokResponses(
                 out =
                   `Skill "${skill.name}" loaded. Follow this playbook:\n\n${skill.body}` +
                   (mounted
-                    ? `\n\n---\nThis skill's bundled files (scripts/resources) are in your sandbox at "${mounted}/". Run them with run_code, e.g. \`cd ${mounted} && python scripts/<script>.py ...\`. The skill may need Python packages — pip install them in run_code first (e.g. python-docx, pdfplumber/pypdf, python-pptx, openpyxl). Output files you create in the working directory are shown to the user.`
+                    ? `\n\n---\nThis skill's bundled files (scripts/resources) are in your sandbox at "${mounted}/". Run them with run_code, e.g. \`cd ${mounted} && python scripts/<script>.py ...\`. The skill may need Python packages — pip install them in run_code first (e.g. python-docx, pdfplumber/pypdf, python-pptx, openpyxl).\n\nDELIVER THE RESULT: the moment you have produced the output file (e.g. report.pdf, data.xlsx), you MUST present it to the user by writing the marker [[file:EXACT_FILENAME]] on its own line in your reply. Do NOT end the turn just saying "done" — always emit the [[file:...]] marker so the file is actually shown/downloadable.`
                     : "");
               } else {
                 out = `Unknown skill: ${args.name ?? ""}`;
