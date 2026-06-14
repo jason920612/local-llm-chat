@@ -10,14 +10,21 @@ import {
   forkConversationApi,
   setActiveBranch,
   uploadSandboxFiles,
-  parseCitationsHeader,
-  parseImagesHeader,
-  parseVideosHeader,
-  parseMediaSentinel,
   parseStreamingText,
   saveMessage,
+  startTurn,
+  cancelTurn,
 } from "@/lib/api";
-import { computePath, ancestorsOf, versionInfo } from "@/lib/tree";
+
+/** SSE payloads from /api/conversations/[id]/stream (mirrors live/bus ConvEvent). */
+type ConvEvent =
+  | { type: "snapshot"; messageId: string; raw: string; status: string }
+  | { type: "token"; messageId: string; chunk: string }
+  | { type: "message"; message: UIMessage; status?: string }
+  | { type: "status"; messageId: string; status: string }
+  | { type: "branch"; parentId: string | null; childId: string }
+  | { type: "truncate"; afterMessageId: string };
+import { computePath, versionInfo } from "@/lib/tree";
 import { fileToResizedDataURL, isImageFile } from "@/lib/image";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
@@ -64,9 +71,12 @@ export function Chat({
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [sandboxFiles, setSandboxFiles] = useState<SandboxFileMeta[]>([]);
   const [dragOver, setDragOver] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragDepth = useRef(0);
+  // Live-stream state: raw SSE buffer per assistant message id (for parsing
+  // partial tokens) and the id currently generating (for stop()).
+  const rawBuffers = useRef<Map<string, string>>(new Map());
+  const streamingIdRef = useRef<string | null>(null);
   // The conversation currently loaded into `messages`. Used to avoid reloading
   // (and clobbering an in-progress stream) when we create a conversation locally.
   const loadedId = useRef<string | null>(null);
@@ -104,10 +114,13 @@ export function Chat({
     const cid = conversationId;
     if (cid === loadedId.current) return; // already loaded (incl. null === null)
     if (cid && cid === loadingId.current) return; // in-flight (real ids only)
+    rawBuffers.current.clear();
     if (!cid) {
       // New chat: clear to an empty thread.
       loadedId.current = null;
       loadingId.current = null;
+      streamingIdRef.current = null;
+      setStreaming(false);
       setAllMessages([]);
       setRootChildId(null);
       return;
@@ -122,6 +135,11 @@ export function Chat({
           loadedId.current = cid; // mark loaded only on success
           setAllMessages(d.messages);
           setRootChildId(d.rootChildId);
+          // Reflect any generation still running server-side (e.g. started on
+          // another device, or before this device reconnected).
+          const inflight = d.messages.find((m) => m.status === "streaming");
+          streamingIdRef.current = inflight?.id ?? null;
+          setStreaming(Boolean(inflight));
         })
         .catch(() => {
           if (cancelled) return;
@@ -140,6 +158,140 @@ export function Chat({
       if (loadingId.current === cid) loadingId.current = null;
     };
   }, [conversationId]);
+
+  // Re-fetch the whole tree (used after a truncation broadcast).
+  const reloadConversation = useCallback((cid: string) => {
+    fetchConversation(cid)
+      .then((d) => {
+        setAllMessages(d.messages);
+        setRootChildId(d.rootChildId);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Apply a live event from the conversation's SSE stream.
+  const applyConvEvent = useCallback(
+    (e: ConvEvent, cid: string) => {
+      switch (e.type) {
+        case "snapshot": {
+          rawBuffers.current.set(e.messageId, e.raw);
+          const parsed = parseStreamingText(e.raw);
+          setAllMessages((prev) =>
+            prev.map((m) =>
+              m.id === e.messageId
+                ? {
+                    ...m,
+                    content: parsed.text,
+                    toolCalls: parsed.toolCalls.length
+                      ? parsed.toolCalls
+                      : m.toolCalls,
+                    status: e.status as UIMessage["status"],
+                  }
+                : m,
+            ),
+          );
+          if (e.status === "streaming") {
+            streamingIdRef.current = e.messageId;
+            setStreaming(true);
+          }
+          break;
+        }
+        case "token": {
+          const raw = (rawBuffers.current.get(e.messageId) ?? "") + e.chunk;
+          rawBuffers.current.set(e.messageId, raw);
+          const parsed = parseStreamingText(raw);
+          setAllMessages((prev) =>
+            prev.map((m) =>
+              m.id === e.messageId
+                ? {
+                    ...m,
+                    content: parsed.text,
+                    toolCalls: parsed.toolCalls.length
+                      ? parsed.toolCalls
+                      : m.toolCalls,
+                    status: "streaming",
+                  }
+                : m,
+            ),
+          );
+          streamingIdRef.current = e.messageId;
+          setStreaming(true);
+          break;
+        }
+        case "message": {
+          // Authoritative add/finalize from the server (this or another device).
+          attach(e.message);
+          const st = e.message.status;
+          if (st && st !== "streaming") {
+            rawBuffers.current.delete(e.message.id);
+            if (streamingIdRef.current === e.message.id) {
+              streamingIdRef.current = null;
+              setStreaming(false);
+            }
+          } else if (st === "streaming") {
+            streamingIdRef.current = e.message.id;
+            setStreaming(true);
+          }
+          break;
+        }
+        case "status": {
+          if (e.status !== "streaming") {
+            rawBuffers.current.delete(e.messageId);
+            setAllMessages((prev) =>
+              prev.map((m) =>
+                m.id === e.messageId
+                  ? { ...m, status: e.status as UIMessage["status"] }
+                  : m,
+              ),
+            );
+            if (streamingIdRef.current === e.messageId) {
+              streamingIdRef.current = null;
+              setStreaming(false);
+            }
+          }
+          break;
+        }
+        case "branch": {
+          if (e.parentId) {
+            const pid = e.parentId;
+            setAllMessages((prev) =>
+              prev.map((m) =>
+                m.id === pid ? { ...m, activeChildId: e.childId } : m,
+              ),
+            );
+          } else {
+            setRootChildId(e.childId);
+          }
+          break;
+        }
+        case "truncate": {
+          reloadConversation(cid);
+          break;
+        }
+      }
+    },
+    [attach, reloadConversation],
+  );
+
+  // Live sync: subscribe to the active conversation's server-sent events so
+  // tokens, new/edited messages, and branch switches from ANY device (or a
+  // background generation that outlived this tab) appear here in real time.
+  useEffect(() => {
+    const cid = conversationId;
+    if (!cid) return;
+    const es = new EventSource(`/api/conversations/${cid}/stream`);
+    es.onmessage = (ev) => {
+      try {
+        applyConvEvent(JSON.parse(ev.data) as ConvEvent, cid);
+      } catch {
+        /* ignore malformed event */
+      }
+    };
+    es.onerror = () => {
+      /* EventSource reconnects automatically; snapshot re-syncs on reconnect */
+    };
+    return () => es.close();
+  }, [conversationId, applyConvEvent]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -168,8 +320,9 @@ export function Chat({
   }, []);
 
   const stop = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
+    const id = streamingIdRef.current;
+    if (id) cancelTurn(id);
+    streamingIdRef.current = null;
     setStreaming(false);
   }, []);
 
@@ -230,116 +383,30 @@ export function Chat({
     setSandboxFiles((prev) => prev.filter((f) => f.name !== name));
   }, []);
 
-  // Core streaming turn: takes the full history (ending with the user turn to
-  // answer), shows an assistant placeholder, streams the reply, and persists it.
-  const runTurn = useCallback(
-    async (history: UIMessage[], cid: string) => {
-      // The new assistant branches off the last message of the history (the user
-      // turn it answers), so re-generating just adds another sibling version.
-      const parentId = history[history.length - 1]?.id ?? null;
-      const assistantMsg: UIMessage = {
-        id: nanoid(),
-        role: "assistant",
-        content: "",
-        createdAt: Date.now(),
-        parentId,
-      };
-      attach(assistantMsg);
+  // Kick off a server-authoritative turn answering `parentId`. The assistant
+  // placeholder, live tokens, and final message all arrive via the SSE
+  // subscription — generation runs (and persists) on the server, so it survives
+  // this device closing and is mirrored to every other open device.
+  const beginTurn = useCallback(
+    async (cid: string, parentId: string) => {
+      const assistantId = nanoid();
+      streamingIdRef.current = assistantId;
       setStreaming(true);
-      const controller = new AbortController();
-      abortRef.current = controller;
-
       try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversationId: cid,
-            useRag,
-            useGrok,
-            messages: history.map((m) => ({
-              role: m.role,
-              content: m.content,
-              images: m.images,
-            })),
-          }),
-          signal: controller.signal,
+        await startTurn({
+          conversationId: cid,
+          parentId,
+          assistantMessageId: assistantId,
+          useRag,
+          useGrok,
         });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || `Request failed (${res.status})`);
-        }
-        if (!res.body) throw new Error("No response stream.");
-
-        const citations = parseCitationsHeader(res.headers.get("X-Citations"));
-        const genImages = parseImagesHeader(res.headers.get("X-Images"));
-        const genVideos = parseVideosHeader(res.headers.get("X-Videos"));
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let acc = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          acc += decoder.decode(value, { stream: true });
-          const live = parseStreamingText(acc);
-          setAllMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsg.id
-                ? {
-                    ...m,
-                    content: live.text,
-                    toolCalls:
-                      live.toolCalls.length > 0 ? live.toolCalls : undefined,
-                  }
-                : m,
-            ),
-          );
-        }
-
-        const media = parseMediaSentinel(acc);
-        const parsed = parseStreamingText(acc);
-        const finalAssistant: UIMessage = {
-          ...assistantMsg,
-          content: parsed.text,
-          toolCalls:
-            parsed.toolCalls.length > 0 ? parsed.toolCalls : undefined,
-          citations:
-            citations.length || media.citations.length
-              ? [...citations, ...media.citations]
-              : undefined,
-          images:
-            genImages.length || media.images.length
-              ? [...genImages, ...media.images]
-              : undefined,
-          videos:
-            genVideos.length || media.videos.length
-              ? [...genVideos, ...media.videos]
-              : undefined,
-          files: media.files.length > 0 ? media.files : undefined,
-          artifacts: media.artifacts.length > 0 ? media.artifacts : undefined,
-        };
-        setAllMessages((prev) =>
-          prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),
-        );
-        await saveMessage(cid, finalAssistant);
-        onPersisted();
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          // user stopped — keep partial output
-        } else {
-          const msg = err instanceof Error ? err.message : "Unknown error";
-          setError(msg);
-          setAllMessages((prev) =>
-            prev.filter((m) => !(m.id === assistantMsg.id && m.content === "")),
-          );
-        }
-      } finally {
+        setError(err instanceof Error ? err.message : "Unknown error");
+        streamingIdRef.current = null;
         setStreaming(false);
-        abortRef.current = null;
       }
     },
-    [useRag, useGrok, onPersisted, attach],
+    [useRag, useGrok],
   );
 
   const send = useCallback(async () => {
@@ -366,7 +433,6 @@ export function Chat({
       createdAt: Date.now(),
       parentId: messages.length ? messages[messages.length - 1].id : null,
     };
-    const history = [...messages, userMsg];
     setInput("");
     setAttachments([]);
     setSandboxFiles([]);
@@ -374,7 +440,7 @@ export function Chat({
 
     const cid = await ensureConversation(text || "New chat");
     await saveMessage(cid, userMsg);
-    await runTurn(history, cid);
+    await beginTurn(cid, userMsg.id);
   }, [
     input,
     attachments,
@@ -382,7 +448,7 @@ export function Chat({
     streaming,
     messages,
     ensureConversation,
-    runTurn,
+    beginTurn,
     attach,
   ]);
 
@@ -408,13 +474,12 @@ export function Chat({
       await saveMessage(conversationId, sibling);
 
       if (sibling.role === "user") {
-        const history = ancestorsOf([...allMessages, sibling], sibling);
-        await runTurn(history, conversationId);
+        await beginTurn(conversationId, sibling.id);
       } else {
         onPersisted();
       }
     },
-    [streaming, conversationId, allMessages, runTurn, onPersisted, attach],
+    [streaming, conversationId, beginTurn, onPersisted, attach],
   );
 
   // Regenerate any assistant message: add another sibling version under the same
@@ -427,10 +492,9 @@ export function Chat({
       const parent = allMessages.find((m) => m.id === target.parentId);
       if (!parent) return;
       setError(null);
-      const history = ancestorsOf(allMessages, parent);
-      await runTurn(history, conversationId);
+      await beginTurn(conversationId, parent.id);
     },
-    [streaming, conversationId, allMessages, runTurn],
+    [streaming, conversationId, allMessages, beginTurn],
   );
 
   // Switch which version of a message (and its branch) is shown.
@@ -612,6 +676,7 @@ export function Chat({
                   onPrevVersion={() => switchVersion(m.id, -1)}
                   onNextVersion={() => switchVersion(m.id, 1)}
                   conversationId={conversationId}
+                  isMobile={isMobile}
                 />
               );
             })}

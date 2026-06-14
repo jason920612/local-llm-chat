@@ -19,6 +19,8 @@ export interface SystemPromptOptions {
   grokNative?: boolean;
   /** Available skills (name + one-line description) to advertise to the model. */
   skills?: { name: string; description: string }[];
+  /** User-defined principles for how the model thinks/responds (from settings). */
+  customInstructions?: string;
 }
 
 /**
@@ -77,6 +79,7 @@ const NATIVE_GROK_DIRECTIVE = `
 - You can search X (Twitter) and the web automatically when a question needs real-time or external information — just use it when relevant, and cite sources with [n].
 - You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.
 - You may also have a "run_code" tool (bash/python) running in a per-conversation sandbox. Use it to compute, test code, or process data. Files you write to the working directory are shown to the user automatically.
+- You may have BACKGROUND-PROCESS tools for long-running work: "start_background" (launch a shell command that keeps running, timeout up to 7 days), "read_background_log" (check its output any time), "list_background" (list your jobs + status), "kill_background" (stop one). Use run_code for quick commands; use start_background for builds, servers, training, crawls, or anything slow. When a background job finishes you are AUTOMATICALLY woken with its exit code + log to react — so you can start a job, end your turn, and continue once it completes. You only see/control jobs from this conversation.
 
 # INLINE MEDIA PLACEMENT
 When you generate images/videos or create files, control WHERE they appear by writing a marker on its own line at that point. Write ONLY the marker, with no label before it:
@@ -114,9 +117,50 @@ Hard rules:
 - Producing or editing a real file (PDF / Word / PowerPoint / Excel) → load the matching skill (pdf/docx/pptx/xlsx). When you load a skill its bundled scripts are mounted in your sandbox under ".skills/<name>/"; run them via run_code (pip install any packages they need first).
 - User asks to add/install a skill (e.g. from github.com/anthropics/skills) → use "install_skill" with the repo or folder URL, then "use_skill" to load it.`;
 
+/**
+ * Static directive explaining the [now: …] note that gets appended to the
+ * latest user message at send time. Kept STATIC (no live value) so the cached
+ * system-prompt prefix stays stable — the volatile timestamp rides on the user
+ * turn instead (the very end of the token stream), see buildTimeNote().
+ */
+const TIME_NOTE_DIRECTIVE = `
+
+# CURRENT DATE & TIME
+The latest user message ends with a hidden note like "[now: <date time> (<timezone>)]" giving the present moment. Treat that as the current date/time for any time-sensitive reasoning. Do NOT repeat or mention this note unless the user explicitly asks about the date or time.`;
+
+/** The volatile time note appended to the last user message (NOT cached). */
+export function buildTimeNote(): string {
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+  // Millisecond precision. dateStyle/timeStyle can't mix with explicit fields,
+  // so use explicit fields only (mixing throws "Invalid option").
+  const formatted = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3,
+    hour12: false,
+    timeZoneName: "longOffset",
+    timeZone: tz,
+  }).format(now);
+  return `[now: ${formatted} (${tz})]`;
+}
+
+const customDirective = (instructions: string) => `
+
+# USER PRINCIPLES (high priority — how the user wants you to think and respond)
+${instructions.trim()}`;
+
 /** Build the full system prompt for the current turn. */
 export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {
   let prompt = CORE_DIRECTIVE;
+  prompt += TIME_NOTE_DIRECTIVE;
+  if (opts.customInstructions && opts.customInstructions.trim()) {
+    prompt += customDirective(opts.customInstructions);
+  }
   if (opts.hasImages) prompt += VISION_DIRECTIVE;
   if (opts.grokNative) prompt += NATIVE_GROK_DIRECTIVE;
   else if (opts.hasGrokTool) prompt += GROK_DIRECTIVE;

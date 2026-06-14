@@ -22,6 +22,8 @@ export interface UIMessage {
   parentId?: string | null;
   /** Which child branch is currently selected under this message (remembered). */
   activeChildId?: string | null;
+  /** Server-side generation state for streaming assistant messages. */
+  status?: "streaming" | "done" | "error";
 }
 
 export interface ToolCallTrace {
@@ -50,6 +52,8 @@ export interface Citation {
   documentId: string;
   documentName: string;
   snippet: string;
+  /** Real web page <title> (web/x search sources), fetched best-effort. */
+  title?: string;
 }
 
 export interface Conversation {

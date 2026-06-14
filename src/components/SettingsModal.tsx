@@ -40,12 +40,19 @@ export function SettingsModal({
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [settings, setSettings] = useState<RuntimeSettings | null>(null);
   const [saving, setSaving] = useState(false);
+  const [promptDraft, setPromptDraft] = useState("");
+  const [promptSaved, setPromptSaved] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     fetchAppConfig().then(setConfig).catch(() => setConfig(null));
     fetchHealth().then(setHealth);
-    fetchSettings().then(setSettings).catch(() => setSettings(null));
+    fetchSettings()
+      .then((s) => {
+        setSettings(s);
+        setPromptDraft(s.systemPrompt);
+      })
+      .catch(() => setSettings(null));
   }, [open]);
 
   const applyPatch = useCallback(
@@ -53,6 +60,7 @@ export function SettingsModal({
       chatModel?: string;
       strictMonitor?: boolean;
       chatTarget?: "local" | "grok";
+      systemPrompt?: string;
     }) => {
       setSaving(true);
       try {
@@ -65,6 +73,12 @@ export function SettingsModal({
     },
     [],
   );
+
+  const saveSystemPrompt = useCallback(async () => {
+    await applyPatch({ systemPrompt: promptDraft });
+    setPromptSaved(true);
+    setTimeout(() => setPromptSaved(false), 1500);
+  }, [applyPatch, promptDraft]);
 
   if (!open) return null;
 
@@ -226,6 +240,49 @@ export function SettingsModal({
                 <p className="text-[11px] leading-relaxed text-muted">
                   Changes take effect immediately — no restart. Switching models
                   uses LM Studio&apos;s loaded/available models (it loads on demand).
+                </p>
+              </div>
+
+              <h3 className="mb-1 mt-5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                System prompt
+                <span className="text-[10px] normal-case text-muted/70">
+                  how the model thinks &amp; replies
+                </span>
+              </h3>
+              <div className="space-y-2 rounded-xl border border-border bg-surface-2 px-4 py-3">
+                <textarea
+                  value={promptDraft}
+                  onChange={(e) => setPromptDraft(e.target.value)}
+                  disabled={saving}
+                  rows={8}
+                  spellCheck={false}
+                  placeholder="Define the principles for how the model should think and respond…"
+                  className="w-full resize-y rounded-lg border border-border bg-surface px-3 py-2 text-xs leading-relaxed outline-none focus:border-accent disabled:opacity-50"
+                />
+                <div className="flex items-center justify-between gap-3">
+                  <button
+                    onClick={() => setPromptDraft(settings.defaultSystemPrompt)}
+                    disabled={saving}
+                    className="text-[11px] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                  >
+                    Reset to default
+                  </button>
+                  <div className="flex items-center gap-2">
+                    {promptSaved && (
+                      <span className="text-[11px] text-emerald-400">saved ✓</span>
+                    )}
+                    <button
+                      onClick={saveSystemPrompt}
+                      disabled={saving || promptDraft === settings.systemPrompt}
+                      className="rounded-lg bg-accent-strong px-3 py-1 text-xs text-white transition hover:opacity-90 disabled:opacity-40"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted">
+                  These principles are injected at the top of every turn&apos;s
+                  system prompt (high priority). Applies to both Local and Grok.
                 </p>
               </div>
             </>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Conversation, RagDocument } from "@/lib/types";
 import {
   deleteConversationApi,
@@ -58,6 +58,50 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  // Latest activeId, readable from the long-lived SSE handler below.
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+
+  // Live multi-device sync of the conversation list: any device creating,
+  // renaming, or deleting a conversation is reflected here in real time.
+  useEffect(() => {
+    const es = new EventSource("/api/events");
+    es.onmessage = (ev) => {
+      let e: {
+        type: string;
+        conversation?: Conversation;
+        id?: string;
+      };
+      try {
+        e = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (e.type === "conv-created" && e.conversation) {
+        const conv = e.conversation;
+        setConversations((prev) =>
+          prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev],
+        );
+      } else if (e.type === "conv-updated" && e.conversation) {
+        const conv = e.conversation;
+        setConversations((prev) => {
+          const next = prev.map((c) => (c.id === conv.id ? conv : c));
+          // Bubble the just-updated conversation to the top (most recent).
+          next.sort((a, b) => b.updatedAt - a.updatedAt);
+          return next;
+        });
+      } else if (e.type === "conv-deleted" && e.id) {
+        const goneId = e.id;
+        setConversations((prev) => prev.filter((c) => c.id !== goneId));
+        if (activeIdRef.current === goneId) navigateTo(null);
+      }
+    };
+    es.onerror = () => {
+      /* auto-reconnects */
+    };
+    return () => es.close();
+  }, [navigateTo]);
+
   const refresh = useCallback(async () => {
     try {
       setConversations(await fetchConversations());
@@ -93,7 +137,9 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
 
   const handleCreated = useCallback(
     (conv: Conversation) => {
-      setConversations((prev) => [conv, ...prev]);
+      setConversations((prev) =>
+        prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev],
+      );
       navigateTo(conv.id);
     },
     [navigateTo],

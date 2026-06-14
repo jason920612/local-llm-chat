@@ -1,6 +1,10 @@
 import { NextRequest } from "next/server";
 import { llm } from "@/lib/llm";
-import { getEffectiveSettings, setSetting } from "@/lib/settings";
+import {
+  getEffectiveSettings,
+  setSetting,
+  DEFAULT_SYSTEM_PROMPT,
+} from "@/lib/settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,7 +18,11 @@ export async function GET() {
   } catch {
     /* server offline — leave list empty */
   }
-  return Response.json({ ...getEffectiveSettings(), availableModels });
+  return Response.json({
+    ...getEffectiveSettings(),
+    availableModels,
+    defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
+  });
 }
 
 /** Update runtime overrides (chat model / strict monitor). Takes effect at once. */
@@ -28,6 +36,9 @@ export async function POST(req: NextRequest) {
   }
   if (body.chatTarget === "local" || body.chatTarget === "grok") {
     setSetting("chatTarget", body.chatTarget);
+  }
+  if (typeof body.systemPrompt === "string") {
+    setSetting("systemPrompt", body.systemPrompt);
   }
   return Response.json(getEffectiveSettings());
 }

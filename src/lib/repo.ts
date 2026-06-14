@@ -28,6 +28,7 @@ interface MessageRow {
   created_at: number;
   parent_id: string | null;
   active_child_id: string | null;
+  status: string | null;
 }
 
 function rowToMessage(row: MessageRow): UIMessage {
@@ -35,6 +36,7 @@ function rowToMessage(row: MessageRow): UIMessage {
     id: row.id,
     role: row.role as Role,
     content: row.content,
+    status: (row.status as UIMessage["status"]) ?? undefined,
     images: row.images ? (JSON.parse(row.images) as string[]) : undefined,
     videos: row.videos ? (JSON.parse(row.videos) as string[]) : undefined,
     files: row.files
@@ -73,6 +75,17 @@ export function createConversation(title: string): Conversation {
      VALUES (?, ?, ?, ?)`,
   ).run(id, t, now, now);
   return { id, title: t, createdAt: now, updatedAt: now };
+}
+
+/** Conversation row only (no messages) — for list-sync broadcasts. */
+export function getConversationMeta(id: string): Conversation | null {
+  const c = db
+    .prepare(
+      `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt
+       FROM conversations WHERE id = ?`,
+    )
+    .get(id) as Conversation | undefined;
+  return c ?? null;
 }
 
 export function getConversation(
@@ -220,8 +233,8 @@ export function addMessage(conversationId: string, m: UIMessage): void {
   // OR REPLACE so a finalized assistant message can overwrite a placeholder.
   db.prepare(
     `INSERT OR REPLACE INTO messages
-       (id, conversation_id, role, content, images, videos, files, tool_calls, citations, artifacts, created_at, parent_id, active_child_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, conversation_id, role, content, images, videos, files, tool_calls, citations, artifacts, created_at, parent_id, active_child_id, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     m.id,
     conversationId,
@@ -236,6 +249,7 @@ export function addMessage(conversationId: string, m: UIMessage): void {
     now,
     parentId,
     activeChild,
+    m.status ?? null,
   );
 
   // Make this message the selected branch under its parent (or the root), so a
@@ -255,6 +269,160 @@ export function addMessage(conversationId: string, m: UIMessage): void {
     Date.now(),
     conversationId,
   );
+}
+
+/** Set just the partial content of a streaming message (no branch/timestamp churn). */
+export function updateMessageContent(
+  messageId: string,
+  content: string,
+): void {
+  db.prepare(`UPDATE messages SET content = ? WHERE id = ?`).run(
+    content,
+    messageId,
+  );
+}
+
+/** Update a message's generation status. */
+export function setMessageStatus(
+  messageId: string,
+  status: "streaming" | "done" | "error",
+): void {
+  db.prepare(`UPDATE messages SET status = ? WHERE id = ?`).run(
+    status,
+    messageId,
+  );
+}
+
+/** A single message row by id (for status/branch checks). */
+export function getMessage(messageId: string): UIMessage | null {
+  const row = db
+    .prepare(`SELECT * FROM messages WHERE id = ?`)
+    .get(messageId) as MessageRow | undefined;
+  return row ? rowToMessage(row) : null;
+}
+
+/**
+ * Build the linear history (root → the given message, inclusive) along the tree
+ * for a conversation — the server-authoritative way to assemble the prompt
+ * input from DB instead of trusting the client to send it.
+ */
+export function historyThrough(
+  conversationId: string,
+  messageId: string,
+): UIMessage[] {
+  const src = getConversation(conversationId);
+  if (!src) return [];
+  const target = src.messages.find((m) => m.id === messageId);
+  if (!target) return [];
+  return ancestorsOf(src.messages, target);
+}
+
+// --- Background jobs (agentic long-running processes) -----------------------
+
+export type BgStatus =
+  | "running"
+  | "exited"
+  | "killed"
+  | "timeout"
+  | "terminated";
+
+export interface BackgroundJob {
+  id: string;
+  conversationId: string;
+  command: string;
+  status: BgStatus;
+  exitCode: number | null;
+  log: string | null;
+  startedAt: number;
+  timeoutAt: number;
+  endedAt: number | null;
+}
+
+interface BgRow {
+  id: string;
+  conversation_id: string;
+  command: string;
+  status: string;
+  exit_code: number | null;
+  log: string | null;
+  started_at: number;
+  timeout_at: number;
+  ended_at: number | null;
+}
+
+function rowToBg(r: BgRow): BackgroundJob {
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    command: r.command,
+    status: r.status as BgStatus,
+    exitCode: r.exit_code,
+    log: r.log,
+    startedAt: r.started_at,
+    timeoutAt: r.timeout_at,
+    endedAt: r.ended_at,
+  };
+}
+
+export function insertBackgroundJob(j: BackgroundJob): void {
+  db.prepare(
+    `INSERT INTO background_jobs
+       (id, conversation_id, command, status, exit_code, log, started_at, timeout_at, ended_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    j.id,
+    j.conversationId,
+    j.command,
+    j.status,
+    j.exitCode,
+    j.log,
+    j.startedAt,
+    j.timeoutAt,
+    j.endedAt,
+  );
+}
+
+export function updateBackgroundJob(
+  id: string,
+  patch: { status?: BgStatus; exitCode?: number | null; log?: string; endedAt?: number | null },
+): void {
+  const cur = db
+    .prepare(`SELECT * FROM background_jobs WHERE id = ?`)
+    .get(id) as BgRow | undefined;
+  if (!cur) return;
+  db.prepare(
+    `UPDATE background_jobs SET status = ?, exit_code = ?, log = ?, ended_at = ? WHERE id = ?`,
+  ).run(
+    patch.status ?? cur.status,
+    patch.exitCode !== undefined ? patch.exitCode : cur.exit_code,
+    patch.log !== undefined ? patch.log : cur.log,
+    patch.endedAt !== undefined ? patch.endedAt : cur.ended_at,
+    id,
+  );
+}
+
+export function getBackgroundJob(id: string): BackgroundJob | null {
+  const r = db
+    .prepare(`SELECT * FROM background_jobs WHERE id = ?`)
+    .get(id) as BgRow | undefined;
+  return r ? rowToBg(r) : null;
+}
+
+export function listBackgroundJobs(conversationId: string): BackgroundJob[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM background_jobs WHERE conversation_id = ? ORDER BY started_at DESC`,
+    )
+    .all(conversationId) as BgRow[];
+  return rows.map(rowToBg);
+}
+
+/** Jobs still flagged running (used on boot to reconcile after a restart). */
+export function listRunningBackgroundJobs(): BackgroundJob[] {
+  const rows = db
+    .prepare(`SELECT * FROM background_jobs WHERE status = 'running'`)
+    .all() as BgRow[];
+  return rows.map(rowToBg);
 }
 
 // --- RAG documents ---------------------------------------------------------

@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
-import { addMessage } from "@/lib/repo";
+import { addMessage, getConversationMeta } from "@/lib/repo";
+import { publishConv, publishGlobal } from "@/lib/live/bus";
 import type { UIMessage } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -14,5 +15,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return Response.json({ error: "invalid message" }, { status: 400 });
   }
   addMessage(id, msg);
+  // Broadcast so other devices see the new/edited message (and reordered list).
+  publishConv(id, { type: "message", message: msg });
+  const meta = getConversationMeta(id);
+  if (meta) publishGlobal({ type: "conv-updated", conversation: meta });
   return Response.json({ ok: true }, { status: 201 });
 }

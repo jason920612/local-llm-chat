@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { setActiveChild, getConversation } from "@/lib/repo";
 import { computePath } from "@/lib/tree";
 import { compactConversation } from "@/lib/compaction";
+import { publishConv } from "@/lib/live/bus";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +20,11 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return Response.json({ error: "childId required" }, { status: 400 });
   }
   setActiveChild(id, body.parentId ?? null, body.childId);
+  publishConv(id, {
+    type: "branch",
+    parentId: body.parentId ?? null,
+    childId: body.childId,
+  });
 
   // Switching a branch can change the active path, so eagerly compact it now: the
   // summary then always matches the branch you're on (cached per node, so this is

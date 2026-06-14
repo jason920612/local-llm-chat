@@ -71,6 +71,21 @@ function init(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_compactions_conv
       ON compactions(conversation_id);
+
+    CREATE TABLE IF NOT EXISTS background_jobs (
+      id              TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      command         TEXT NOT NULL,
+      status          TEXT NOT NULL,
+      exit_code       INTEGER,
+      log             TEXT,
+      started_at      INTEGER NOT NULL,
+      timeout_at      INTEGER NOT NULL,
+      ended_at        INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bg_conv
+      ON background_jobs(conversation_id);
   `);
 
   // Migrations: add columns to pre-existing messages tables (no-op if present).
@@ -121,6 +136,14 @@ function init(): Database.Database {
   }
   try {
     db.exec(`ALTER TABLE conversations ADD COLUMN summary_through_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  // Generation status for server-authoritative streaming: 'streaming' while a
+  // background generation is writing this (assistant) message, then 'done' /
+  // 'error'. NULL = a normal, already-complete message.
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN status TEXT`);
   } catch {
     /* column already exists */
   }

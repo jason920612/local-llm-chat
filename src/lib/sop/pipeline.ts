@@ -1,10 +1,15 @@
 import type OpenAI from "openai";
 import { config } from "../config";
-import { buildSystemPrompt } from "../prompts";
+import { buildSystemPrompt, buildTimeNote } from "../prompts";
 import { toOpenAIMessages } from "../openai-format";
 import type { ChatRequestBody, UIMessage } from "../types";
 import { retrieve } from "../rag/retrieve";
-import { chatClient, strictMonitorEnabled, chatTarget } from "../settings";
+import {
+  chatClient,
+  strictMonitorEnabled,
+  chatTarget,
+  customSystemPrompt,
+} from "../settings";
 import { askGrok, mapGrokCitations } from "../grok/search";
 import { generateImage } from "../grok/image";
 import { grokSearchTool, generateImageTool } from "../grok/tool";
@@ -30,6 +35,27 @@ type ChatParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
 const RAG_REFUSAL = "The provided documents do not contain this information.";
 
+/**
+ * Return a copy of `messages` with a volatile time note appended to the LAST
+ * user message (send-time only — never persisted/displayed). Placing it at the
+ * very end of the token stream keeps the cached system-prompt + history prefix
+ * intact; only the current (already-uncached) turn carries the changing value.
+ */
+function withTimeNote(messages: UIMessage[]): UIMessage[] {
+  let lastUser = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      lastUser = i;
+      break;
+    }
+  }
+  if (lastUser < 0) return messages;
+  const copy = messages.slice();
+  const m = copy[lastUser];
+  copy[lastUser] = { ...m, content: `${m.content}\n\n${buildTimeNote()}` };
+  return copy;
+}
+
 /** Input the route gathers before invoking the controlled pipeline. */
 export interface PipelineInput {
   messages: UIMessage[];
@@ -42,6 +68,7 @@ export interface PipelineInput {
 /** Entry point: run a chat turn under full code-enforced SOP control. */
 export async function runControlledChat(
   body: ChatRequestBody,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const messages = (body.messages ?? []) as UIMessage[];
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -75,6 +102,7 @@ export async function runControlledChat(
         hasImages,
         ragContext,
         grokNative: true,
+        customInstructions: customSystemPrompt(),
         // Skills depend on the sandbox tools (run_code/clone_repo), so only
         // advertise them when the sandbox is enabled.
         skills: config.sandbox.enabled ? skillsSummary() : [],
@@ -86,13 +114,15 @@ export async function runControlledChat(
         messages,
       );
       // Streamed: text tokens, then a trailing media marker with
-      // citations/images/videos (parsed by the client).
+      // citations/images/videos (parsed by the client). The volatile time note
+      // rides on the last user turn (kept out of the cached prefix).
       const stream = streamGrokResponses(
         systemPrompt,
-        effective,
+        withTimeNote(effective),
         citations,
         body.conversationId,
         summary,
+        signal,
       );
       return streamResponse(stream);
     }
@@ -110,16 +140,17 @@ export async function runControlledChat(
       hasImages,
       ragContext,
       hasGrokTool: useTools,
+      customInstructions: customSystemPrompt(),
     });
     const openaiMessages: ChatParam[] = [
       { role: "system", content: systemPrompt },
-      ...toOpenAIMessages(messages),
+      ...toOpenAIMessages(withTimeNote(messages)),
     ];
 
     // Grok tool path: the model can call grok_search (X + web) and generate_image;
     // we resolve them server-side and finalize with citations + generated images.
     if (useTools) {
-      return await runWithGrokTool(openaiMessages, citations);
+      return await runWithGrokTool(openaiMessages, citations, signal);
     }
 
     // Strict monitor takes precedence: aggressive monitor + scold-correct path.
@@ -127,13 +158,14 @@ export async function runControlledChat(
       const result = await runMonitor(openaiMessages, {
         allowedSources,
         requireCitations: allowedSources > 0,
+        signal,
       });
       return monitorResponse(result, citations);
     }
 
     return config.sop.blocking
-      ? await runBlocking(openaiMessages, allowedSources, citations)
-      : await runStreaming(openaiMessages, allowedSources, citations);
+      ? await runBlocking(openaiMessages, allowedSources, citations, signal)
+      : await runStreaming(openaiMessages, allowedSources, citations, signal);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return Response.json(
@@ -202,14 +234,18 @@ async function runStreaming(
   openaiMessages: ChatParam[],
   allowedSources: number,
   citations: Citation[],
+  signal?: AbortSignal,
 ): Promise<Response> {
   const { client, model } = chatClient();
-  const completion = await client.chat.completions.create({
-    model,
-    messages: openaiMessages,
-    stream: true,
-    temperature: 0.4,
-  });
+  const completion = await client.chat.completions.create(
+    {
+      model,
+      messages: openaiMessages,
+      stream: true,
+      temperature: 0.4,
+    },
+    { signal },
+  );
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -258,9 +294,11 @@ async function runStreaming(
           );
         }
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "stream interrupted";
-        controller.enqueue(encoder.encode(`\n\n[stream error: ${message}]`));
+        if (!signal?.aborted) {
+          const message =
+            err instanceof Error ? err.message : "stream interrupted";
+          controller.enqueue(encoder.encode(`\n\n[stream error: ${message}]`));
+        }
       } finally {
         controller.close();
       }
@@ -277,15 +315,19 @@ function streamFinal(
   messages: ChatParam[],
   citations: Citation[],
   images: string[] = [],
+  signal?: AbortSignal,
 ): Promise<Response> {
   const { client, model } = chatClient();
   return client.chat.completions
-    .create({
-      model,
-      messages,
-      stream: true,
-      temperature: 0.4,
-    })
+    .create(
+      {
+        model,
+        messages,
+        stream: true,
+        temperature: 0.4,
+      },
+      { signal },
+    )
     .then((completion) => {
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
@@ -322,9 +364,13 @@ function streamFinal(
               controller.enqueue(encoder.encode("</think>\n\n"));
             }
           } catch (err) {
-            const message =
-              err instanceof Error ? err.message : "stream interrupted";
-            controller.enqueue(encoder.encode(`\n\n[stream error: ${message}]`));
+            if (!signal?.aborted) {
+              const message =
+                err instanceof Error ? err.message : "stream interrupted";
+              controller.enqueue(
+                encoder.encode(`\n\n[stream error: ${message}]`),
+              );
+            }
           } finally {
             controller.close();
           }
@@ -342,6 +388,7 @@ function streamFinal(
 async function runWithGrokTool(
   openaiMessages: ChatParam[],
   baseCitations: Citation[],
+  signal?: AbortSignal,
 ): Promise<Response> {
   const messages = [...openaiMessages];
   const citations: Citation[] = [...baseCitations];
@@ -351,13 +398,16 @@ async function runWithGrokTool(
 
   const { client, model } = chatClient();
   for (let round = 0; round < config.grok.maxRounds; round++) {
-    const resp = await client.chat.completions.create({
-      model,
-      messages,
-      tools: [grokSearchTool, generateImageTool],
-      tool_choice: "auto",
-      temperature: 0.3,
-    });
+    const resp = await client.chat.completions.create(
+      {
+        model,
+        messages,
+        tools: [grokSearchTool, generateImageTool],
+        tool_choice: "auto",
+        temperature: 0.3,
+      },
+      { signal },
+    );
 
     const msg = resp.choices[0]?.message;
     const toolCalls = msg?.tool_calls ?? [];
@@ -437,7 +487,7 @@ async function runWithGrokTool(
     );
     return monitorResponse(result, citations, images);
   }
-  return streamFinal(messages, citations, images);
+  return streamFinal(messages, citations, images, signal);
 }
 
 /** Wrap a monitor result as a response: answer + neutral control note. */
@@ -456,13 +506,17 @@ async function runBlocking(
   openaiMessages: ChatParam[],
   allowedSources: number,
   citations: Citation[],
+  signal?: AbortSignal,
 ): Promise<Response> {
   const { client, model } = chatClient();
-  const res = await client.chat.completions.create({
-    model,
-    messages: openaiMessages,
-    temperature: 0.4,
-  });
+  const res = await client.chat.completions.create(
+    {
+      model,
+      messages: openaiMessages,
+      temperature: 0.4,
+    },
+    { signal },
+  );
 
   let text = stripBoilerplate(res.choices[0]?.message?.content ?? "");
   const violations: string[] = [];

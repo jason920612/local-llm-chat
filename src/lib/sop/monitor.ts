@@ -90,6 +90,8 @@ interface MonitorOptions {
   allowedSources: number;
   /** Require at least one valid citation (true when sources exist). */
   requireCitations: boolean;
+  /** Abort the upstream model calls when the user stops the turn. */
+  signal?: AbortSignal;
 }
 
 export interface MonitorResult {
@@ -101,13 +103,17 @@ export interface MonitorResult {
 async function generate(
   messages: ChatParam[],
   temperature: number,
+  signal?: AbortSignal,
 ): Promise<{ content: string; reasoning: string }> {
   const { client, model } = chatClient();
-  const res = await client.chat.completions.create({
-    model,
-    messages,
-    temperature,
-  });
+  const res = await client.chat.completions.create(
+    {
+      model,
+      messages,
+      temperature,
+    },
+    { signal },
+  );
   const msg = res.choices[0]?.message as
     | { content?: string; reasoning_content?: string; reasoning?: string }
     | undefined;
@@ -171,7 +177,7 @@ export async function runMonitor(
   if (initialDraft != null) {
     draft = stripBoilerplate(initialDraft);
   } else {
-    const gen = await generate(messages, 0.4);
+    const gen = await generate(messages, 0.4, opts.signal);
     draft = gen.content;
     lastReasoning = gen.reasoning;
   }
@@ -214,6 +220,7 @@ export async function runMonitor(
         { role: "user", content: buildScoldCorrection(violations) },
       ],
       0.2,
+      opts.signal,
     );
     draft = stripBoilerplate(gen.content);
     lastReasoning = gen.reasoning;

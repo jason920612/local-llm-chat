@@ -18,12 +18,14 @@ import {
   RefreshCw,
   Maximize2,
   Download,
+  Copy,
 } from "lucide-react";
 import type {
   UIMessage,
   SandboxFileMeta,
   ToolCallTrace,
   ArtifactMeta,
+  Citation,
 } from "@/lib/types";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import { parseThinking } from "@/lib/think";
@@ -230,13 +232,71 @@ const TOOL_LABELS: Record<string, string> = {
   use_skill: "📖 載入技能",
   install_skill: "⬇ 安裝技能",
   clone_repo: "📦 拉取倉庫",
+  start_background: "⚙ 啟動背景程式",
+  read_background_log: "📜 讀背景 log",
+  list_background: "📋 背景程式列表",
+  kill_background: "⛔ 關閉背景程式",
 };
 
+const SEARCH_TOOLS = new Set([
+  "web_search",
+  "x_search",
+  "search",
+  "grok_search",
+]);
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+/** Compact, clickable source cards for web/x search results (title + favicon). */
+function SourceCards({ citations }: { citations: Citation[] }) {
+  if (!citations.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 px-3 pb-2">
+      {citations.map((c) => {
+        const url = c.snippet;
+        const host = hostOf(url);
+        return (
+          <a
+            key={c.index}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`[${c.index}] ${c.title ?? host}\n${url}`}
+            className="flex max-w-[200px] items-center gap-1.5 rounded-md border border-border/70 bg-surface px-2 py-1 text-[11px] text-muted transition hover:border-accent hover:text-foreground"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`}
+              alt=""
+              className="h-3.5 w-3.5 shrink-0 rounded-sm"
+            />
+            <span className="truncate">{c.title ?? host}</span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Collapsible panel showing which tools the model called this turn + args. */
-function ToolCallsPanel({ calls }: { calls: ToolCallTrace[] }) {
+function ToolCallsPanel({
+  calls,
+  citations,
+}: {
+  calls: ToolCallTrace[];
+  citations?: Citation[];
+}) {
   const [open, setOpen] = useState(false);
   if (!calls.length) return null;
   const labelOf = (t: ToolCallTrace) => TOOL_LABELS[t.tool] ?? t.tool;
+  const didSearch = calls.some((c) => SEARCH_TOOLS.has(c.tool));
+  const sources = didSearch ? (citations ?? []) : [];
   return (
     <div className="mb-2 overflow-hidden rounded-lg border border-border/70 bg-surface-2/50 text-xs">
       <button
@@ -252,6 +312,14 @@ function ToolCallsPanel({ calls }: { calls: ToolCallTrace[] }) {
           已呼叫 {calls.length} 個工具：{calls.map(labelOf).join("、")}
         </span>
       </button>
+      {sources.length > 0 && (
+        <div className="border-t border-border/70 pt-2">
+          <div className="px-3 pb-1 text-[10px] uppercase tracking-wide text-muted/70">
+            來源 {sources.length}
+          </div>
+          <SourceCards citations={sources} />
+        </div>
+      )}
       {open && (
         <div className="space-y-2 border-t border-border/70 px-3 py-2">
           {calls.map((c, i) => (
@@ -282,6 +350,7 @@ export function MessageBubble({
   onPrevVersion,
   onNextVersion,
   conversationId,
+  isMobile,
 }: {
   message: UIMessage;
   streaming?: boolean;
@@ -294,6 +363,7 @@ export function MessageBubble({
   onPrevVersion?: () => void;
   onNextVersion?: () => void;
   conversationId?: string | null;
+  isMobile?: boolean;
 }) {
   const isUser = message.role === "user";
   const [canTts, setCanTts] = useState(false);
@@ -301,6 +371,7 @@ export function MessageBubble({
     "idle",
   );
   const [editing, setEditing] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState("");
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [viewer, setViewer] = useState<string | null>(null);
@@ -313,10 +384,38 @@ export function MessageBubble({
   useEffect(() => setCanTts(ttsSupported()), []);
   useEffect(() => () => stopSpeaking(), []);
 
+  // Bigger, padded tap targets on touch devices.
+  const isz = isMobile ? 17 : 12;
+  const btn = `text-muted hover:text-foreground${isMobile ? " p-1.5" : ""}`;
+
   // Split reasoning (<think>) from the answer for assistant messages.
   const { thinking, answer, thinkingStreaming } = isUser
     ? { thinking: "", answer: message.content, thinkingStreaming: false }
     : parseThinking(message.content);
+
+  async function copyMessage() {
+    const text = isUser ? message.content : answer;
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback for insecure/older contexts.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* ignore */
+      }
+      ta.remove();
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  }
 
   function toggleSpeak() {
     if (ttsState !== "idle") {
@@ -350,29 +449,29 @@ export function MessageBubble({
             <span className="flex items-center gap-0.5 text-[11px] text-muted">
               <button
                 onClick={onPrevVersion}
-                className="hover:text-foreground disabled:opacity-30"
+                className={`disabled:opacity-30 ${btn}`}
                 disabled={streaming}
                 title="上一個版本"
               >
-                <ChevronLeft size={12} />
+                <ChevronLeft size={isz} />
               </button>
               <span className="tabular-nums">
                 {versionIndex}/{versionCount}
               </span>
               <button
                 onClick={onNextVersion}
-                className="hover:text-foreground disabled:opacity-30"
+                className={`disabled:opacity-30 ${btn}`}
                 disabled={streaming}
                 title="下一個版本"
               >
-                <ChevronRight size={12} />
+                <ChevronRight size={isz} />
               </button>
             </span>
           )}
           {!isUser && canTts && !streaming && answer.trim() && (
             <button
               onClick={toggleSpeak}
-              className="text-muted hover:text-foreground"
+              className={btn}
               title={
                 ttsState === "idle"
                   ? "Read aloud"
@@ -382,44 +481,59 @@ export function MessageBubble({
               }
             >
               {ttsState === "loading" ? (
-                <Loader2 size={12} className="animate-spin" />
+                <Loader2 size={isz} className="animate-spin" />
               ) : ttsState === "playing" ? (
-                <Square size={12} />
+                <Square size={isz} />
               ) : (
-                <Volume2 size={13} />
+                <Volume2 size={isz} />
               )}
             </button>
           )}
           {canEdit && !editing && (
-            <span className="flex items-center gap-2 opacity-0 transition group-hover:opacity-100">
+            <span
+              className={`flex items-center gap-2 transition ${
+                isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+              }`}
+            >
+              <button
+                onClick={copyMessage}
+                className={btn}
+                title={copied ? "已複製" : "複製訊息"}
+              >
+                {copied ? (
+                  <Check size={isz} className="text-emerald-400" />
+                ) : (
+                  <Copy size={isz} />
+                )}
+              </button>
               {onEdit && (
                 <button
                   onClick={() => {
                     setDraft(message.content);
                     setEditing(true);
                   }}
-                  className="text-muted hover:text-foreground"
+                  className={btn}
                   title="編輯此輪（建立新版本）"
                 >
-                  <Pencil size={12} />
+                  <Pencil size={isz} />
                 </button>
               )}
               {!isUser && onRegenerate && (
                 <button
                   onClick={() => onRegenerate(message.id)}
-                  className="text-muted hover:text-foreground"
+                  className={btn}
                   title="重新生成（建立新版本）"
                 >
-                  <RefreshCw size={12} />
+                  <RefreshCw size={isz} />
                 </button>
               )}
               {onFork && (
                 <button
                   onClick={() => onFork(message.id)}
-                  className="text-muted hover:text-foreground"
+                  className={btn}
                   title="從此處分支為新對話"
                 >
-                  <GitBranch size={12} />
+                  <GitBranch size={isz} />
                 </button>
               )}
             </span>
@@ -478,7 +592,10 @@ export function MessageBubble({
               live={streaming && thinkingStreaming}
             />
             {message.toolCalls && message.toolCalls.length > 0 && (
-              <ToolCallsPanel calls={message.toolCalls} />
+              <ToolCallsPanel
+                calls={message.toolCalls}
+                citations={message.citations}
+              />
             )}
             <AssistantBody
               answer={answer}

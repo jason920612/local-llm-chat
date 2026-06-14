@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { truncateMessagesAfter } from "@/lib/repo";
+import { publishConv } from "@/lib/live/bus";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,5 +15,6 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return Response.json({ error: "afterMessageId required" }, { status: 400 });
   }
   truncateMessagesAfter(id, body.afterMessageId);
+  publishConv(id, { type: "truncate", afterMessageId: body.afterMessageId });
   return Response.json({ ok: true });
 }

@@ -93,6 +93,38 @@ export async function saveMessage(
   });
 }
 
+/**
+ * Start a server-authoritative generation. Returns the assistant message id the
+ * answer will stream into (over the conversation's SSE channel). The generation
+ * runs in the background on the server, so it survives this device closing.
+ */
+export async function startTurn(args: {
+  conversationId: string;
+  parentId: string;
+  assistantMessageId: string;
+  useRag?: boolean;
+  useGrok?: boolean;
+}): Promise<void> {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+  if (!res.ok && res.status !== 202) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+}
+
+/** Best-effort cancel of an in-flight server generation. */
+export async function cancelTurn(messageId: string): Promise<void> {
+  await fetch("/api/chat/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messageId }),
+  }).catch(() => {});
+}
+
 export async function truncateAfter(
   conversationId: string,
   afterMessageId: string,
@@ -267,6 +299,8 @@ export interface RuntimeSettings {
   grokAvailable: boolean;
   strictMonitor: boolean;
   availableModels: string[];
+  systemPrompt: string;
+  defaultSystemPrompt: string;
 }
 
 export async function fetchSettings(): Promise<RuntimeSettings> {
@@ -280,6 +314,7 @@ export async function updateSettings(
     chatModel?: string;
     strictMonitor?: boolean;
     chatTarget?: "local" | "grok";
+    systemPrompt?: string;
   },
 ): Promise<void> {
   await fetch("/api/settings", {

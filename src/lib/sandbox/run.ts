@@ -146,6 +146,24 @@ export async function convertToPdf(
   });
 }
 
+/** Ensure a conversation's sandbox workspace exists; return its absolute path. */
+export function prepareWorkspace(conversationId: string): string {
+  cleanupOld();
+  const dir = workspaceDir(conversationId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** process.env with our pyboot dir on PYTHONPATH (CJK font auto-embed for python). */
+export function sandboxEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const bootDir = path.join(process.cwd(), "src", "lib", "sandbox", "pyboot");
+  env.PYTHONPATH = env.PYTHONPATH
+    ? `${bootDir}${path.delimiter}${env.PYTHONPATH}`
+    : bootDir;
+  return env;
+}
+
 /** Remove a conversation's sandbox (called when the conversation is deleted). */
 export function deleteSandbox(conversationId: string): void {
   try {

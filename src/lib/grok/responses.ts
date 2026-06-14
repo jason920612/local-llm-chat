@@ -7,6 +7,7 @@ import {
   validateTradingView,
 } from "../artifacts/validate";
 import { mapGrokCitations } from "./search";
+import { enrichCitationTitles } from "./titles";
 import { generateImage } from "./image";
 import { generateVideo } from "./video";
 import {
@@ -16,6 +17,12 @@ import {
   mountSkill,
 } from "../sandbox/run";
 import { getSkill, installSkill } from "../skills";
+import {
+  startBackground,
+  readBackgroundLog,
+  listBackground,
+  killBackground,
+} from "../live/background";
 
 /**
  * Native xAI Responses API agent (POST /v1/responses).
@@ -34,6 +41,10 @@ const CODE_FN = "run_code";
 const SKILL_FN = "use_skill";
 const CLONE_FN = "clone_repo";
 const INSTALL_FN = "install_skill";
+const BG_START_FN = "start_background";
+const BG_LOG_FN = "read_background_log";
+const BG_LIST_FN = "list_background";
+const BG_KILL_FN = "kill_background";
 
 const BASE_TOOLS = [
   { type: "web_search" },
@@ -208,9 +219,72 @@ const INSTALL_SKILL_TOOL = {
   },
 };
 
+const BG_START_TOOL = {
+  type: "function",
+  name: BG_START_FN,
+  description:
+    "Launch a long-running shell command as a BACKGROUND process in the conversation sandbox and get back a background id (bg_…). It keeps running after this reply; you are AUTOMATICALLY woken with its exit code + log tail when it finishes (or times out / is killed). Use for builds, servers, training, crawls, watchers, or anything that takes a while. For quick commands that finish in seconds, use run_code instead.",
+  parameters: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        description: "The shell (bash) command to run in the background.",
+      },
+      timeout_seconds: {
+        type: "number",
+        description:
+          "Hard timeout in seconds; the process is killed at this limit. Max 604800 (7 days). Defaults to the max if omitted.",
+      },
+    },
+    required: ["command"],
+  },
+};
+
+const BG_LOG_TOOL = {
+  type: "function",
+  name: BG_LOG_FN,
+  description:
+    "Read the recent log output (stdout+stderr) of one of YOUR background processes — works both while it runs and after it has finished.",
+  parameters: {
+    type: "object",
+    properties: {
+      id: { type: "string", description: "The background id (bg_…)." },
+      tail_chars: {
+        type: "number",
+        description: "How many trailing characters of log to return (default 4000).",
+      },
+    },
+    required: ["id"],
+  },
+};
+
+const BG_LIST_TOOL = {
+  type: "function",
+  name: BG_LIST_FN,
+  description:
+    "List the background processes you started in this conversation, with their status (running/exited/killed/timeout/terminated), exit code, and command.",
+  parameters: { type: "object", properties: {} },
+};
+
+const BG_KILL_TOOL = {
+  type: "function",
+  name: BG_KILL_FN,
+  description:
+    "Force-kill one of YOUR running background processes by its id (bg_…).",
+  parameters: {
+    type: "object",
+    properties: {
+      id: { type: "string", description: "The background id to kill." },
+    },
+    required: ["id"],
+  },
+};
+
 /**
  * Tools sent to the Responses API. The sandbox-backed tools (run_code, clone_repo,
- * use_skill, install_skill) are only offered when the sandbox is enabled.
+ * use_skill, install_skill, background-process tools) are only offered when the
+ * sandbox is enabled.
  */
 function toolset() {
   if (!config.sandbox.enabled) return BASE_TOOLS;
@@ -220,6 +294,10 @@ function toolset() {
     CLONE_REPO_TOOL,
     USE_SKILL_TOOL,
     INSTALL_SKILL_TOOL,
+    BG_START_TOOL,
+    BG_LOG_TOOL,
+    BG_LIST_TOOL,
+    BG_KILL_TOOL,
   ];
 }
 
@@ -240,6 +318,40 @@ export interface GrokResponseResult {
   citations: Citation[];
   images: string[];
   videos: string[];
+}
+
+/**
+ * Pull source URLs from a Responses API result. xAI has NO top-level
+ * `citations` field; web/x search sources live as `url_citation` annotations
+ * on the final message's output_text content parts. Order preserved (matches
+ * the model's inline [1], [2] numbering).
+ */
+function extractCitationUrls(output: unknown): string[] {
+  const urls: string[] = [];
+  if (!Array.isArray(output)) return urls;
+  for (const item of output as Array<{ content?: unknown }>) {
+    const content = item?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content as Array<{ annotations?: unknown }>) {
+      const anns = part?.annotations;
+      if (!Array.isArray(anns)) continue;
+      for (const a of anns as Array<{ type?: string; url?: string }>) {
+        if (a?.type === "url_citation" && typeof a.url === "string" && a.url) {
+          urls.push(a.url);
+        }
+      }
+    }
+  }
+  return urls;
+}
+
+/** Append source URLs as citations, de-duplicating by URL (snippet holds URL). */
+function mergeCitationUrls(existing: Citation[], urls: string[]): Citation[] {
+  if (!urls.length) return existing;
+  const seen = new Set(existing.map((c) => c.snippet));
+  const fresh = urls.filter((u) => !seen.has(u) && !seen.has(u + "/"));
+  if (!fresh.length) return existing;
+  return [...existing, ...mapGrokCitations(fresh, existing.length)];
 }
 
 /** Map our chat messages into Responses API `input` items. */
@@ -338,6 +450,7 @@ export function streamGrokResponses(
   baseCitations: Citation[] = [],
   conversationId = "default",
   contextSummary = "",
+  signal?: AbortSignal,
 ): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
   const fullInstructions = contextSummary
@@ -385,6 +498,7 @@ export function streamGrokResponses(
         for (let round = 0; round < config.grok.maxRounds; round++) {
           const res = await fetch(`${config.grok.baseURL}/responses`, {
             method: "POST",
+            signal,
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${config.grok.apiKey}`,
@@ -442,11 +556,22 @@ export function streamGrokResponses(
                   }
                 | undefined;
               respId = r?.id;
+              // Sources come from url_citation annotations on the message
+              // output (xAI has no top-level `citations` field). Keep the old
+              // field as a fallback in case that changes.
+              citations = mergeCitationUrls(
+                citations,
+                extractCitationUrls(r?.output),
+              );
               if (Array.isArray(r?.citations)) {
-                citations = [
-                  ...citations,
-                  ...mapGrokCitations(r.citations, citations.length),
-                ];
+                citations = mergeCitationUrls(
+                  citations,
+                  r.citations.map((c) =>
+                    typeof c === "string"
+                      ? c
+                      : ((c as { url?: string })?.url ?? ""),
+                  ).filter(Boolean),
+                );
               }
               // Server-side search trace: prefer specific call items, else fall
               // back to the usage counter (the reliable signal xAI provides).
@@ -488,6 +613,10 @@ export function streamGrokResponses(
               interval?: string;
               candles?: unknown[];
               title?: string;
+              command?: string;
+              timeout_seconds?: number;
+              id?: string;
+              tail_chars?: number;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -631,6 +760,43 @@ export function streamGrokResponses(
               out = r.ok
                 ? `Cloned into "${r.dir}/". Top-level tree:\n${r.tree}\n\nNow explore it with run_code (cd ${r.dir} && rg ...). Do NOT read every file.`
                 : `clone_repo failed: ${r.error ?? "error"}`;
+            } else if (c.name === BG_START_FN) {
+              emitTool("start_background", { command: args.command ?? "" });
+              const r = startBackground(
+                conversationId,
+                args.command ?? "",
+                args.timeout_seconds ?? 0,
+              );
+              out = r.error
+                ? `start_background failed: ${r.error}`
+                : `Started background process ${r.id} (timeout ${r.timeoutSeconds}s). It runs in the background; you'll be AUTOMATICALLY woken with its exit code + log when it finishes. You can check on it any time with read_background_log("${r.id}") or stop it with kill_background("${r.id}").`;
+            } else if (c.name === BG_LOG_FN) {
+              emitTool("read_background_log", { id: args.id ?? "" });
+              const r = readBackgroundLog(
+                conversationId,
+                args.id ?? "",
+                args.tail_chars ?? 4000,
+              );
+              out = r
+                ? `status: ${r.status}${r.exitCode != null ? ` (exit code ${r.exitCode})` : ""}\nlog tail:\n${r.log}`
+                : `No background process ${args.id ?? ""} in this conversation.`;
+            } else if (c.name === BG_LIST_FN) {
+              emitTool("list_background", {});
+              const jobs = listBackground(conversationId);
+              out = jobs.length
+                ? jobs
+                    .map(
+                      (j) =>
+                        `${j.id} [${j.status}${j.exitCode != null ? ` code=${j.exitCode}` : ""}] ${j.command}`,
+                    )
+                    .join("\n")
+                : "No background processes in this conversation.";
+            } else if (c.name === BG_KILL_FN) {
+              emitTool("kill_background", { id: args.id ?? "" });
+              const ok = killBackground(conversationId, args.id ?? "");
+              out = ok
+                ? `Killed ${args.id}. (You'll still get the completion event.)`
+                : `No running background process ${args.id ?? ""} in this conversation.`;
             } else {
               out = `Unknown tool: ${c.name}`;
             }
@@ -658,6 +824,7 @@ export function streamGrokResponses(
           try {
             const res = await fetch(`${config.grok.baseURL}/responses`, {
               method: "POST",
+              signal,
               headers: {
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${config.grok.apiKey}`,
@@ -681,12 +848,13 @@ export function streamGrokResponses(
                   }
                   enq((ev.delta as string) ?? "");
                 } else if (t === "response.completed") {
-                  const r = ev.response as { citations?: unknown[] } | undefined;
-                  if (Array.isArray(r?.citations))
-                    citations = [
-                      ...citations,
-                      ...mapGrokCitations(r.citations, citations.length),
-                    ];
+                  const r = ev.response as
+                    | { citations?: unknown[]; output?: unknown }
+                    | undefined;
+                  citations = mergeCitationUrls(
+                    citations,
+                    extractCitationUrls(r?.output),
+                  );
                 }
               }
             }
@@ -712,6 +880,8 @@ export function streamGrokResponses(
           files.length ||
           artifacts.length
         ) {
+          // Resolve real page titles for search-source citations (best-effort).
+          if (citations.length) await enrichCitationTitles(citations);
           const meta = Buffer.from(
             JSON.stringify({ citations, images, videos, files, artifacts }),
             "utf-8",
@@ -719,7 +889,13 @@ export function streamGrokResponses(
           enq(`\n${MEDIA_MARKER}${meta}`);
         }
       } catch (err) {
-        enq(`\n\n[stream error: ${err instanceof Error ? err.message : "?"}]`);
+        // User-initiated abort: stop cleanly, keep whatever already streamed.
+        const aborted =
+          signal?.aborted ||
+          (err instanceof Error && err.name === "AbortError");
+        if (!aborted) {
+          enq(`\n\n[stream error: ${err instanceof Error ? err.message : "?"}]`);
+        }
       } finally {
         controller.close();
       }
