@@ -84,11 +84,19 @@ function ErrLine({ msg }: { msg: string }) {
 }
 
 /** Model-generated HTML/JS in a locked-down iframe (no same-origin access). */
-function HtmlFrame({ code, className }: { code: string; className?: string }) {
+function HtmlFrame({
+  code,
+  className,
+  sandbox = "allow-scripts allow-popups allow-forms allow-modals",
+}: {
+  code: string;
+  className?: string;
+  sandbox?: string;
+}) {
   return (
     <iframe
       title="interactive artifact"
-      sandbox="allow-scripts allow-popups allow-forms allow-modals"
+      sandbox={sandbox}
       srcDoc={code}
       className={className}
     />
@@ -210,8 +218,11 @@ function View({ kind, code, expanded }: { kind: ArtifactKind; code: string; expa
   if (kind === "chart") return <ChartView code={code} />;
   if (kind === "tradingview")
     return (
+      // TradingView's embed needs same-origin to render; this HTML is built by us
+      // (not arbitrary model markup), so granting it is safe here.
       <HtmlFrame
         code={buildTradingView(code)}
+        sandbox="allow-scripts allow-same-origin allow-popups"
         className={expanded ? "h-full w-full" : "h-[440px] w-full"}
       />
     );

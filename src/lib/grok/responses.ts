@@ -97,7 +97,7 @@ const BASE_TOOLS = [
     type: "function",
     name: TRADINGVIEW_FN,
     description:
-      "Embed a TradingView candlestick (K-line) chart for an asset. It's validated, then you place it with [[artifact:N]] in your reply. Two modes: mode='widget' uses TradingView's own live data (give a symbol like NASDAQ:AAPL or BINANCE:BTCUSDT); mode='data' renders YOUR OWN OHLC candles. Use for any stock/crypto/forex price chart.",
+      "Embed a TradingView candlestick (K-line) chart for an asset. It's validated, then you place it with [[artifact:N]] in your reply. Two modes: mode='widget' uses TradingView's own live data — ONLY for assets that ACTUALLY trade on TradingView with a real symbol like NASDAQ:AAPL or BINANCE:BTCUSDT (a wrong/non-existent symbol shows 'Invalid symbol'). If the asset is not publicly listed, hypothetical, or you're unsure the symbol exists, use mode='data' with your own OHLC candles instead. Use for any stock/crypto/forex price chart.",
     parameters: {
       type: "object",
       properties: {
