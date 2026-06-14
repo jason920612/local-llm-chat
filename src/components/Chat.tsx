@@ -70,6 +70,8 @@ export function Chat({
   // The conversation currently loaded into `messages`. Used to avoid reloading
   // (and clobbering an in-progress stream) when we create a conversation locally.
   const loadedId = useRef<string | null>(null);
+  // The conversation whose fetch is currently in flight (dedupe re-renders).
+  const loadingId = useRef<string | null>(null);
 
   // The visible conversation path through the tree.
   const messages = useMemo(
@@ -93,29 +95,46 @@ export function Chat({
     if (!m.parentId) setRootChildId(m.id);
   }, []);
 
-  // Load the tree when the active conversation changes externally.
+  // Load the tree when the active conversation changes externally. Only mark a
+  // conversation as "loaded" AFTER a successful fetch — a transient failure
+  // (server restart, network blip) must NOT leave it flagged-loaded-but-empty
+  // (that caused blank threads and sends creating stray branches). Retries on
+  // failure and dedupes concurrent loads.
   useEffect(() => {
-    if (conversationId === loadedId.current) return;
-    loadedId.current = conversationId;
-    if (!conversationId) {
+    const cid = conversationId;
+    if (cid === loadedId.current || cid === loadingId.current) return;
+    if (!cid) {
+      loadedId.current = null;
       setAllMessages([]);
       setRootChildId(null);
       return;
     }
     let cancelled = false;
-    fetchConversation(conversationId)
-      .then((d) => {
-        if (cancelled) return;
-        setAllMessages(d.messages);
-        setRootChildId(d.rootChildId);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setAllMessages([]);
-        setRootChildId(null);
-      });
+    loadingId.current = cid;
+    const attempt = (triesLeft: number) => {
+      fetchConversation(cid)
+        .then((d) => {
+          if (cancelled) return;
+          loadingId.current = null;
+          loadedId.current = cid; // mark loaded only on success
+          setAllMessages(d.messages);
+          setRootChildId(d.rootChildId);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (triesLeft > 0) {
+            setTimeout(() => !cancelled && attempt(triesLeft - 1), 700);
+          } else {
+            // Give up for now but DON'T mark loaded — leave content intact and
+            // allow a later switch/refresh to retry.
+            loadingId.current = null;
+          }
+        });
+    };
+    attempt(3);
     return () => {
       cancelled = true;
+      if (loadingId.current === cid) loadingId.current = null;
     };
   }, [conversationId]);
 

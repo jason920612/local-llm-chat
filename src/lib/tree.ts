@@ -51,6 +51,12 @@ export function computePath(
       kids[kids.length - 1];
     node = next;
   }
+  // Safety net: if the tree links are somehow broken (no root reached) but
+  // messages exist, fall back to a linear, time-ordered view so the
+  // conversation never renders blank.
+  if (path.length === 0) {
+    return [...messages].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+  }
   return path;
 }
 

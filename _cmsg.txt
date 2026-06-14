@@ -1,13 +1,12 @@
-Dedicated mobile layout: JS device detection + dvh/safe-area/no-zoom fixes
+Fix: blank threads + sends creating stray branches (load-race bug)
 
-Per design: detect device class in JS (useIsMobile via matchMedia, <1024px = mobile
-so tablets count as mobile; no UA sniffing) and render a mobile vs desktop layout.
+The conversation-load effect marked a conversation as "loaded" BEFORE the fetch
+resolved. A transient fetch failure (server restart, mobile network blip) then
+wiped messages to empty yet left it flagged loaded, so it never retried — the
+thread showed blank, and the next send (empty path -> parentId null) created a new
+root/branch, which a refresh then revealed.
 
-- AppShell switches layout on isMobile (renders a neutral shell until known to
-  avoid hydration mismatch between the two trees).
-- Sidebar: persistent column on desktop; off-canvas drawer (72vw, backdrop) on
-  mobile, driven by isMobile not CSS breakpoints.
-- Chat: hamburger shown on mobile; toolbar labels collapse to icons below lg.
-- Real mobile fixes: h-dvh everywhere (no 100vh URL-bar clipping), viewport-fit=
-  cover, composer pads env(safe-area-inset-bottom), composer input is 16px on
-  mobile (prevents iOS focus-zoom).
+- Mark loadedId only AFTER a successful fetch; dedupe concurrent loads with a
+  loadingId ref; retry up to 3x on failure; never wipe content on failure.
+- computePath: if tree links are broken but messages exist, fall back to a linear
+  time-ordered view so a thread never renders blank.
