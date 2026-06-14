@@ -443,15 +443,15 @@ export function streamGrokResponses(
                 const n = images.length;
                 // Also persist a copy into the conversation sandbox so it shows up
                 // in the file explorer / is usable by run_code.
+                // Persist a copy into the sandbox (for the explorer / run_code),
+                // but DON'T add it to the message file list — it's already shown
+                // inline via [[image:N]], so a file chip would duplicate it.
                 const saved = await saveMediaToSandbox(
                   conversationId,
                   src,
                   `image_${n}`,
                   "jpg",
                 );
-                if (saved && !files.some((x) => x.name === saved.name)) {
-                  files.push(saved);
-                }
                 out = `Image #${n} generated. Place it inline by writing the marker [[image:${n}]] at the exact point in your reply where it should appear (omit it to append at the end).${
                   saved ? ` Saved to the sandbox as ${saved.name}.` : ""
                 }`;
@@ -472,9 +472,6 @@ export function streamGrokResponses(
                   `video_${n}`,
                   "mp4",
                 );
-                if (saved && !files.some((x) => x.name === saved.name)) {
-                  files.push(saved);
-                }
                 out = `Video #${n} generated. Place it inline by writing the marker [[video:${n}]] where it should appear in your reply (omit it to append at the end).${
                   saved ? ` Saved to the sandbox as ${saved.name}.` : ""
                 }`;
