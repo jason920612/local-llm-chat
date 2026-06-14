@@ -291,6 +291,7 @@ export function Chat({
               ? [...genVideos, ...media.videos]
               : undefined,
           files: media.files.length > 0 ? media.files : undefined,
+          artifacts: media.artifacts.length > 0 ? media.artifacts : undefined,
         };
         setAllMessages((prev) =>
           prev.map((m) => (m.id === assistantMsg.id ? finalAssistant : m)),

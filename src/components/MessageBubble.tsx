@@ -17,13 +17,19 @@ import {
   ChevronLeft,
   RefreshCw,
 } from "lucide-react";
-import type { UIMessage, SandboxFileMeta, ToolCallTrace } from "@/lib/types";
+import type {
+  UIMessage,
+  SandboxFileMeta,
+  ToolCallTrace,
+  ArtifactMeta,
+} from "@/lib/types";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import { parseThinking } from "@/lib/think";
 import { Markdown } from "./Markdown";
 import { Thinking } from "./Thinking";
 import { FilePreview, isPreviewable } from "./FilePreview";
 import { ImageViewer, VideoPlayer } from "./MediaViewer";
+import { Artifact } from "./Artifact";
 
 /**
  * Renders an assistant answer, placing generated media at the model's inline
@@ -35,6 +41,7 @@ function AssistantBody({
   images,
   videos,
   files,
+  artifacts,
   conversationId,
   onImageClick,
   onOpenFile,
@@ -44,6 +51,7 @@ function AssistantBody({
   images?: string[];
   videos?: string[];
   files?: SandboxFileMeta[];
+  artifacts?: ArtifactMeta[];
   conversationId?: string | null;
   onImageClick: (src: string) => void;
   onOpenFile: (name: string) => void;
@@ -52,6 +60,13 @@ function AssistantBody({
   const imgs = images ?? [];
   const vids = videos ?? [];
   const fls = files ?? [];
+  const arts = artifacts ?? [];
+
+  const artifactEl = (a: ArtifactMeta, key: string) => (
+    <div key={key} className="my-2">
+      <Artifact kind={a.type} code={a.spec} />
+    </div>
+  );
 
   const imageEl = (src: string, key: string) => (
     // eslint-disable-next-line @next/next/no-img-element
@@ -97,8 +112,9 @@ function AssistantBody({
   const usedImg = new Set<number>();
   const usedVid = new Set<number>();
   const usedFile = new Set<string>();
+  const usedArt = new Set<number>();
   const nodes: React.ReactNode[] = [];
-  const re = /\[\[(image|video|file):([^\]\n]+)\]\]/g;
+  const re = /\[\[(image|video|file|artifact):([^\]\n]+)\]\]/g;
   let last = 0;
   let k = 0;
   let m: RegExpExecArray | null;
@@ -106,7 +122,7 @@ function AssistantBody({
     // Drop a stray "image:/video:/file:" label the model may write before a marker.
     const seg = answer
       .slice(last, m.index)
-      .replace(/(?:image|video|file)\s*[:：]\s*$/i, "");
+      .replace(/(?:image|video|file|artifact)\s*[:：]\s*$/i, "");
     if (seg.trim())
       nodes.push(
         <Markdown key={`t${k}`} streaming={streaming}>
@@ -125,6 +141,12 @@ function AssistantBody({
       if (vids[i]) {
         usedVid.add(i);
         nodes.push(videoEl(vids[i], `m${k}`));
+      }
+    } else if (m[1] === "artifact") {
+      const i = parseInt(ref, 10) - 1;
+      if (arts[i]) {
+        usedArt.add(i);
+        nodes.push(artifactEl(arts[i], `m${k}`));
       }
     } else {
       const f = fls.find((x) => x.name === ref);
@@ -148,10 +170,12 @@ function AssistantBody({
   const leftImgs = imgs.filter((_, i) => !usedImg.has(i));
   const leftVids = vids.filter((_, i) => !usedVid.has(i));
   const leftFiles = fls.filter((f) => !usedFile.has(f.name));
+  const leftArts = arts.filter((_, i) => !usedArt.has(i));
 
   return (
     <>
       {nodes}
+      {leftArts.map((a, i) => artifactEl(a, `la${i}`))}
       {leftImgs.map((s, i) => imageEl(s, `li${i}`))}
       {leftVids.map((s, i) => videoEl(s, `lv${i}`))}
       {leftFiles.map((f, i) => fileEl(f, `lf${i}`))}
@@ -167,6 +191,7 @@ const TOOL_LABELS: Record<string, string> = {
   generate_image: "🖼 生成圖片",
   generate_video: "🎬 生成影片",
   run_code: "▶ 執行程式",
+  create_artifact: "📊 產生圖表/視覺化",
   use_skill: "📖 載入技能",
   install_skill: "⬇ 安裝技能",
   clone_repo: "📦 拉取倉庫",
@@ -425,6 +450,7 @@ export function MessageBubble({
               images={message.images}
               videos={message.videos}
               files={message.files}
+              artifacts={message.artifacts}
               conversationId={conversationId}
               onImageClick={setLightbox}
               onOpenFile={openFile}

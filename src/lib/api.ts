@@ -5,6 +5,7 @@ import type {
   SandboxFileMeta,
   ToolCallTrace,
   UIMessage,
+  ArtifactMeta,
 } from "./types";
 
 export async function fetchConversations(): Promise<Conversation[]> {
@@ -321,19 +322,28 @@ export interface StreamMedia {
   images: string[];
   videos: string[];
   files: SandboxFileMeta[];
+  artifacts: ArtifactMeta[];
 }
 
 /** Split a streamed body into answer text and trailing media metadata. */
 export function parseMediaSentinel(full: string): StreamMedia {
   const idx = full.indexOf(MEDIA_MARKER);
   if (idx < 0)
-    return { text: full, citations: [], images: [], videos: [], files: [] };
+    return {
+      text: full,
+      citations: [],
+      images: [],
+      videos: [],
+      files: [],
+      artifacts: [],
+    };
   const text = full.slice(0, idx).replace(/\s+$/, "");
   const media = decodeB64Json<{
     citations?: Citation[];
     images?: string[];
     videos?: string[];
     files?: SandboxFileMeta[];
+    artifacts?: ArtifactMeta[];
   }>(full.slice(idx + MEDIA_MARKER.length), {});
   return {
     text,
@@ -341,5 +351,6 @@ export function parseMediaSentinel(full: string): StreamMedia {
     images: media.images ?? [],
     videos: media.videos ?? [],
     files: media.files ?? [],
+    artifacts: media.artifacts ?? [],
   };
 }

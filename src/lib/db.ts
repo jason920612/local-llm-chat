@@ -89,6 +89,11 @@ function init(): Database.Database {
   } catch {
     /* column already exists */
   }
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN artifacts TEXT`);
+  } catch {
+    /* column already exists */
+  }
   // Message tree (versions/branches): parent_id links a message to the one it
   // follows; active_child_id remembers which child branch is currently selected;
   // conversations.root_child_id remembers the selected first message.

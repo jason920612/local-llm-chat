@@ -11,6 +11,7 @@ import type {
   RagDocument,
   SandboxFileMeta,
   ToolCallTrace,
+  ArtifactMeta,
 } from "./types";
 
 interface MessageRow {
@@ -23,6 +24,7 @@ interface MessageRow {
   files: string | null;
   tool_calls: string | null;
   citations: string | null;
+  artifacts: string | null;
   created_at: number;
   parent_id: string | null;
   active_child_id: string | null;
@@ -43,6 +45,9 @@ function rowToMessage(row: MessageRow): UIMessage {
       : undefined,
     citations: row.citations
       ? (JSON.parse(row.citations) as Citation[])
+      : undefined,
+    artifacts: row.artifacts
+      ? (JSON.parse(row.artifacts) as ArtifactMeta[])
       : undefined,
     createdAt: row.created_at,
     parentId: row.parent_id,
@@ -215,8 +220,8 @@ export function addMessage(conversationId: string, m: UIMessage): void {
   // OR REPLACE so a finalized assistant message can overwrite a placeholder.
   db.prepare(
     `INSERT OR REPLACE INTO messages
-       (id, conversation_id, role, content, images, videos, files, tool_calls, citations, created_at, parent_id, active_child_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, conversation_id, role, content, images, videos, files, tool_calls, citations, artifacts, created_at, parent_id, active_child_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     m.id,
     conversationId,
@@ -227,6 +232,7 @@ export function addMessage(conversationId: string, m: UIMessage): void {
     m.files ? JSON.stringify(m.files) : null,
     m.toolCalls ? JSON.stringify(m.toolCalls) : null,
     m.citations ? JSON.stringify(m.citations) : null,
+    m.artifacts ? JSON.stringify(m.artifacts) : null,
     now,
     parentId,
     activeChild,

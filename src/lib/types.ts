@@ -11,6 +11,8 @@ export interface UIMessage {
   videos?: string[];
   /** Files produced in the conversation sandbox by code execution. */
   files?: SandboxFileMeta[];
+  /** Validated rich artifacts (mermaid/chart/html) placed via [[artifact:N]]. */
+  artifacts?: ArtifactMeta[];
   /** Trace of tools the model invoked this turn (with their arguments). */
   toolCalls?: ToolCallTrace[];
   /** Citations resolved from RAG retrieval, if any. */
@@ -31,6 +33,13 @@ export interface SandboxFileMeta {
   name: string;
   size: number;
   isText: boolean;
+}
+
+export interface ArtifactMeta {
+  /** Renderer to use for this artifact. */
+  type: "mermaid" | "chart" | "html";
+  /** The validated source (mermaid text / Vega-Lite JSON / HTML document). */
+  spec: string;
 }
 
 export interface Citation {

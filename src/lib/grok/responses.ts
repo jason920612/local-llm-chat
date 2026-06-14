@@ -1,5 +1,6 @@
 ﻿import { config } from "../config";
-import type { Citation, UIMessage, SandboxFileMeta } from "../types";
+import type { Citation, UIMessage, SandboxFileMeta, ArtifactMeta } from "../types";
+import { validateMermaid, validateChart, validateHtml } from "../artifacts/validate";
 import { mapGrokCitations } from "./search";
 import { generateImage } from "./image";
 import { generateVideo } from "./video";
@@ -22,6 +23,7 @@ import { getSkill, installSkill } from "../skills";
 
 const IMAGE_FN = "generate_image";
 const VIDEO_FN = "generate_video";
+const ARTIFACT_FN = "create_artifact";
 const CODE_FN = "run_code";
 const SKILL_FN = "use_skill";
 const CLONE_FN = "clone_repo";
@@ -60,6 +62,29 @@ const BASE_TOOLS = [
         },
       },
       required: ["prompt"],
+    },
+  },
+  {
+    type: "function",
+    name: ARTIFACT_FN,
+    description:
+      "Validate and register a rich visual artifact to embed in your reply: a diagram, data chart, or interactive widget. The app COMPILES it and returns any syntax error so you can fix it and call again. On success you get an index N — then write [[artifact:N]] on its own line in your reply where it should appear. ALWAYS use this instead of writing raw ```mermaid/```chart/```html in the message.",
+    parameters: {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          enum: ["mermaid", "chart", "html"],
+          description:
+            "mermaid = diagram; chart = Vega-Lite v5 JSON; html = self-contained interactive HTML.",
+        },
+        spec: {
+          type: "string",
+          description:
+            "The artifact source: Mermaid text, a Vega-Lite v5 JSON spec, or a full HTML document.",
+        },
+      },
+      required: ["type", "spec"],
     },
   },
 ];
@@ -283,6 +308,7 @@ export function streamGrokResponses(
       const images: string[] = [];
       const videos: string[] = [];
       const files: SandboxFileMeta[] = [];
+      const artifacts: ArtifactMeta[] = [];
       let citations: Citation[] = [...baseCitations];
       let thinkOpen = false;
       let contentStarted = false;
@@ -400,6 +426,8 @@ export function streamGrokResponses(
               name?: string;
               url?: string;
               source?: string;
+              type?: string;
+              spec?: string;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -491,6 +519,28 @@ export function streamGrokResponses(
               } else {
                 out = `Unknown skill: ${args.name ?? ""}`;
               }
+            } else if (c.name === ARTIFACT_FN) {
+              const t =
+                args.type === "chart"
+                  ? "chart"
+                  : args.type === "html"
+                    ? "html"
+                    : "mermaid";
+              const spec = args.spec ?? "";
+              emitTool("create_artifact", { type: t });
+              const v =
+                t === "mermaid"
+                  ? await validateMermaid(spec)
+                  : t === "chart"
+                    ? validateChart(spec)
+                    : validateHtml(spec);
+              if (!v.ok) {
+                out = `Artifact invalid (${t}): ${v.error}. Fix the ${t} and call ${ARTIFACT_FN} again.`;
+              } else {
+                artifacts.push({ type: t, spec });
+                const n = artifacts.length;
+                out = `Artifact #${n} (${t}) compiled OK. Place it by writing the marker [[artifact:${n}]] on its own line where it should appear in your reply.`;
+              }
             } else if (c.name === INSTALL_FN) {
               emitTool("install_skill", { source: args.source ?? "" });
               const r = await installSkill(args.source ?? "");
@@ -566,7 +616,12 @@ export function streamGrokResponses(
             /* leave whatever we have */
           }
         }
-        if (!contentStarted && !images.length && !videos.length) {
+        if (
+          !contentStarted &&
+          !images.length &&
+          !videos.length &&
+          !artifacts.length
+        ) {
           enq("（未取得回覆，請再試一次或換個說法）");
         }
 
@@ -576,10 +631,11 @@ export function streamGrokResponses(
           citations.length ||
           images.length ||
           videos.length ||
-          files.length
+          files.length ||
+          artifacts.length
         ) {
           const meta = Buffer.from(
-            JSON.stringify({ citations, images, videos, files }),
+            JSON.stringify({ citations, images, videos, files, artifacts }),
             "utf-8",
           ).toString("base64");
           enq(`\n${MEDIA_MARKER}${meta}`);

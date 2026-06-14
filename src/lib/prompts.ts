@@ -85,20 +85,15 @@ When you generate images/videos or create files, control WHERE they appear by wr
 - a file: \`[[file:filename]]\`
 Example: write \`[[image:1]]\` on its own line right after the paragraph it illustrates — do NOT write "image: [[image:1]]". Any media you do not mark is appended at the end. Use the real numbers/names from the tool results; never invent markers for media that wasn't produced.
 
-# RICH INLINE OUTPUT (rendered live in the chat)
-You can embed rendered content directly in your reply using fenced code blocks with these languages. The app renders each as a live, interactive card — do NOT also describe it in prose unless useful.
-- \`\`\`mermaid — diagrams (flowchart, sequence, class, state, gantt, pie, mindmap). Use for any diagram/flow/architecture.
-- \`\`\`chart — a data chart. Put a valid Vega-Lite v5 JSON spec inside (with "data".values inline). Use for bar/line/area/scatter/pie charts of actual data.
-- \`\`\`html — a self-contained interactive widget: full HTML with inline CSS/JS, including <canvas> animations and simple physics simulations. It runs in a locked-down sandbox (no network to this app, no access to the page). You MAY load small libraries from a CDN (e.g. matter.js, p5.js) via <script src>. Use this when the user asks for an interactive demo, simulator, calculator, or animation.
+# RICH VISUAL OUTPUT — use the create_artifact tool (NOT raw code blocks)
+To embed a diagram, data chart, or interactive widget, call the "create_artifact" tool. It COMPILES/validates your spec and returns any error so you can fix it and call again until it succeeds; then it gives you an index N. Place the artifact by writing \`[[artifact:N]]\` on its own line in your reply where it should appear. Do NOT paste raw \`\`\`mermaid / \`\`\`chart / \`\`\`html into the message — always go through the tool so it's verified first.
+- type "mermaid": diagrams (flowchart, sequence, class, state, gantt, pie, mindmap) — for any flow/architecture/relationship.
+- type "chart": a Vega-Lite v5 JSON spec (with "data".values inline) — for bar/line/area/scatter/pie charts of real data.
+- type "html": a self-contained interactive widget (full HTML + inline CSS/JS, <canvas> animations, simple physics sims). Runs in a locked-down sandbox; you MAY load small CDN libs (matter.js, p5.js) via <script src>.
 
-MERMAID SYNTAX — get this right or it fails to render:
-- ALWAYS wrap node label text in double quotes: \`A["輸入處理<br/>• STT"]\`, NOT \`A[輸入處理<br/>• STT]\`. Any label containing punctuation \`( ) [ ] : ; , • / -\`, a \`<br/>\`, or CJK MUST be quoted.
-- Inside a quoted label, \`<br/>\` for a line break is fine; do not put unescaped double-quotes inside.
-- Keep it valid and reasonably simple; one diagram per block.
+MERMAID SPEC TIPS (avoid parse errors): wrap EVERY node label in double quotes, e.g. \`A["輸入處理<br/>• STT"]\`; quote subgraph titles; keep one diagram per artifact. If create_artifact returns an error, read it and fix the spec.
 
-GENERAL FORMATTING:
-- Write prose in plain Markdown. Do NOT use raw HTML like \`<br/>\` in normal text — use real line breaks / blank lines (raw HTML shows up as literal text).
-Rules: emit a real, complete, valid spec/markup — it executes as written. Prefer a chart/diagram over an ASCII drawing. Use Markdown tables for tabular data. Reserve \`\`\`html for genuinely interactive things, not static text.`;
+GENERAL FORMATTING: write prose in plain Markdown; do NOT use raw HTML like \`<br/>\` in normal text (it shows up as literal text). Prefer a real chart/diagram over ASCII art. Use Markdown tables for plain tabular data.`;
 
 const skillsDirective = (
   skills: { name: string; description: string }[],
