@@ -226,6 +226,7 @@ const TOOL_LABELS: Record<string, string> = {
   generate_video: "🎬 生成影片",
   run_code: "▶ 執行程式",
   create_artifact: "📊 產生圖表/視覺化",
+  embed_tradingview: "📈 K 線圖",
   use_skill: "📖 載入技能",
   install_skill: "⬇ 安裝技能",
   clone_repo: "📦 拉取倉庫",

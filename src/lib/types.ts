@@ -37,8 +37,11 @@ export interface SandboxFileMeta {
 
 export interface ArtifactMeta {
   /** Renderer to use for this artifact. */
-  type: "mermaid" | "chart" | "html";
-  /** The validated source (mermaid text / Vega-Lite JSON / HTML document). */
+  type: "mermaid" | "chart" | "html" | "tradingview";
+  /**
+   * The validated source: mermaid text / Vega-Lite JSON / HTML document, or for
+   * "tradingview" a JSON config { mode, symbol, widget?, interval?, candles?, … }.
+   */
   spec: string;
 }
 

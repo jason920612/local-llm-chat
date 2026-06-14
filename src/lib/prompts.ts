@@ -91,6 +91,8 @@ To embed a diagram, data chart, or interactive widget, call the "create_artifact
 - type "chart": a Vega-Lite v5 JSON spec (with "data".values inline) — for bar/line/area/scatter/pie charts of real data.
 - type "html": a self-contained interactive widget (full HTML + inline CSS/JS, <canvas> animations, simple physics sims). Runs in a locked-down sandbox; you MAY load small CDN libs (matter.js, p5.js) via <script src>.
 
+For a STOCK / CRYPTO / FOREX candlestick (K-line) chart, use the separate "embed_tradingview" tool (not create_artifact): mode="widget" with a symbol like NASDAQ:AAPL or BINANCE:BTCUSDT for TradingView's live data, or mode="data" with your own OHLC candles. It validates and returns an index; place it with [[artifact:N]].
+
 MERMAID SPEC TIPS (avoid parse errors): wrap EVERY node label in double quotes, e.g. \`A["輸入處理<br/>• STT"]\`; quote subgraph titles; keep one diagram per artifact. If create_artifact returns an error, read it and fix the spec.
 
 GENERAL FORMATTING: write prose in plain Markdown; do NOT use raw HTML like \`<br/>\` in normal text (it shows up as literal text). Prefer a real chart/diagram over ASCII art. Use Markdown tables for plain tabular data.`;

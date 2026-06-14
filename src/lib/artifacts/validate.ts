@@ -84,3 +84,70 @@ export function validateHtml(spec: string): ValidationResult {
     ? { ok: true }
     : { ok: false, error: "empty HTML" };
 }
+
+/** Validate a TradingView embed config (widget symbol, or own-data OHLC). */
+export function validateTradingView(spec: string): ValidationResult {
+  let o: {
+    mode?: string;
+    symbol?: string;
+    candles?: Array<Record<string, unknown>>;
+  };
+  try {
+    o = JSON.parse(spec);
+  } catch (e) {
+    return { ok: false, error: "invalid JSON: " + (e as Error).message };
+  }
+  if (!o || typeof o !== "object") {
+    return { ok: false, error: "spec must be an object" };
+  }
+  if (o.mode === "widget") {
+    if (
+      typeof o.symbol !== "string" ||
+      !/^[A-Za-z0-9._^!&-]+:[A-Za-z0-9._^!&-]+$/.test(o.symbol)
+    ) {
+      return {
+        ok: false,
+        error:
+          'widget mode needs a TradingView symbol like "EXCHANGE:TICKER" (e.g. NASDAQ:AAPL, BINANCE:BTCUSDT)',
+      };
+    }
+    return { ok: true };
+  }
+  if (o.mode === "data") {
+    const c = o.candles;
+    if (!Array.isArray(c) || c.length === 0) {
+      return { ok: false, error: "data mode needs a non-empty candles array" };
+    }
+    let prev = -Infinity;
+    for (let i = 0; i < c.length; i++) {
+      const k = c[i] as Record<string, unknown>;
+      for (const f of ["open", "high", "low", "close"]) {
+        if (typeof k?.[f] !== "number" || !isFinite(k[f] as number)) {
+          return { ok: false, error: `candle ${i} is missing a numeric "${f}"` };
+        }
+      }
+      const t = k.time;
+      const tn =
+        typeof t === "number"
+          ? t
+          : typeof t === "string"
+            ? Date.parse(t) / 1000
+            : NaN;
+      if (!isFinite(tn)) {
+        return {
+          ok: false,
+          error: `candle ${i} has an invalid "time" (use UNIX seconds or "YYYY-MM-DD")`,
+        };
+      }
+      if (tn < prev) {
+        return {
+          ok: false,
+          error: `candles must be in ascending time order (problem at candle ${i})`,
+        };
+      }
+      prev = tn;
+    }
+    return { ok: true };
+  }
+  return { ok: false, error: 'mode must be "widget" or "data"' };
+}

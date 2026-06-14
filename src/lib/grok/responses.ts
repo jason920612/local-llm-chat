@@ -1,6 +1,11 @@
 ﻿import { config } from "../config";
 import type { Citation, UIMessage, SandboxFileMeta, ArtifactMeta } from "../types";
-import { validateMermaid, validateChart, validateHtml } from "../artifacts/validate";
+import {
+  validateMermaid,
+  validateChart,
+  validateHtml,
+  validateTradingView,
+} from "../artifacts/validate";
 import { mapGrokCitations } from "./search";
 import { generateImage } from "./image";
 import { generateVideo } from "./video";
@@ -24,6 +29,7 @@ import { getSkill, installSkill } from "../skills";
 const IMAGE_FN = "generate_image";
 const VIDEO_FN = "generate_video";
 const ARTIFACT_FN = "create_artifact";
+const TRADINGVIEW_FN = "embed_tradingview";
 const CODE_FN = "run_code";
 const SKILL_FN = "use_skill";
 const CLONE_FN = "clone_repo";
@@ -85,6 +91,54 @@ const BASE_TOOLS = [
         },
       },
       required: ["type", "spec"],
+    },
+  },
+  {
+    type: "function",
+    name: TRADINGVIEW_FN,
+    description:
+      "Embed a TradingView candlestick (K-line) chart for an asset. It's validated, then you place it with [[artifact:N]] in your reply. Two modes: mode='widget' uses TradingView's own live data (give a symbol like NASDAQ:AAPL or BINANCE:BTCUSDT); mode='data' renders YOUR OWN OHLC candles. Use for any stock/crypto/forex price chart.",
+    parameters: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["widget", "data"] },
+        symbol: {
+          type: "string",
+          description:
+            'widget mode: TradingView symbol "EXCHANGE:TICKER" (e.g. NASDAQ:AAPL, BINANCE:BTCUSDT, FX:EURUSD).',
+        },
+        widget: {
+          type: "string",
+          enum: ["advanced", "mini", "symbol_overview"],
+          description:
+            "widget style (mode=widget). advanced = full interactive chart (default); mini/symbol_overview = lightweight.",
+        },
+        interval: {
+          type: "string",
+          description: "advanced widget interval, e.g. D, W, M, 60, 15.",
+        },
+        candles: {
+          type: "array",
+          description: "mode=data: OHLC bars in ascending time order.",
+          items: {
+            type: "object",
+            properties: {
+              time: {
+                type: "string",
+                description: "UNIX seconds (number) or a 'YYYY-MM-DD' string.",
+              },
+              open: { type: "number" },
+              high: { type: "number" },
+              low: { type: "number" },
+              close: { type: "number" },
+              volume: { type: "number" },
+            },
+            required: ["time", "open", "high", "low", "close"],
+          },
+        },
+        title: { type: "string", description: "Optional chart title." },
+      },
+      required: ["mode"],
     },
   },
 ];
@@ -428,6 +482,12 @@ export function streamGrokResponses(
               source?: string;
               type?: string;
               spec?: string;
+              mode?: string;
+              symbol?: string;
+              widget?: string;
+              interval?: string;
+              candles?: unknown[];
+              title?: string;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -537,6 +597,27 @@ export function streamGrokResponses(
                 artifacts.push({ type: t, spec });
                 const n = artifacts.length;
                 out = `Artifact #${n} (${t}) compiled OK. Place it by writing the marker [[artifact:${n}]] on its own line where it should appear in your reply.`;
+              }
+            } else if (c.name === TRADINGVIEW_FN) {
+              emitTool("embed_tradingview", {
+                mode: args.mode ?? "",
+                symbol: args.symbol ?? "",
+              });
+              const spec = JSON.stringify({
+                mode: args.mode === "data" ? "data" : "widget",
+                symbol: args.symbol,
+                widget: args.widget,
+                interval: args.interval,
+                candles: args.candles,
+                title: args.title,
+              });
+              const v = validateTradingView(spec);
+              if (!v.ok) {
+                out = `embed_tradingview invalid: ${v.error}. Fix and call ${TRADINGVIEW_FN} again.`;
+              } else {
+                artifacts.push({ type: "tradingview", spec });
+                const n = artifacts.length;
+                out = `Chart #${n} ready. Place it by writing the marker [[artifact:${n}]] on its own line where it should appear in your reply.`;
               }
             } else if (c.name === INSTALL_FN) {
               emitTool("install_skill", { source: args.source ?? "" });
