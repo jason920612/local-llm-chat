@@ -36,6 +36,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
   const [docsOpen, setDocsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
 
   // Select a conversation AND reflect it in the URL (so it's bookmarkable /
   // shareable and the back button works). Use replace on first navigation.
@@ -131,8 +132,16 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
         conversations={conversations}
         activeId={activeId}
         docCount={documents.length}
-        onNew={() => navigateTo(null)}
-        onSelect={navigateTo}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onNew={() => {
+          navigateTo(null);
+          setSidebarOpen(false);
+        }}
+        onSelect={(id) => {
+          navigateTo(id);
+          setSidebarOpen(false);
+        }}
         onRename={handleRename}
         onDelete={handleDelete}
         onOpenDocs={() => setDocsOpen(true)}
@@ -141,6 +150,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
       <Chat
         conversationId={activeId}
         title={activeTitle}
+        onOpenSidebar={() => setSidebarOpen(true)}
         useRag={useRag}
         docCount={documents.length}
         onToggleRag={() => setUseRag((v) => !v)}

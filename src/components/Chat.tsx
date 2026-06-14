@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nanoid } from "nanoid";
-import { Bot, BookOpen, Globe, AudioLines, FolderOpen } from "lucide-react";
+import { Bot, BookOpen, Globe, AudioLines, FolderOpen, Menu } from "lucide-react";
 import type { Conversation, UIMessage, SandboxFileMeta } from "@/lib/types";
 import {
   createConversationApi,
@@ -28,6 +28,7 @@ import { SandboxExplorer } from "./SandboxExplorer";
 export function Chat({
   conversationId,
   title,
+  onOpenSidebar,
   useRag,
   docCount,
   onToggleRag,
@@ -39,6 +40,7 @@ export function Chat({
 }: {
   conversationId: string | null;
   title: string | null;
+  onOpenSidebar: () => void;
   useRag: boolean;
   docCount: number;
   onToggleRag: () => void;
@@ -476,11 +478,20 @@ export function Chat({
           放開以上傳檔案（圖片→視覺；其他→沙盒工作目錄）
         </div>
       )}
-      <header className="flex h-12 items-center gap-2 border-b border-border px-4">
+      <header className="flex h-12 items-center gap-2 border-b border-border px-3 sm:px-4">
+        <button
+          onClick={onOpenSidebar}
+          className="shrink-0 text-muted hover:text-foreground md:hidden"
+          title="選單"
+        >
+          <Menu size={18} />
+        </button>
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted">
           {title ?? "New chat"}
         </span>
-        <ConnectionStatus />
+        <div className="hidden sm:block">
+          <ConnectionStatus />
+        </div>
         <button
           onClick={onToggleRag}
           disabled={docCount === 0}
@@ -489,33 +500,35 @@ export function Chat({
               ? "Upload documents to enable"
               : "Ground answers in your documents"
           }
-          className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
+          className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 ${
             useRag && docCount > 0
               ? "border-accent bg-accent/15 text-accent"
               : "border-border text-muted hover:text-foreground"
           }`}
         >
           <BookOpen size={13} />
-          Docs{docCount > 0 ? ` (${docCount})` : ""}
+          <span className="hidden sm:inline">
+            Docs{docCount > 0 ? ` (${docCount})` : ""}
+          </span>
         </button>
         {conversationId && (
           <button
             onClick={() => setExplorerOpen(true)}
             title="沙盒檔案總管"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-1 text-xs text-muted transition hover:text-foreground sm:px-3"
           >
             <FolderOpen size={13} />
-            Files
+            <span className="hidden sm:inline">Files</span>
           </button>
         )}
         {grokEnabled && (
           <button
             onClick={() => setVoiceOpen(true)}
             title="即時語音對話 (xAI Realtime)"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-1 text-xs text-muted transition hover:text-foreground sm:px-3"
           >
             <AudioLines size={13} />
-            Voice
+            <span className="hidden sm:inline">Voice</span>
           </button>
         )}
         <button
@@ -526,14 +539,14 @@ export function Chat({
               ? "Let the model search X & the web via Grok"
               : "Set XAI_API_KEY in .env.local to enable"
           }
-          className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
+          className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 ${
             useGrok && grokEnabled
               ? "border-accent bg-accent/15 text-accent"
               : "border-border text-muted hover:text-foreground"
           }`}
         >
           <Globe size={13} />
-          Grok
+          <span className="hidden sm:inline">Grok</span>
         </button>
       </header>
 
