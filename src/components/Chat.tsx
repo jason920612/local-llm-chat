@@ -28,6 +28,7 @@ import { SandboxExplorer } from "./SandboxExplorer";
 export function Chat({
   conversationId,
   title,
+  isMobile,
   onOpenSidebar,
   useRag,
   docCount,
@@ -40,6 +41,7 @@ export function Chat({
 }: {
   conversationId: string | null;
   title: string | null;
+  isMobile: boolean;
   onOpenSidebar: () => void;
   useRag: boolean;
   docCount: number;
@@ -451,7 +453,7 @@ export function Chat({
 
   return (
     <div
-      className="relative flex h-screen flex-1 flex-col"
+      className="relative flex h-dvh min-w-0 flex-1 flex-col"
       onDragEnter={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           dragDepth.current += 1;
@@ -479,17 +481,19 @@ export function Chat({
         </div>
       )}
       <header className="flex h-12 items-center gap-2 border-b border-border px-3 sm:px-4">
-        <button
-          onClick={onOpenSidebar}
-          className="shrink-0 text-muted hover:text-foreground md:hidden"
-          title="選單"
-        >
-          <Menu size={18} />
-        </button>
+        {isMobile && (
+          <button
+            onClick={onOpenSidebar}
+            className="-ml-1 shrink-0 p-1 text-muted hover:text-foreground"
+            title="選單"
+          >
+            <Menu size={20} />
+          </button>
+        )}
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted">
           {title ?? "New chat"}
         </span>
-        <div className="hidden sm:block">
+        <div className="hidden lg:block">
           <ConnectionStatus />
         </div>
         <button
@@ -507,7 +511,7 @@ export function Chat({
           }`}
         >
           <BookOpen size={13} />
-          <span className="hidden sm:inline">
+          <span className="hidden lg:inline">
             Docs{docCount > 0 ? ` (${docCount})` : ""}
           </span>
         </button>
@@ -518,7 +522,7 @@ export function Chat({
             className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-1 text-xs text-muted transition hover:text-foreground sm:px-3"
           >
             <FolderOpen size={13} />
-            <span className="hidden sm:inline">Files</span>
+            <span className="hidden lg:inline">Files</span>
           </button>
         )}
         {grokEnabled && (
@@ -528,7 +532,7 @@ export function Chat({
             className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-1 text-xs text-muted transition hover:text-foreground sm:px-3"
           >
             <AudioLines size={13} />
-            <span className="hidden sm:inline">Voice</span>
+            <span className="hidden lg:inline">Voice</span>
           </button>
         )}
         <button
@@ -546,7 +550,7 @@ export function Chat({
           }`}
         >
           <Globe size={13} />
-          <span className="hidden sm:inline">Grok</span>
+          <span className="hidden lg:inline">Grok</span>
         </button>
       </header>
 

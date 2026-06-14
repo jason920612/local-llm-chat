@@ -121,7 +121,7 @@ export function Composer({
   }
 
   return (
-    <div className="border-t border-border bg-surface/60 px-4 py-3 backdrop-blur">
+    <div className="border-t border-border bg-surface/60 px-3 py-3 backdrop-blur sm:px-4 [padding-bottom:calc(0.75rem+env(safe-area-inset-bottom))]">
       <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-surface-2 px-3 py-2 focus-within:border-accent">
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
@@ -224,7 +224,7 @@ export function Composer({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder="Send a message or attach an image…  (Enter to send)"
-            className="max-h-[200px] flex-1 resize-none bg-transparent py-1.5 text-sm outline-none placeholder:text-muted disabled:opacity-50"
+            className="max-h-[200px] flex-1 resize-none bg-transparent py-1.5 text-base outline-none placeholder:text-muted disabled:opacity-50 sm:text-sm"
             // Browser extensions (writing assistants, etc.) inject attributes
             // into inputs after SSR; suppress the resulting benign hydration diff.
             suppressHydrationWarning

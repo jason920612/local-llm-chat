@@ -18,6 +18,7 @@ export function Sidebar({
   conversations,
   activeId,
   docCount,
+  isMobile,
   open,
   onClose,
   onNew,
@@ -30,6 +31,7 @@ export function Sidebar({
   conversations: Conversation[];
   activeId: string | null;
   docCount: number;
+  isMobile: boolean;
   open: boolean;
   onClose: () => void;
   onNew: () => void;
@@ -52,20 +54,8 @@ export function Sidebar({
     setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1500);
   };
 
-  return (
+  const body = (
     <>
-      {/* Mobile backdrop */}
-      {open && (
-        <div
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
-          onClick={onClose}
-        />
-      )}
-      <aside
-        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-64 shrink-0 transform flex-col border-r border-border bg-surface transition-transform md:static md:z-auto md:translate-x-0 ${
-          open ? "translate-x-0" : "-translate-x-full"
-        }`}
-      >
       <div className="flex items-center gap-2 px-4 py-3">
         <Bot size={18} className="text-accent" />
         <span className="text-sm font-semibold">Local LLM Chat</span>
@@ -163,6 +153,28 @@ export function Sidebar({
           Private · runs on your machine
         </div>
       </div>
+    </>
+  );
+
+  // Desktop: a persistent column. Mobile: an off-canvas drawer with a backdrop.
+  if (!isMobile) {
+    return (
+      <aside className="flex h-dvh w-64 shrink-0 flex-col border-r border-border bg-surface">
+        {body}
+      </aside>
+    );
+  }
+  return (
+    <>
+      {open && (
+        <div className="fixed inset-0 z-40 bg-black/50" onClick={onClose} />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex h-dvh w-72 max-w-[85vw] shrink-0 transform flex-col border-r border-border bg-surface transition-transform ${
+          open ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        {body}
       </aside>
     </>
   );

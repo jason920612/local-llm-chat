@@ -14,6 +14,7 @@ import { Chat } from "./Chat";
 import { DocumentsModal } from "./DocumentsModal";
 import { SettingsModal } from "./SettingsModal";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 /** Build the URL path for a conversation (or the root for "no conversation"). */
 function pathFor(id: string | null): string {
@@ -37,6 +38,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
+  const isMobile = useIsMobile();
 
   // Select a conversation AND reflect it in the URL (so it's bookmarkable /
   // shareable and the back button works). Use replace on first navigation.
@@ -126,12 +128,17 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
   const activeTitle =
     conversations.find((c) => c.id === activeId)?.title ?? null;
 
+  // Until the device class is known, render a neutral shell to avoid a
+  // hydration mismatch between the desktop and mobile component trees.
+  if (isMobile === null) return <div className="h-dvh bg-background" />;
+
   return (
-    <div className="flex">
+    <div className="flex h-dvh overflow-hidden">
       <Sidebar
         conversations={conversations}
         activeId={activeId}
         docCount={documents.length}
+        isMobile={isMobile}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onNew={() => {
@@ -150,6 +157,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
       <Chat
         conversationId={activeId}
         title={activeTitle}
+        isMobile={isMobile}
         onOpenSidebar={() => setSidebarOpen(true)}
         useRag={useRag}
         docCount={documents.length}

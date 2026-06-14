@@ -1,0 +1,13 @@
+Dedicated mobile layout: JS device detection + dvh/safe-area/no-zoom fixes
+
+Per design: detect device class in JS (useIsMobile via matchMedia, <1024px = mobile
+so tablets count as mobile; no UA sniffing) and render a mobile vs desktop layout.
+
+- AppShell switches layout on isMobile (renders a neutral shell until known to
+  avoid hydration mismatch between the two trees).
+- Sidebar: persistent column on desktop; off-canvas drawer (72vw, backdrop) on
+  mobile, driven by isMobile not CSS breakpoints.
+- Chat: hamburger shown on mobile; toolbar labels collapse to icons below lg.
+- Real mobile fixes: h-dvh everywhere (no 100vh URL-bar clipping), viewport-fit=
+  cover, composer pads env(safe-area-inset-bottom), composer input is 16px on
+  mobile (prevents iOS focus-zoom).
