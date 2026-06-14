@@ -11,6 +11,7 @@ import {
   Settings,
   Link2,
   Check,
+  Sparkles,
 } from "lucide-react";
 import type { Conversation } from "@/lib/types";
 
@@ -26,6 +27,7 @@ export function Sidebar({
   onRename,
   onDelete,
   onOpenDocs,
+  onOpenSkills,
   onOpenSettings,
 }: {
   conversations: Conversation[];
@@ -39,6 +41,7 @@ export function Sidebar({
   onRename: (id: string, current: string) => void;
   onDelete: (id: string) => void;
   onOpenDocs: () => void;
+  onOpenSkills: () => void;
   onOpenSettings: () => void;
 }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -76,55 +79,56 @@ export function Sidebar({
             No conversations yet.
           </p>
         ) : (
-          <ul className="space-y-0.5">
-            {conversations.map((c) => (
-              <li key={c.id}>
-                <div
-                  className={`group flex items-center gap-2 rounded-lg px-2 py-2 text-sm ${
-                    c.id === activeId
-                      ? "bg-surface-2 text-foreground"
-                      : "text-muted hover:bg-surface-2/60"
-                  }`}
-                >
+          <ul className="space-y-1">
+            {conversations.map((c) => {
+              const actionVis = isMobile
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-100";
+              return (
+                <li key={c.id} className="group relative">
+                  {/* The whole card is the select button. */}
                   <button
                     onClick={() => onSelect(c.id)}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2.5 pr-20 text-left text-sm transition ${
+                      c.id === activeId
+                        ? "border-accent/60 bg-surface-2 text-foreground"
+                        : "border-transparent text-muted hover:border-border hover:bg-surface-2/60"
+                    }`}
                   >
                     <MessageSquare size={14} className="shrink-0" />
                     <span className="truncate">{c.title}</span>
                   </button>
-                  <button
-                    onClick={() => copyLink(c.id)}
-                    className={`shrink-0 transition hover:text-accent group-hover:opacity-100 ${
-                      copiedId === c.id
-                        ? "text-accent opacity-100"
-                        : "text-muted opacity-0"
-                    }`}
-                    title={copiedId === c.id ? "已複製連結" : "複製此對話連結"}
+                  {/* Action icons float over the card's right padding. */}
+                  <div
+                    className={`absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1.5 transition ${actionVis}`}
                   >
-                    {copiedId === c.id ? (
-                      <Check size={13} />
-                    ) : (
-                      <Link2 size={13} />
-                    )}
-                  </button>
-                  <button
-                    onClick={() => onRename(c.id, c.title)}
-                    className="shrink-0 text-muted opacity-0 transition hover:text-foreground group-hover:opacity-100"
-                    title="Rename"
-                  >
-                    <Pencil size={13} />
-                  </button>
-                  <button
-                    onClick={() => onDelete(c.id)}
-                    className="shrink-0 text-muted opacity-0 transition hover:text-red-400 group-hover:opacity-100"
-                    title="Delete"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              </li>
-            ))}
+                    <button
+                      onClick={() => copyLink(c.id)}
+                      className={`p-0.5 hover:text-accent ${
+                        copiedId === c.id ? "text-accent" : "text-muted"
+                      }`}
+                      title={copiedId === c.id ? "已複製連結" : "複製此對話連結"}
+                    >
+                      {copiedId === c.id ? <Check size={14} /> : <Link2 size={14} />}
+                    </button>
+                    <button
+                      onClick={() => onRename(c.id, c.title)}
+                      className="p-0.5 text-muted hover:text-foreground"
+                      title="重新命名"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      onClick={() => onDelete(c.id)}
+                      className="p-0.5 text-muted hover:text-red-400"
+                      title="刪除"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </nav>
@@ -141,6 +145,13 @@ export function Sidebar({
               {docCount}
             </span>
           )}
+        </button>
+        <button
+          onClick={onOpenSkills}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted hover:bg-surface-2 hover:text-foreground"
+        >
+          <Sparkles size={15} />
+          <span className="flex-1 text-left">Skills</span>
         </button>
         <button
           onClick={onOpenSettings}

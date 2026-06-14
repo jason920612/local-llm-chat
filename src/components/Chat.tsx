@@ -102,9 +102,12 @@ export function Chat({
   // failure and dedupes concurrent loads.
   useEffect(() => {
     const cid = conversationId;
-    if (cid === loadedId.current || cid === loadingId.current) return;
+    if (cid === loadedId.current) return; // already loaded (incl. null === null)
+    if (cid && cid === loadingId.current) return; // in-flight (real ids only)
     if (!cid) {
+      // New chat: clear to an empty thread.
       loadedId.current = null;
+      loadingId.current = null;
       setAllMessages([]);
       setRootChildId(null);
       return;

@@ -13,6 +13,7 @@ import { Sidebar } from "./Sidebar";
 import { Chat } from "./Chat";
 import { DocumentsModal } from "./DocumentsModal";
 import { SettingsModal } from "./SettingsModal";
+import { SkillsModal } from "./SkillsModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useIsMobile } from "@/lib/useIsMobile";
 
@@ -35,6 +36,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
   const [useGrok, setUseGrok] = useState(false);
   const [grokEnabled, setGrokEnabled] = useState(false);
   const [docsOpen, setDocsOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
@@ -152,6 +154,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
         onRename={handleRename}
         onDelete={handleDelete}
         onOpenDocs={() => setDocsOpen(true)}
+        onOpenSkills={() => setSkillsOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <Chat
@@ -178,6 +181,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+      <SkillsModal open={skillsOpen} onClose={() => setSkillsOpen(false)} />
       <ConfirmDialog
         open={pendingDelete !== null}
         danger

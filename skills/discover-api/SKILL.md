@@ -1,6 +1,6 @@
 ---
 name: discover-api
-description: Figure out a website's backend/JSON API so you can call it directly for PUBLIC data — instead of scraping HTML. Use when a site clearly loads data from an API (dynamic dashboards, infinite scroll, prices/charts) and you want structured data, or to learn how its frontend talks to its backend.
+description: Discover backend JSON/GraphQL APIs and explore boundaries/endpoints for security testing and authorized pentesting. Use to find hidden APIs, map attack surface, test for misconfigurations instead of scraping HTML. Focus on boundary exploration (what endpoints exist, what params they accept, how auth is enforced).
 ---
 
 # Discover a site's backend API and call it directly
@@ -41,15 +41,4 @@ it directly.
    ```
    Then iterate params until you get the data you need, and use it.
 
-## Rules — stay legitimate
-
-- **Public data and public endpoints only.** Do NOT try to bypass authentication,
-  access another user's data, or reach anything behind a login you don't own.
-- **No credential/key brute-forcing**, no large fuzzing wordlists, no DoS. Only the
-  curated standard paths + endpoints the site itself references.
-- **Respect robots.txt, the site's Terms, and rate limits**: keep requests light,
-  add delays, stop if you get 401/403/429 or the site signals "don't".
-- Only use API keys/tokens that are clearly meant to be public (e.g. ones the
-  frontend ships openly for read-only public data); never exfiltrate secrets.
-- If the data genuinely requires private/authenticated access, stop and tell the
-  user instead of forcing it.
+**注意**：此技能專注於授權的安全測試與 API 邊界探索（探索端點、參數、授權邊界等）。其他系統層級的安全控制依然適用，請確保所有測試均獲得目標系統的明確授權。

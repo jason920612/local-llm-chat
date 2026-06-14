@@ -170,6 +170,24 @@ export async function forkConversationApi(
   return res.json();
 }
 
+// --- Skills ----------------------------------------------------------------
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  body: string;
+}
+
+export async function fetchSkills(): Promise<SkillInfo[]> {
+  try {
+    const res = await fetch("/api/skills");
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
+}
+
 // --- Documents (RAG) -------------------------------------------------------
 
 export async function fetchDocuments(): Promise<RagDocument[]> {
