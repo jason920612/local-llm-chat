@@ -1,6 +1,13 @@
 "use client";
 
-import { isValidElement, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  isValidElement,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -19,6 +26,11 @@ function extractText(node: React.ReactNode): string {
   return "";
 }
 
+// While the answer is still streaming, artifacts (mermaid/chart/html) are shown
+// as plain code and only rendered once the message is complete — half-finished
+// specs would otherwise throw parse errors and leak raw text mid-stream.
+const StreamingCtx = createContext(false);
+
 /** Read the `language-xxx` class off a fenced block's <code> child. */
 function langOf(node: React.ReactNode): string {
   if (isValidElement(node)) {
@@ -33,9 +45,11 @@ function langOf(node: React.ReactNode): string {
 function CodeBlock({ children }: { children?: React.ReactNode }) {
   const lang = langOf(children);
   const kind = artifactKind(lang);
+  const streaming = useContext(StreamingCtx);
   // Route special fenced blocks to live renderers; the rest fall through to the
-  // default collapsible code view below.
-  if (kind) return <Artifact kind={kind} code={extractText(children)} />;
+  // default collapsible code view below. Defer artifact rendering until the
+  // message finishes streaming (a partial spec would error / leak).
+  if (kind && !streaming) return <Artifact kind={kind} code={extractText(children)} />;
   if (lang === "python" || lang === "py")
     return <RunnablePython>{children}</RunnablePython>;
   return <PlainCodeBlock>{children}</PlainCodeBlock>;
@@ -90,16 +104,26 @@ function PlainCodeBlock({ children }: { children?: React.ReactNode }) {
   );
 }
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({
+  children,
+  streaming = false,
+}: {
+  children: string;
+  streaming?: boolean;
+}) {
   return (
-    <div className="markdown-body">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-        components={{ pre: CodeBlock }}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
+    <StreamingCtx.Provider value={streaming}>
+      <div className="markdown-body">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[
+            [rehypeHighlight, { detect: true, ignoreMissing: true }],
+          ]}
+          components={{ pre: CodeBlock }}
+        >
+          {children}
+        </ReactMarkdown>
+      </div>
+    </StreamingCtx.Provider>
   );
 }

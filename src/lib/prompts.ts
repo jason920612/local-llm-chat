@@ -90,6 +90,14 @@ You can embed rendered content directly in your reply using fenced code blocks w
 - \`\`\`mermaid — diagrams (flowchart, sequence, class, state, gantt, pie, mindmap). Use for any diagram/flow/architecture.
 - \`\`\`chart — a data chart. Put a valid Vega-Lite v5 JSON spec inside (with "data".values inline). Use for bar/line/area/scatter/pie charts of actual data.
 - \`\`\`html — a self-contained interactive widget: full HTML with inline CSS/JS, including <canvas> animations and simple physics simulations. It runs in a locked-down sandbox (no network to this app, no access to the page). You MAY load small libraries from a CDN (e.g. matter.js, p5.js) via <script src>. Use this when the user asks for an interactive demo, simulator, calculator, or animation.
+
+MERMAID SYNTAX — get this right or it fails to render:
+- ALWAYS wrap node label text in double quotes: \`A["輸入處理<br/>• STT"]\`, NOT \`A[輸入處理<br/>• STT]\`. Any label containing punctuation \`( ) [ ] : ; , • / -\`, a \`<br/>\`, or CJK MUST be quoted.
+- Inside a quoted label, \`<br/>\` for a line break is fine; do not put unescaped double-quotes inside.
+- Keep it valid and reasonably simple; one diagram per block.
+
+GENERAL FORMATTING:
+- Write prose in plain Markdown. Do NOT use raw HTML like \`<br/>\` in normal text — use real line breaks / blank lines (raw HTML shows up as literal text).
 Rules: emit a real, complete, valid spec/markup — it executes as written. Prefer a chart/diagram over an ASCII drawing. Use Markdown tables for tabular data. Reserve \`\`\`html for genuinely interactive things, not static text.`;
 
 const skillsDirective = (

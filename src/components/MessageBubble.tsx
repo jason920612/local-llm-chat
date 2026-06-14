@@ -107,7 +107,12 @@ function AssistantBody({
     const seg = answer
       .slice(last, m.index)
       .replace(/(?:image|video|file)\s*[:：]\s*$/i, "");
-    if (seg.trim()) nodes.push(<Markdown key={`t${k}`}>{seg}</Markdown>);
+    if (seg.trim())
+      nodes.push(
+        <Markdown key={`t${k}`} streaming={streaming}>
+          {seg}
+        </Markdown>,
+      );
     const ref = m[2].trim();
     if (m[1] === "image") {
       const i = parseInt(ref, 10) - 1;
@@ -134,7 +139,7 @@ function AssistantBody({
   const tail = answer.slice(last);
   if (tail.trim() || nodes.length === 0) {
     nodes.push(
-      <Markdown key={`t${k}`}>
+      <Markdown key={`t${k}`} streaming={streaming}>
         {tail || (streaming ? "" : "_(empty response)_")}
       </Markdown>,
     );
