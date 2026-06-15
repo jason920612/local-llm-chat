@@ -6,7 +6,10 @@
 # executes, writes .run/out.json, and powers off. Returns when the VM exits.
 set -uo pipefail
 
-LSB="$HOME/llm-sandbox"
+# Artifacts (CH binary, kernel, base rootfs) live here. The root-owned installed
+# copy (/usr/local/sbin/llm-vm-run) has LLM_SANDBOX_HOME baked in by install.sh,
+# so this is pinned at install time and NOT caller-controllable.
+LSB="${LLM_SANDBOX_HOME:-$HOME/llm-sandbox}"
 CH="$LSB/bin/cloud-hypervisor"
 VIRTIOFSD=/usr/libexec/virtiofsd
 # absolute paths for privileged calls (match the scoped sudoers entry exactly)

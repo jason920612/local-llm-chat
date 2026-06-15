@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -55,6 +56,71 @@ def build_env():
     return env
 
 
+def run_capped(cmd, env, timeout_s, cap):
+    """Run cmd, streaming stdout/stderr but keeping at most ~cap bytes of each.
+    Once a stream exceeds the cap the process is killed, so unbounded producers
+    (e.g. `yes`) can't exhaust the VM's RAM. Returns (out, err, rc, timed_out, start)."""
+    start = time.time()
+    try:
+        p = subprocess.Popen(
+            cmd, cwd=WS, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    except Exception as ex:  # noqa: BLE001
+        return "", f"runner error: {ex}", None, False, start
+
+    bufs = {"out": [], "err": []}
+    counts = {"out": 0, "err": 0}
+    state = {"killed": False}
+    lock = threading.Lock()
+    limit = max(1, cap)
+
+    def reader(stream, key):
+        try:
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    break
+                with lock:
+                    if counts[key] < limit:
+                        bufs[key].append(chunk)
+                        counts[key] += len(chunk)
+                    elif not state["killed"]:
+                        state["killed"] = True
+                        try:
+                            p.kill()
+                        except Exception:  # noqa: BLE001
+                            pass
+        except Exception:  # noqa: BLE001
+            pass
+
+    t1 = threading.Thread(target=reader, args=(p.stdout, "out"), daemon=True)
+    t2 = threading.Thread(target=reader, args=(p.stderr, "err"), daemon=True)
+    t1.start()
+    t2.start()
+
+    timed_out = False
+    try:
+        rc = p.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            p.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        rc = None
+    t1.join(2)
+    t2.join(2)
+
+    out = b"".join(bufs["out"]).decode("utf-8", "replace")
+    err = b"".join(bufs["err"]).decode("utf-8", "replace")
+    if state["killed"]:
+        err += f"\n[output exceeded {cap} chars — process killed]"
+    if timed_out:
+        err += f"\n[timed out after {int(timeout_s*1000)} ms]"
+    return out, err, rc, timed_out, start
+
+
 def main():
     inp = read_in()
     # Payload runs as root inside the VM (full root in an isolated guest kernel).
@@ -69,29 +135,7 @@ def main():
     env = build_env()
     cmd = ["python3", "-c", code] if lang == "python" else ["bash", "-c", code]
 
-    start = time.time()
-    timed_out = False
-    try:
-        p = subprocess.run(
-            cmd,
-            cwd=WS,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        out, err, rc = p.stdout, p.stderr, p.returncode
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout or ""
-        if isinstance(out, bytes):
-            out = out.decode("utf-8", "replace")
-        err = e.stderr or ""
-        if isinstance(err, bytes):
-            err = err.decode("utf-8", "replace")
-        err += f"\n[timed out after {int(timeout_s*1000)} ms]"
-        rc, timed_out = None, True
-    except Exception as ex:  # noqa: BLE001
-        out, err, rc, timed_out = "", f"runner error: {ex}", None, False
+    out, err, rc, timed_out, start = run_capped(cmd, env, timeout_s, cap)
 
     res = {
         "stdout": out[:cap],

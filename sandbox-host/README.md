@@ -34,8 +34,10 @@ Artifacts produced (git-ignored, not committed): `bin/cloud-hypervisor`,
 - `build/stage*.sh` — one-time provisioning steps (idempotent-ish; safe to re-run).
 - `vm-run.sh` — the per-run bridge the app invokes (`vm-run.sh <convId> <vcpus> <memMiB> <timeoutSec>`):
   sets up bridge+NAT, allocates a tap/IP slot, starts virtiofsd, boots the VM, returns on poweroff.
-- `install-sudoers.sh` — installs `/etc/sudoers.d/llm-sandbox` (scoped NOPASSWD for ip/nft/sysctl/
-  virtiofsd/kill/timeout) so per-run boots need no password.
+- `install-sudoers.sh` — installs a **root-owned** copy of the bridge at `/usr/local/sbin/llm-vm-run`
+  (paths baked in) and grants passwordless sudo for ONLY that script. The unprivileged user can't edit
+  it, so no bare privileged command (`timeout`, `ip`, …) is ever exposed. Re-run it after editing
+  `vm-run.sh`. Node invokes `sudo -n /usr/local/sbin/llm-vm-run`.
 - `guest/llm-init` — PID 1: mounts a writable overlay over the read-only base root — upper layer on the
   per-conversation **system disk** `/dev/vdb` (a sparse ext4 image, persistent; tmpfs fallback if absent)
   — then `pivot_root` + `exec /llm-init-real`. So the model gets a writable, persistent root (apt works).

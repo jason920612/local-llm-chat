@@ -35,6 +35,22 @@ function releaseVmSlot(): void {
 let lastCleanup = 0;
 
 /**
+ * Serialize run_code per conversation: overlapping requests for the same
+ * conversation share `.run/{in,out}.json`, so a second stage must wait for the
+ * first run to finish before overwriting them.
+ */
+const convChain = new Map<string, Promise<unknown>>();
+function withConvLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = convChain.get(id) ?? Promise.resolve();
+  const next = prev.then(fn, fn); // run regardless of a prior run's outcome
+  convChain.set(
+    id,
+    next.catch(() => {}),
+  );
+  return next;
+}
+
+/**
  * MicroVMDriver — true per-conversation isolation. Each run_code boots a
  * Cloud Hypervisor microVM (its own Linux kernel) inside WSL2, with the
  * conversation's persistent workspace mounted over virtio-fs at /workspace.
@@ -122,7 +138,17 @@ export class MicroVMDriver implements SandboxDriver {
     }
   }
 
-  async runCode(
+  runCode(
+    conversationId: string,
+    language: "python" | "bash",
+    code: string,
+  ): Promise<RunResult> {
+    return withConvLock(safeConvId(conversationId), () =>
+      this.runCodeInner(conversationId, language, code),
+    );
+  }
+
+  private async runCodeInner(
     conversationId: string,
     language: "python" | "bash",
     code: string,
@@ -215,13 +241,16 @@ export class MicroVMDriver implements SandboxDriver {
     timeoutMs: number,
   ): Promise<{ error?: string; timedOut: boolean }> {
     const timeoutSec = Math.ceil(timeoutMs / 1000);
-    const bridge = `${this.cfg.wslHome}/vm-run.sh`;
+    // Invoke the ROOT-OWNED bridge via a single scoped sudo rule (install.sh
+    // installs /usr/local/sbin/llm-vm-run and grants NOPASSWD for only it), so
+    // no bare privileged commands are exposed to the unprivileged user.
     const args = [
       "-d",
       this.cfg.wslDistro,
       "--",
-      "bash",
-      bridge,
+      "sudo",
+      "-n",
+      "/usr/local/sbin/llm-vm-run",
       safeConvId(conversationId),
       String(this.cfg.vcpus),
       String(this.cfg.memMiB),
