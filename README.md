@@ -104,8 +104,30 @@ On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`
 - **Code sandbox** (`run_code`, opt-in via `SANDBOX_ENABLED`): the model runs
   bash/python in a per-conversation workspace (timeout + auto-cleanup), and files
   it creates appear in the chat — text files open in a viewer, others download.
-  ⚠️ This runs real code on the host with the server's permissions; it is workspace
-  isolation, **not** a security boundary. Enable only if you trust the model.
+  ⚠️ With the default `local` driver this runs real code on the host with the
+  server's permissions; it is workspace isolation, **not** a security boundary.
+  For true isolation use the **microVM driver** below.
+
+### Isolated microVM sandbox (per-conversation, own kernel)
+
+Set `SANDBOX_DRIVER=microvm` to run every conversation's `run_code` in its **own
+Cloud Hypervisor microVM** — a real, separate Linux kernel, not a container.
+Each VM is ephemeral (booted per run, ~2s, torn down after) and mounts that
+conversation's **persistent** workspace over virtio-fs at `/workspace`; pip
+installs persist there (`pip --user` → `/workspace/.local`) and the VM has NAT
+egress so `pip`/`git` work. The whole sandbox subsystem runs inside **WSL2**, so
+this backend is Windows + WSL2 only; other hosts fall back to `local`.
+
+One-time host setup (inside WSL2 Ubuntu) provisions cloud-hypervisor + virtiofsd,
+a guest kernel, and a base rootfs under `~/llm-sandbox/`, plus a scoped
+`/etc/sudoers.d/llm-sandbox` so the per-run boot needs no password. Tune via the
+`SANDBOX_VM_*` / `SANDBOX_WSL_*` env vars (see `.env.example`). Background jobs
+(`start_background`) are disabled under this driver (they would run on the host,
+outside the VM boundary).
+
+> Even here, treat the model as untrusted only up to the VM boundary: the VM has
+> outbound network (NAT) by default. Set `SANDBOX_VM_MAX_CONCURRENT` to cap how
+> many VMs run at once.
 
 Code blocks have syntax highlighting, a copy button, and auto-collapse when long;
 images open in a lightbox.

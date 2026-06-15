@@ -50,6 +50,23 @@ export const config = {
     timeoutMs: 30000,
     ttlMs: 2 * 60 * 60 * 1000, // delete workspaces older than 2 hours
     maxOutputChars: 20000,
+    // Execution backend:
+    //   "local"   — spawn python/bash directly on the host (NOT isolated; default).
+    //   "microvm" — per-conversation Cloud Hypervisor microVM with its own kernel,
+    //               run inside WSL2 (true isolation). See src/lib/sandbox/microvm.ts.
+    driver: (process.env.SANDBOX_DRIVER ?? "local") as "local" | "microvm",
+    microvm: {
+      // WSL2 distro that hosts the hypervisor + per-conversation workspaces.
+      wslDistro: process.env.SANDBOX_WSL_DISTRO ?? "Ubuntu",
+      // Root (inside WSL2) holding one persistent dir per conversation.
+      wslSandboxRoot: process.env.SANDBOX_WSL_ROOT ?? "/srv/llm-sandboxes",
+      // Where the Phase-0 build artifacts (CH binary, kernel, base rootfs) live.
+      wslHome: process.env.SANDBOX_WSL_HOME ?? "/home/jason/llm-sandbox",
+      vcpus: Number(process.env.SANDBOX_VM_VCPUS ?? 2),
+      memMiB: Number(process.env.SANDBOX_VM_MEM_MIB ?? 1024),
+      // Cap on microVMs booting concurrently across all conversations.
+      maxConcurrent: Number(process.env.SANDBOX_VM_MAX_CONCURRENT ?? 4),
+    },
   },
   /**
    * SOP control layer. The SOP is enforced in CODE, not by trusting the prompt.

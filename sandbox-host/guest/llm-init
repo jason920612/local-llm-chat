@@ -1,0 +1,28 @@
+#!/bin/bash
+# PID 1: put a writable tmpfs overlay over the read-only base root, then hand off
+# to /llm-init-real on the new (writable, ephemeral) root. Changes to system dirs
+# (/etc, /usr, apt, ...) live only in RAM and vanish at poweroff.
+export PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# minimal early mounts so modprobe works
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sys /sys 2>/dev/null
+mount -t devtmpfs dev /dev 2>/dev/null
+modprobe overlay 2>/dev/null
+
+mount -t tmpfs tmpfs /mnt
+mkdir -p /mnt/upper /mnt/work /mnt/merged
+if mount -t overlay overlay \
+     -o lowerdir=/,upperdir=/mnt/upper,workdir=/mnt/work /mnt/merged; then
+  mkdir -p /mnt/merged/oldroot
+  cd /mnt/merged
+  if busybox pivot_root . oldroot; then
+    exec chroot . /llm-init-real
+  fi
+  echo "[llm-init] pivot_root failed; continuing read-only"
+  cd /
+else
+  echo "[llm-init] overlay mount failed; continuing read-only"
+fi
+# fallback: run the real init on the read-only root
+exec /llm-init-real

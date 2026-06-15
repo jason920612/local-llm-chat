@@ -1,0 +1,35 @@
+#!/bin/bash
+# Real init, executed after /llm-init has switched onto a writable overlay root.
+export PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+echo "[llm-init] boot kernel=$(uname -r) (writable overlay root)"
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sys /sys 2>/dev/null
+mount -t devtmpfs dev /dev 2>/dev/null
+mount -t tmpfs tmpfs /tmp 2>/dev/null
+mount -t tmpfs tmpfs /run 2>/dev/null
+modprobe virtiofs 2>/dev/null
+
+mkdir -p /workspace
+if ! mount -t virtiofs workspace /workspace; then
+  echo "[llm-init] FATAL: virtiofs mount failed"
+  busybox poweroff -f 2>/dev/null
+fi
+mkdir -p /workspace/.run
+
+# Optional networking from control file: {"ip":"172.30.0.N/24","gw":"172.30.0.1"}
+if [ -f /workspace/.run/net.json ]; then
+  GIP=$(sed -n 's/.*"ip":"\([^"]*\)".*/\1/p' /workspace/.run/net.json)
+  GGW=$(sed -n 's/.*"gw":"\([^"]*\)".*/\1/p' /workspace/.run/net.json)
+  ip link set lo up 2>/dev/null
+  ip link set eth0 up 2>/dev/null
+  [ -n "$GIP" ] && ip addr add "$GIP" dev eth0 2>/dev/null
+  [ -n "$GGW" ] && ip route add default via "$GGW" 2>/dev/null
+  echo "[llm-init] net eth0=$GIP gw=$GGW"
+fi
+
+python3 /llm-runner.py
+echo "[llm-init] runner done, powering off"
+sync
+busybox poweroff -f 2>/dev/null
+echo o > /proc/sysrq-trigger 2>/dev/null
+sleep 5
