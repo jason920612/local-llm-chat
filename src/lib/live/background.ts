@@ -14,6 +14,7 @@ import {
   type BgStatus,
 } from "../repo";
 import { prepareWorkspace, sandboxEnv } from "../sandbox/run";
+import { config } from "../config";
 import { computePath } from "../tree";
 import { publishConv } from "./bus";
 
@@ -68,6 +69,15 @@ export function startBackground(
   timeoutSeconds: number,
 ): StartResult {
   if (!command || !command.trim()) return { error: "command is required" };
+  if (config.sandbox.driver === "microvm") {
+    // Background jobs still run as host processes; that would bypass the microVM
+    // isolation boundary, so they're disabled under the microVM backend until a
+    // long-lived per-conversation VM is implemented.
+    return {
+      error:
+        "background jobs are unavailable with the microVM sandbox (run_code only). Use a foreground run_code call instead.",
+    };
+  }
   if (countRunning(conversationId) >= MAX_CONCURRENT) {
     return { error: `concurrency limit reached (max ${MAX_CONCURRENT} per conversation)` };
   }

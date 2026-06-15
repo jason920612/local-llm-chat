@@ -15,6 +15,10 @@ function init(): Database.Database {
   const db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  // Wait (instead of erroring with SQLITE_BUSY) when another connection holds
+  // the lock — e.g. `next build` imports route modules in parallel workers that
+  // each open this DB and run the idempotent migrations below.
+  db.pragma("busy_timeout = 5000");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
