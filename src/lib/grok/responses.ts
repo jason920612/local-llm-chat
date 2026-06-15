@@ -15,6 +15,8 @@ import {
   cloneRepo,
   saveMediaToSandbox,
   mountSkill,
+  type RunResult,
+  type SandboxFile,
 } from "../sandbox/run";
 import { getSkill, installSkill } from "../skills";
 import {
@@ -23,6 +25,109 @@ import {
   listBackground,
   killBackground,
 } from "../live/background";
+
+/** Format a finished run_code result as the model-facing tool output. */
+function formatRunResult(r: RunResult): string {
+  if (r.error) return `error: ${r.error}`;
+  return [
+    `exit_code: ${r.exitCode}${r.timedOut ? " (timed out)" : ""}`,
+    r.stdout ? `stdout:\n${r.stdout}` : "stdout: (empty)",
+    r.stderr ? `stderr:\n${r.stderr}` : "",
+    r.files.length
+      ? `files: ${r.files
+          .map((f) => f.name)
+          .join(
+            ", ",
+          )}. You MUST present each deliverable to the user by writing the marker [[file:EXACT_NAME]] on its own line in your reply (use the exact filename). Don't just say it's done — emit the marker so the file is shown/downloadable.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+// Conversations with a run_code VM still running in the background (microVM
+// backend only). One VM per conversation at a time (shared system disk), so a
+// new run_code is refused while one is in flight here.
+const bgRuns = new Map<string, true>();
+
+/** Wake the model when a backgrounded run_code finishes. */
+function onBgRunComplete(conversationId: string, r: RunResult): void {
+  bgRuns.delete(conversationId);
+  const content = [
+    "⚙ Background run_code finished (auto-generated)",
+    `exit_code: ${r.exitCode}${r.timedOut ? " (timed out)" : ""}`,
+    r.error ? `error: ${r.error}` : "",
+    r.stdout ? `stdout:\n${r.stdout}` : "stdout: (empty)",
+    r.stderr ? `stderr:\n${r.stderr}` : "",
+    r.files.length
+      ? `files: ${r.files.map((f) => f.name).join(", ")} — present each with [[file:EXACT_NAME]] on its own line in your reply.`
+      : "",
+    "This background run has finished. Continue based on its result.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  void import("../live/background").then(({ wakeConversation }) =>
+    wakeConversation(conversationId, content),
+  );
+}
+
+/**
+ * Run model code. On the microVM backend, the VM runs in the foreground for up
+ * to `foregroundMs`; if it's still going, the run is auto-migrated to the
+ * background (the VM keeps running) and the model is woken with the output when
+ * it finishes. `addFiles` collects files for the current message.
+ */
+async function handleRunCode(
+  conversationId: string,
+  language: "python" | "bash",
+  code: string,
+  addFiles: (files: SandboxFile[]) => void,
+): Promise<string> {
+  const isVM = config.sandbox.driver === "microvm";
+  if (isVM && bgRuns.has(conversationId)) {
+    return "A previous run_code in this conversation is still running in the background; you'll get a completion notice. Do not start another run_code here until then.";
+  }
+
+  const p = runCode(conversationId, language, code);
+
+  if (!isVM) {
+    const r = await p;
+    addFiles(r.files);
+    return formatRunResult(r);
+  }
+
+  const fg = config.sandbox.microvm.foregroundMs;
+  const raced = await Promise.race([
+    p.then((r) => ({ kind: "done" as const, r })),
+    new Promise<{ kind: "bg" }>((res) =>
+      setTimeout(() => res({ kind: "bg" }), fg),
+    ),
+  ]);
+
+  if (raced.kind === "done") {
+    addFiles(raced.r.files);
+    return formatRunResult(raced.r);
+  }
+
+  // Still running after the foreground window → move to background.
+  bgRuns.set(conversationId, true);
+  void p.then(
+    (r) => onBgRunComplete(conversationId, r),
+    (e) =>
+      onBgRunComplete(conversationId, {
+        stdout: "",
+        stderr: String(e),
+        exitCode: null,
+        durationMs: 0,
+        timedOut: false,
+        files: [],
+        error: String(e),
+      }),
+  );
+  return `Still running after ${Math.round(
+    fg / 1000,
+  )}s, so it was automatically MOVED TO THE BACKGROUND and keeps running. You'll be notified with its full output when it finishes. Wrap up this turn now — do not wait, and do not start another run_code in this conversation until you get the completion notice.`;
+}
 
 /**
  * Native xAI Responses API agent (POST /v1/responses).
@@ -672,26 +777,16 @@ export function streamGrokResponses(
             } else if (c.name === CODE_FN) {
               const lang = args.language === "bash" ? "bash" : "python";
               emitTool("run_code", { language: lang, code: args.code ?? "" });
-              const r = await runCode(conversationId, lang, args.code ?? "");
-              for (const f of r.files) {
-                if (!files.some((x) => x.name === f.name)) files.push(f);
-              }
-              out = r.error
-                ? `error: ${r.error}`
-                : [
-                    `exit_code: ${r.exitCode}${r.timedOut ? " (timed out)" : ""}`,
-                    r.stdout ? `stdout:\n${r.stdout}` : "stdout: (empty)",
-                    r.stderr ? `stderr:\n${r.stderr}` : "",
-                    r.files.length
-                      ? `files: ${r.files
-                          .map((f) => f.name)
-                          .join(
-                            ", ",
-                          )}. You MUST present each deliverable to the user by writing the marker [[file:EXACT_NAME]] on its own line in your reply (use the exact filename). Don't just say it's done — emit the marker so the file is shown/downloadable.`
-                      : "",
-                  ]
-                    .filter(Boolean)
-                    .join("\n");
+              out = await handleRunCode(
+                conversationId,
+                lang,
+                args.code ?? "",
+                (fs) => {
+                  for (const f of fs) {
+                    if (!files.some((x) => x.name === f.name)) files.push(f);
+                  }
+                },
+              );
             } else if (c.name === SKILL_FN) {
               emitTool("use_skill", { name: args.name ?? "" });
               const skill = getSkill(args.name ?? "");

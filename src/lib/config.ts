@@ -69,6 +69,12 @@ export const config = {
       memMiB: Number(process.env.SANDBOX_VM_MEM_MIB ?? 8192),
       // Cap on microVMs booting concurrently across all conversations.
       maxConcurrent: Number(process.env.SANDBOX_VM_MAX_CONCURRENT ?? 4),
+      // run_code runs in the foreground up to this long; if it hasn't finished,
+      // the run is auto-migrated to the background and the model is notified +
+      // woken on completion.
+      foregroundMs: Number(process.env.SANDBOX_VM_FOREGROUND_MS ?? 10000),
+      // Hard ceiling for a single run_code VM (foreground or background).
+      maxRunMs: Number(process.env.SANDBOX_VM_MAX_RUN_MS ?? 30 * 60 * 1000),
       // Per-conversation writable system disk (overlay upper + /tmp): apparent
       // size in GiB. Thin-provisioned (sparse) — only real usage hits the host
       // disk, and it persists across runs so apt/system installs stick.

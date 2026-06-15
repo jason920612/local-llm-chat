@@ -7,6 +7,7 @@
  * "answer, don't restate" first — while the strict enforcement (intent gate,
  * citation rules, scold-correction, sanitizer) lives in code (src/lib/sop).
  */
+import { config } from "./config";
 
 export interface SystemPromptOptions {
   /** True when the latest user turn includes image attachments. */
@@ -78,8 +79,6 @@ const NATIVE_GROK_DIRECTIVE = `
 # CAPABILITIES
 - You can search X (Twitter) and the web automatically when a question needs real-time or external information — just use it when relevant, and cite sources with [n].
 - You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.
-- You may also have a "run_code" tool (bash/python) running in a per-conversation sandbox. Use it to compute, test code, or process data. Files you write to the working directory are shown to the user automatically.
-- You may have BACKGROUND-PROCESS tools for long-running work: "start_background" (launch a shell command that keeps running, timeout up to 7 days), "read_background_log" (check its output any time), "list_background" (list your jobs + status), "kill_background" (stop one). Use run_code for quick commands; use start_background for builds, servers, training, crawls, or anything slow. When a background job finishes you are AUTOMATICALLY woken with its exit code + log to react — so you can start a job, end your turn, and continue once it completes. You only see/control jobs from this conversation.
 
 # INLINE MEDIA PLACEMENT
 When you generate images/videos or create files, control WHERE they appear by writing a marker on its own line at that point. Write ONLY the marker, with no label before it:
@@ -100,14 +99,31 @@ MERMAID SPEC TIPS (avoid parse errors): wrap EVERY node label in double quotes, 
 
 GENERAL FORMATTING: write prose in plain Markdown; do NOT use raw HTML like \`<br/>\` in normal text (it shows up as literal text). Prefer a real chart/diagram over ASCII art. Use Markdown tables for plain tabular data.`;
 
+/** Driver-aware tool-use policy: proactivity + how long-running code is handled. */
+function executionDirective(): string {
+  const vm = config.sandbox.driver === "microvm";
+  const fgSec = Math.round(config.sandbox.microvm.foregroundMs / 1000);
+  const exec = vm
+    ? `- "run_code" runs in an ISOLATED per-conversation microVM where you are ROOT — full Linux, internet, apt/pip all available. Use it FREELY: compute, install packages, test code, process data, build deliverables. Files you write to the working directory are shown to the user automatically.
+- Slow tasks are handled FOR you: if a run_code call runs longer than ~${fgSec}s it is AUTOMATICALLY moved to the background and keeps running; you are then notified with its full output when it finishes. So NEVER avoid or fake a task because it "takes time" — just run it for real. While a run is in the background for this conversation, don't start another run_code until you get the completion notice.`
+    : `- "run_code" (bash/python) runs in a per-conversation sandbox. Use it to compute, test code, or process data. Files you write are shown automatically.
+- For long-running work use the background tools: "start_background" (keeps running, you're auto-woken on completion), "read_background_log", "list_background", "kill_background". Use run_code for quick commands; start_background for builds, servers, training, crawls, or anything slow.`;
+  return `
+
+# USING TOOLS — BE PROACTIVE (do it, don't just describe it)
+For ANY request that involves computation, files, data, code, repos, documents, or producing an artifact, ACTUALLY use the matching tool or skill THIS turn — don't explain what you would do, and don't ask permission first. Reach for tools/skills by default; only skip them for pure chat, general knowledge, or reasoning that needs none.
+${exec}`;
+}
+
 const skillsDirective = (
   skills: { name: string; description: string }[],
 ) => `
 
-# SKILLS — load a playbook before doing the matching task
-You have reusable skill playbooks. When the user's request matches one, FIRST call
-the "use_skill" tool with its name to load the full step-by-step playbook, THEN
-follow it. Do not improvise a worse approach when a skill exists for the task.
+# SKILLS — load and follow a playbook (proactively)
+You have reusable skill playbooks. Whenever a request matches one, FIRST call the
+"use_skill" tool to load its full step-by-step playbook, THEN follow it — without
+being told to and without improvising a worse approach. Check this list before
+starting any non-trivial task.
 Available skills:
 ${skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}
 
@@ -164,6 +180,11 @@ export function buildSystemPrompt(opts: SystemPromptOptions = {}): string {
   if (opts.hasImages) prompt += VISION_DIRECTIVE;
   if (opts.grokNative) prompt += NATIVE_GROK_DIRECTIVE;
   else if (opts.hasGrokTool) prompt += GROK_DIRECTIVE;
+  // Tool-use proactivity + (driver-aware) run_code/background policy. Only when
+  // the sandbox tools actually exist (Grok native path + sandbox enabled).
+  if (opts.grokNative && config.sandbox.enabled) {
+    prompt += executionDirective();
+  }
   if (opts.skills && opts.skills.length > 0) {
     prompt += skillsDirective(opts.skills);
   }

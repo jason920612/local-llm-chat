@@ -232,7 +232,16 @@ async function scheduleWake(job: BackgroundJob): Promise<void> {
 }
 
 function wakeNow(job: BackgroundJob): void {
-  const conv = getConversation(job.conversationId);
+  wakeConversation(job.conversationId, buildEventContent(job));
+}
+
+/**
+ * Post a system-generated user event into a conversation and kick off a Grok
+ * generation so the model reacts to it. Used to wake the model when a background
+ * job (or a backgrounded run_code) finishes. No-op if the conversation is gone.
+ */
+export function wakeConversation(conversationId: string, content: string): void {
+  const conv = getConversation(conversationId);
   if (!conv) return; // conversation deleted — nothing to wake
 
   const path = computePath(conv.messages, conv.rootChildId);
@@ -241,21 +250,21 @@ function wakeNow(job: BackgroundJob): void {
   const eventMsg: UIMessage = {
     id: nanoid(),
     role: "user",
-    content: buildEventContent(job),
+    content,
     parentId: parentId ?? null,
     createdAt: Date.now(),
   };
-  addMessage(job.conversationId, eventMsg);
-  publishConv(job.conversationId, { type: "message", message: eventMsg });
+  addMessage(conversationId, eventMsg);
+  publishConv(conversationId, { type: "message", message: eventMsg });
 
   void import("./generations").then(({ startGeneration }) => {
-    const history = historyThrough(job.conversationId, eventMsg.id);
+    const history = historyThrough(conversationId, eventMsg.id);
     startGeneration({
-      conversationId: job.conversationId,
+      conversationId,
       assistantMessageId: nanoid(),
       parentId: eventMsg.id,
       body: {
-        conversationId: job.conversationId,
+        conversationId,
         useGrok: true,
         messages: history.map((m) => ({
           role: m.role,

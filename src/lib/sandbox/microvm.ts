@@ -155,7 +155,10 @@ export class MicroVMDriver implements SandboxDriver {
   ): Promise<RunResult> {
     const dir = this.prepareWorkspace(conversationId);
     const runDir = path.win32.join(dir, ".run");
-    const timeoutMs = config.sandbox.timeoutMs;
+    // The VM may keep running in the background after the foreground window, so
+    // give it the long ceiling; the 10s foreground cutoff is handled by the
+    // caller (grok/responses.ts), not here.
+    const timeoutMs = this.cfg.maxRunMs;
     const cap = config.sandbox.maxOutputChars;
 
     // hand the job to the guest
