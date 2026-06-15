@@ -63,7 +63,10 @@ export const config = {
       // Where the Phase-0 build artifacts (CH binary, kernel, base rootfs) live.
       wslHome: process.env.SANDBOX_WSL_HOME ?? "/home/jason/llm-sandbox",
       vcpus: Number(process.env.SANDBOX_VM_VCPUS ?? 2),
-      memMiB: Number(process.env.SANDBOX_VM_MEM_MIB ?? 1024),
+      // RAM ceiling per VM (Cloud Hypervisor faults pages in lazily, so real use
+      // ≈ what the guest touches). Generous so the VM effectively runs in memory
+      // and tmpfs /tmp has room.
+      memMiB: Number(process.env.SANDBOX_VM_MEM_MIB ?? 8192),
       // Cap on microVMs booting concurrently across all conversations.
       maxConcurrent: Number(process.env.SANDBOX_VM_MAX_CONCURRENT ?? 4),
       // Per-conversation writable system disk (overlay upper + /tmp): apparent

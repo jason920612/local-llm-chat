@@ -5,8 +5,9 @@ echo "[llm-init] boot kernel=$(uname -r) (writable overlay root)"
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sys /sys 2>/dev/null
 mount -t devtmpfs dev /dev 2>/dev/null
-# NOTE: no tmpfs on /tmp — it lives in the overlay (backed by the big system
-# disk), so builds/downloads to /tmp aren't capped by RAM.
+# /tmp is RAM (tmpfs) for fast scratch and to keep the persistent system disk
+# lean. Very large temp data should be written to /workspace instead.
+mount -t tmpfs tmpfs /tmp 2>/dev/null
 mount -t tmpfs tmpfs /run 2>/dev/null
 modprobe virtiofs 2>/dev/null
 

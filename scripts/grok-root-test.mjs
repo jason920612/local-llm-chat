@@ -15,7 +15,7 @@ const post = (p, b) =>
 
 const PROMPT =
   "Use the run_code tool to execute this bash exactly: `id; uname -r; " +
-  "df -h / | tail -1; test -w / && echo ROOTFS=writable || echo ROOTFS=readonly`. " +
+  "free -h | head -2; df -h / | tail -1`. " +
   "Then reply with the raw stdout verbatim inside a code block, nothing else.";
 
 const main = async () => {
