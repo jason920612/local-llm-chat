@@ -14,8 +14,8 @@ const post = (p, b) =>
   });
 
 const PROMPT =
-  "Use the run_code tool to execute this bash exactly: `id; whoami; uname -r; " +
-  "test -w / && echo ROOTFS=writable || echo ROOTFS=readonly`. " +
+  "Use the run_code tool to execute this bash exactly: `id; uname -r; " +
+  "df -h / | tail -1; test -w / && echo ROOTFS=writable || echo ROOTFS=readonly`. " +
   "Then reply with the raw stdout verbatim inside a code block, nothing else.";
 
 const main = async () => {
@@ -63,7 +63,7 @@ const main = async () => {
   console.log("\n=== Grok final reply ===\n" + asst.content);
 
   // ground truth: read the VM's out.json straight from the conversation workspace
-  const outJson = `\\\\wsl.localhost\\Ubuntu\\srv\\llm-sandboxes\\${conv.id}\\.run\\out.json`;
+  const outJson = `\\\\wsl.localhost\\Ubuntu\\srv\\llm-sandboxes\\${conv.id}\\ws\\.run\\out.json`;
   try {
     const o = JSON.parse(fs.readFileSync(outJson, "utf-8"));
     console.log("\n=== ground-truth .run/out.json (from the VM) ===");

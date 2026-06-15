@@ -66,6 +66,10 @@ export const config = {
       memMiB: Number(process.env.SANDBOX_VM_MEM_MIB ?? 1024),
       // Cap on microVMs booting concurrently across all conversations.
       maxConcurrent: Number(process.env.SANDBOX_VM_MAX_CONCURRENT ?? 4),
+      // Per-conversation writable system disk (overlay upper + /tmp): apparent
+      // size in GiB. Thin-provisioned (sparse) — only real usage hits the host
+      // disk, and it persists across runs so apt/system installs stick.
+      systemDiskGiB: Number(process.env.SANDBOX_VM_SYSDISK_GIB ?? 100),
     },
   },
   /**

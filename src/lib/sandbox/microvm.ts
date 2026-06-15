@@ -62,11 +62,15 @@ export class MicroVMDriver implements SandboxDriver {
     return this.toUnc(this.cfg.wslSandboxRoot);
   }
 
+  /** Per-conversation dir holding both the shared `ws/` and the `sys.img` disk. */
+  private convDirHostPath(conversationId: string): string {
+    return path.win32.join(this.sandboxRootHostPath(), safeConvId(conversationId));
+  }
+
   workspaceHostPath(conversationId: string): string {
-    return path.win32.join(
-      this.sandboxRootHostPath(),
-      safeConvId(conversationId),
-    );
+    // The virtio-fs-shared workspace is a `ws/` subdir so the per-conversation
+    // system disk image (sys.img, a sibling) stays OUT of the share.
+    return path.win32.join(this.convDirHostPath(conversationId), "ws");
   }
 
   prepareWorkspace(conversationId: string): string {
@@ -107,7 +111,8 @@ export class MicroVMDriver implements SandboxDriver {
 
   deleteSandbox(conversationId: string): void {
     const root = path.win32.resolve(this.sandboxRootHostPath());
-    const dir = path.win32.resolve(this.workspaceHostPath(conversationId));
+    // remove the whole per-conversation dir (ws/ + sys.img)
+    const dir = path.win32.resolve(this.convDirHostPath(conversationId));
     // guard: only ever delete inside the sandbox root
     if (!dir.startsWith(root + path.win32.sep) || dir === root) return;
     try {
@@ -221,6 +226,7 @@ export class MicroVMDriver implements SandboxDriver {
       String(this.cfg.vcpus),
       String(this.cfg.memMiB),
       String(timeoutSec),
+      String(this.cfg.systemDiskGiB),
     ];
     // hard wall-clock cap on the bridge itself (guest timeout + boot/teardown margin)
     const hardMs = timeoutMs + 40000;

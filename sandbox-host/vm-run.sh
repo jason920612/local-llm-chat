@@ -20,13 +20,23 @@ ROOTFS="$LSB/images/base.img"
 ROOT="${SANDBOX_WSL_ROOT:-/srv/llm-sandboxes}"
 
 CONVID=$(printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)
-VCPUS="${2:-2}"; MEM="${3:-1024}"; TIMEOUT="${4:-30}"
+VCPUS="${2:-2}"; MEM="${3:-1024}"; TIMEOUT="${4:-30}"; SYSGB="${5:-100}"
 [ -z "$CONVID" ] && { echo "ERR bad convid"; exit 2; }
 
-WS="$ROOT/$CONVID"
-# safety: workspace must be strictly under the sandbox root
+CONVDIR="$ROOT/$CONVID"
+WS="$CONVDIR/ws"            # virtio-fs-shared workspace (persistent files + .run)
+SYSIMG="$CONVDIR/sys.img"   # sparse ext4 system disk (overlay upper + /tmp), NOT shared
+# safety: paths must be strictly under the sandbox root
 case "$WS" in "$ROOT/"*) : ;; *) echo "ERR refuse ws $WS"; exit 2;; esac
 mkdir -p "$WS/.run"
+
+# --- per-conversation sparse system disk (thin: only real usage hits the host) ---
+if [ ! -f "$SYSIMG" ]; then
+  truncate -s "${SYSGB}G" "$SYSIMG"
+  # lazy init keeps the image sparse; -m0 = no reserved blocks
+  mkfs.ext4 -q -F -m 0 -E lazy_itable_init=1,lazy_journal_init=1 "$SYSIMG" \
+    || { echo "ERR mkfs sys.img failed"; rm -f "$SYSIMG"; exit 5; }
+fi
 
 BR=llmbr0
 SUBNET=172.30.0
@@ -92,7 +102,7 @@ MAC=$(printf '12:34:56:%02x:%02x:%02x' "$SLOT" $((RANDOM%256)) $((RANDOM%256)))
 HARD=$(( TIMEOUT + 25 ))
 sudo "$TIMEOUT_BIN" "$HARD" "$CH" \
   --kernel "$KERNEL" \
-  --disk path="$ROOTFS",readonly=on \
+  --disk path="$ROOTFS",readonly=on,image_type=raw path="$SYSIMG",readonly=off,image_type=raw \
   --fs tag=workspace,socket="$SOCK" \
   --net tap="$TAP",mac="$MAC" \
   --cmdline "console=ttyS0 root=/dev/vda ro init=/llm-init" \

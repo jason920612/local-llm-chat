@@ -1,29 +1,41 @@
 #!/usr/bin/env bash
-# Inject production guest files (/llm-init, /llm-runner.py) into base.img.
+# Inject guest files into base.img using debugfs (NO loop mount — this WSL2
+# kernel's loop module hangs on load, and VMs don't need loop anyway since
+# Cloud Hypervisor attaches the image directly via virtio-blk).
 set -uo pipefail
 LSB="$HOME/llm-sandbox"
-BUILD="$LSB/rootfs-build"
 IMG="$LSB/images/base.img"
-case "$BUILD" in "$HOME/llm-sandbox/"*) : ;; *) echo "REFUSE $BUILD"; exit 1;; esac
-mkdir -p "$BUILD"
+G="$LSB/guest"
 
-cleanup() { mountpoint -q "$BUILD" 2>/dev/null && sudo umount "$BUILD" 2>/dev/null; }
-trap cleanup EXIT
+# Sanity: image must exist and not be in use by a running VM.
+[ -f "$IMG" ] || { echo "ERR base.img missing"; exit 1; }
+if pgrep -f "cloud-hypervisor.*$(basename "$IMG")" >/dev/null 2>&1; then
+  echo "ERR base.img is in use by a running VM — stop VMs first"; exit 1
+fi
 
-sudo mount -o loop "$IMG" "$BUILD"
-sudo cp "$LSB/guest/llm-init" "$BUILD/llm-init"
-sudo cp "$LSB/guest/llm-init-real" "$BUILD/llm-init-real"
-sudo cp "$LSB/guest/llm-runner.py" "$BUILD/llm-runner.py"
-sudo chmod +x "$BUILD/llm-init" "$BUILD/llm-init-real"
-# convenience symlinks so model code can call `python` / `pip` (not just *3)
-sudo ln -sf /usr/bin/python3 "$BUILD/usr/local/bin/python"
-[ -e "$BUILD/usr/bin/pip3" ] && sudo ln -sf /usr/bin/pip3 "$BUILD/usr/local/bin/pip"
-[ -e "$BUILD/usr/bin/pip" ] || sudo ln -sf /usr/bin/pip3 "$BUILD/usr/local/bin/pip" 2>/dev/null || true
-echo "symlinks:"; sudo ls -l "$BUILD/usr/local/bin/" 2>/dev/null | grep -E 'python|pip' || echo none
+run_debugfs() { debugfs -w "$IMG" 2>&1; }
+
+echo "=== inject via debugfs ==="
+run_debugfs <<EOF
+rm /llm-init
+rm /llm-init-real
+rm /llm-runner.py
+rm /usr/local/bin/python
+rm /usr/local/bin/pip
+write $G/llm-init /llm-init
+write $G/llm-init-real /llm-init-real
+write $G/llm-runner.py /llm-runner.py
+sif /llm-init mode 0100755
+sif /llm-init-real mode 0100755
+sif /llm-runner.py mode 0100755
+symlink /usr/local/bin/python /usr/bin/python3
+symlink /usr/local/bin/pip /usr/bin/pip3
+EOF
+
 echo "=== verify ==="
-sudo test -x "$BUILD/llm-init" && echo "OK /llm-init"
-sudo test -f "$BUILD/llm-runner.py" && echo "OK /llm-runner.py"
-sudo head -1 "$BUILD/llm-init"
-cleanup
-trap - EXIT
-echo "=== DONE inject ==="
+for f in /llm-init /llm-init-real /llm-runner.py; do
+  m=$(debugfs -R "stat $f" "$IMG" 2>/dev/null | sed -n 's/.*Mode: *\(0[0-7]*\).*/\1/p' | head -1)
+  echo "$f mode=$m"
+done
+debugfs -R "stat /usr/local/bin/python" "$IMG" 2>/dev/null | grep -i 'Type: symlink\|Fast link dest' | head -1
+echo "=== DONE inject (debugfs) ==="

@@ -125,9 +125,15 @@ a guest kernel, and a base rootfs under `~/llm-sandbox/`, plus a scoped
 (`start_background`) are disabled under this driver (they would run on the host,
 outside the VM boundary).
 
+Inside the VM the model runs as **root** on a **writable** filesystem: a tmpfs
+overlay over the read-only base, with the upper layer + `/tmp` backed by a
+per-conversation **sparse system disk** (`SANDBOX_VM_SYSDISK_GIB`, default 100 GiB
+apparent / thin on the host) that **persists** across runs — so `apt-get install`
+works and stays installed. `/workspace` remains the file/document layer.
+
 > Even here, treat the model as untrusted only up to the VM boundary: the VM has
-> outbound network (NAT) by default. Set `SANDBOX_VM_MAX_CONCURRENT` to cap how
-> many VMs run at once.
+> outbound network (NAT) by default and runs as root inside its own kernel. Set
+> `SANDBOX_VM_MAX_CONCURRENT` to cap how many VMs run at once.
 
 Code blocks have syntax highlighting, a copy button, and auto-collapse when long;
 images open in a lightbox.
