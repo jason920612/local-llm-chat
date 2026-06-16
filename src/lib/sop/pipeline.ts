@@ -14,11 +14,6 @@ import { askGrok, mapGrokCitations } from "../grok/search";
 import { generateImage } from "../grok/image";
 import { grokSearchTool, generateImageTool } from "../grok/tool";
 import { streamGrokResponses } from "../grok/responses";
-import {
-  MEDIA_MARKER,
-  parseMediaSentinel,
-  parseStreamingText,
-} from "../api";
 import { skillsSummary } from "../skills";
 import { compactConversation } from "../compaction";
 import { insertSopControlEvent, type SopControlEvent } from "../repo";
@@ -157,33 +152,14 @@ export async function runControlledChat(
         signal,
       );
 
-      if (strictMonitorEnabled()) {
-        const monitorMessages: ChatParam[] = [
-          { role: "system", content: systemPrompt },
-          ...toOpenAIMessages(effectiveWithTime),
-        ];
-        const monitoredStream = streamGrokWithTransparentMonitor(
-          stream,
-          monitorMessages,
-          body,
-          signal,
-        );
-        recordSopEvent(body, {
-          phase: "execution_check",
-          status: "pass",
-          violations: [],
-          correctionRounds: 0,
-          action: "stream_grok_responses_monitored",
-        });
-        return streamResponse(monitoredStream);
-      }
-
       recordSopEvent(body, {
         phase: "execution_check",
         status: "pass",
         violations: [],
         correctionRounds: 0,
-        action: "stream_grok_responses",
+        action: strictMonitorEnabled()
+          ? "stream_grok_responses_sop_disabled"
+          : "stream_grok_responses",
       });
       return streamResponse(stream);
     }
@@ -287,150 +263,6 @@ export async function runControlledChat(
       { status: 502 },
     );
   }
-}
-
-function streamGrokWithTransparentMonitor(
-  source: ReadableStream<Uint8Array>,
-  monitorMessages: ChatParam[],
-  body: ChatRequestBody,
-  signal?: AbortSignal,
-): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-
-  return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const reader = source.getReader();
-      let raw = "";
-      let pending = "";
-      let mediaStarted = false;
-
-      const enqueue = (text: string) => {
-        if (text) controller.enqueue(encoder.encode(text));
-      };
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          raw += chunk;
-
-          if (mediaStarted) continue;
-          pending += chunk;
-          const markerAt = pending.indexOf(MEDIA_MARKER);
-          if (markerAt >= 0) {
-            enqueue(pending.slice(0, markerAt));
-            pending = "";
-            mediaStarted = true;
-            continue;
-          }
-
-          const safeLen = Math.max(
-            0,
-            pending.length - (MEDIA_MARKER.length - 1),
-          );
-          if (safeLen > 0) {
-            enqueue(pending.slice(0, safeLen));
-            pending = pending.slice(safeLen);
-          }
-        }
-        raw += decoder.decode();
-        if (!mediaStarted) enqueue(pending);
-
-        const parsed = parseStreamingText(raw);
-        const media = parseMediaSentinel(raw);
-        const result = await runMonitor(
-          monitorMessages,
-          {
-            // Grok already uses URL/link citations plus the media sentinel. Do
-            // not apply numeric [n] RAG citation stripping to this path.
-            allowedSources: -1,
-            requireCitations: false,
-            signal,
-          },
-          parsed.text,
-        );
-        recordSopEvent(body, {
-          phase: "answer_check",
-          status: result.action === "emit" ? "pass" : "fail",
-          violations: result.violations,
-          correctionRounds: result.correctionRounds,
-          action: `grok_${result.action}`,
-        });
-        if (result.correctionRounds > 0) {
-          recordSopEvent(body, {
-            phase: "correction_loop",
-            status: result.action === "emit" ? "pass" : "fail",
-            violations: result.violations,
-            correctionRounds: result.correctionRounds,
-            action: `grok_${result.action}`,
-          });
-        }
-        recordSopEvent(body, {
-          phase: result.action,
-          status: result.action === "emit" ? "pass" : "fail",
-          violations: result.violations,
-          correctionRounds: result.correctionRounds,
-          action: `grok_${result.action}`,
-        });
-
-        if (result.correctionRounds > 0 || result.action !== "emit") {
-          enqueue(buildVisibleSopCorrection(result));
-        }
-        enqueue(encodeMediaSentinel(media));
-      } catch (err) {
-        if (!signal?.aborted) {
-          enqueue(
-            `\n\n<think>\nSOP control review failed after streaming: ${
-              err instanceof Error ? err.message : "unknown error"
-            }\n</think>`,
-          );
-        }
-      } finally {
-        controller.close();
-      }
-    },
-  });
-}
-
-function buildVisibleSopCorrection(result: MonitorResult): string {
-  const status =
-    result.action === "emit"
-      ? `corrected after ${result.correctionRounds} round${
-          result.correctionRounds === 1 ? "" : "s"
-        }`
-      : "refused after review";
-  const note = result.controlNote
-    ? `\n- ${result.controlNote}`
-    : "";
-  const heading =
-    result.action === "emit" ? "### SOP 修正版" : "### SOP 控制結果";
-  return `\n\n<think>\nSOP control review\n- Original Grok answer was streamed first.\n- Post-stream SOP status: ${status}.${note}\n</think>\n\n${heading}\n\n${result.text}`;
-}
-
-function encodeMediaSentinel(media: ReturnType<typeof parseMediaSentinel>): string {
-  const hasMedia =
-    media.citations.length > 0 ||
-    media.images.length > 0 ||
-    media.imageRefs.length > 0 ||
-    media.videos.length > 0 ||
-    media.files.length > 0 ||
-    media.artifacts.length > 0 ||
-    media.xai.costInUsdTicks > 0;
-  if (!hasMedia) return "";
-  return `\n${MEDIA_MARKER}${Buffer.from(
-    JSON.stringify({
-      citations: media.citations,
-      images: media.images,
-      imageRefs: media.imageRefs,
-      videos: media.videos,
-      files: media.files,
-      artifacts: media.artifacts,
-      xai: media.xai,
-    }),
-    "utf-8",
-  ).toString("base64")}`;
 }
 
 function lastUserText(messages: UIMessage[]): string {

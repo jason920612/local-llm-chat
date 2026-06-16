@@ -37,6 +37,42 @@ import { FilePreview, isPreviewable } from "./FilePreview";
 import { ImageViewer, VideoPlayer } from "./MediaViewer";
 import { Artifact } from "./Artifact";
 
+const SOP_VISIBLE_MARKERS = ["### SOP 修正版", "### SOP 控制結果"];
+
+function searchedImageIds(answer: string): string[] {
+  const ids: string[] = [];
+  for (const node of interpretGrokRenderSyntax(answer)) {
+    if (node.kind !== "grok_searched_image") continue;
+    if (!ids.includes(node.imageId)) ids.push(node.imageId);
+  }
+  return ids;
+}
+
+function assistantAnswerPresentation(answer: string): {
+  displayAnswer: string;
+  debugNotices: string[];
+} {
+  for (const marker of SOP_VISIBLE_MARKERS) {
+    const idx = answer.lastIndexOf(marker);
+    if (idx >= 0) {
+      const original = answer.slice(0, idx).trim();
+      const ids = searchedImageIds(original);
+      const debugNotices = [
+        "SOP replaced the original Grok answer; showing the corrected final answer.",
+      ];
+      if (ids.length > 0) {
+        debugNotices.push(
+          `Original Grok answer contained searched-image markers: ${ids.join(
+            ", ",
+          )}. If no images render, the provider did not supply matching image metadata for those ids.`,
+        );
+      }
+      return { displayAnswer: answer.slice(idx).trim(), debugNotices };
+    }
+  }
+  return { displayAnswer: answer, debugNotices: [] };
+}
+
 function AssistantBody({
   answer,
   images,
@@ -82,14 +118,20 @@ function AssistantBody({
       className="my-2 max-h-72 cursor-zoom-in rounded-lg border border-border object-contain hover:opacity-90"
     />
   );
-  const grokImageFallbackEl = (imageId: string, size: string, key: string) => (
+  const grokImageFallbackEl = (
+    imageId: string,
+    size: string,
+    reason: string,
+    key: string,
+  ) => (
     <div
       key={key}
-      className="my-2 max-w-md rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-muted"
+      className="my-2 max-w-md rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-muted"
       title={`render_searched_image image_id=${imageId} size=${size}`}
     >
-      Grok searched image: {imageId}
+      Grok searched image unresolved: {imageId}
       <span className="ml-2 uppercase opacity-70"> {size}</span>
+      <div className="mt-1 opacity-80">{reason}</div>
     </div>
   );
   const videoEl = (src: string, key: string) => (
@@ -222,9 +264,15 @@ function AssistantBody({
         if (imgs[i]) {
           usedImg.add(i);
           nodes.push(imageEl(imgs[i], `grok${k}`));
-        } else {
+        } else if (!streaming) {
+          const reason =
+            imgRefs.length > 0
+              ? "No matching imageRef URL was captured for this id."
+              : imgs.length > 0
+                ? "Images were captured, but no logical imageRefs were captured."
+                : "No image metadata was captured for this marker.";
           nodes.push(
-            grokImageFallbackEl(node.imageId, node.size, `grok${k}`),
+            grokImageFallbackEl(node.imageId, node.size, reason, `grok${k}`),
           );
         }
       }
@@ -260,6 +308,20 @@ function AssistantBody({
       {leftVids.map((s, i) => videoEl(s, `lv${i}`))}
       {leftFiles.map((f, i) => fileInline(f, `lf${i}`))}
     </>
+  );
+}
+
+function DebugNotices({ notices }: { notices: string[] }) {
+  if (notices.length === 0) return null;
+  return (
+    <div className="mt-3 max-w-2xl rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-muted">
+      <div className="mb-1 font-medium text-amber-200">Debug</div>
+      <ul className="space-y-1">
+        {notices.map((notice, i) => (
+          <li key={i}>{notice}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -438,9 +500,12 @@ export function MessageBubble({
   const { thinking, answer, thinkingStreaming } = isUser
     ? { thinking: "", answer: message.content, thinkingStreaming: false }
     : parseThinking(message.content);
+  const { displayAnswer, debugNotices } = isUser
+    ? { displayAnswer: answer, debugNotices: [] }
+    : assistantAnswerPresentation(answer);
 
   async function copyMessage() {
-    const text = isUser ? message.content : answer;
+    const text = isUser ? message.content : displayAnswer;
     if (!text.trim()) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -658,7 +723,7 @@ export function MessageBubble({
               />
             )}
             <AssistantBody
-              answer={answer}
+              answer={displayAnswer}
               images={message.images}
               imageRefs={message.imageRefs}
               videos={message.videos}
@@ -669,6 +734,7 @@ export function MessageBubble({
               onOpenFile={openFile}
               streaming={streaming}
             />
+            <DebugNotices notices={debugNotices} />
           </>
         )}
 
