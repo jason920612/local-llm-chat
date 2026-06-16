@@ -90,6 +90,27 @@ function init(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_bg_conv
       ON background_jobs(conversation_id);
+
+    CREATE INDEX IF NOT EXISTS idx_bg_status
+      ON background_jobs(status);
+
+    CREATE TABLE IF NOT EXISTS sop_control_events (
+      id                TEXT PRIMARY KEY,
+      conversation_id   TEXT,
+      message_id        TEXT,
+      phase             TEXT NOT NULL,
+      status            TEXT NOT NULL,
+      violations        TEXT NOT NULL,
+      correction_rounds INTEGER NOT NULL DEFAULT 0,
+      action            TEXT NOT NULL,
+      created_at        INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sop_events_created
+      ON sop_control_events(created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_sop_events_conv
+      ON sop_control_events(conversation_id, created_at DESC);
   `);
 
   // Migrations: add columns to pre-existing messages tables (no-op if present).

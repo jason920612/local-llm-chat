@@ -6,9 +6,10 @@
 > The full app below (LM Studio, RAG, server sandbox, etc.) is the Next.js project.
 
 
-A private, fully-local multimodal chat web app. It talks to a model running in
-**LM Studio** (or any `llama.cpp` server exposing an OpenAI-compatible API) — no
-data leaves your machine, no cloud API keys.
+A private-first multimodal chat web app. By default it talks to a model running
+in **LM Studio** (or any `llama.cpp` server exposing an OpenAI-compatible API).
+Optional xAI/Grok features can be enabled with `XAI_API_KEY` for search, media
+generation, cloud STT/TTS, and realtime voice.
 
 > Built with non-Chinese, open models. Recommended chat model is Google **Gemma 4 12B**
 > (vision-capable; **Gemma 3 4B** for low VRAM); RAG embeddings use **nomic-embed-text**.
@@ -21,13 +22,17 @@ data leaves your machine, no cloud API keys.
 - 🎙️ **Voice** — speech-to-text via Whisper (runs in your browser), text-to-speech via OS voices
 - 🌐 **Grok search tool** — the local model can borrow Grok's X (Twitter) + web search via a `grok_search` tool and receive only Grok's synthesized answer (saves context)
 - 🗂️ **Conversation history** — saved locally in SQLite
+- ⚙️ **Background jobs** — local host background commands can run concurrently with limits, log tails, timeout handling, and kill support
+- 📋 **Jobs / SOP console** — a sidebar console shows background jobs and recent SOP control events
+- 🔐 **Secure remote access helpers** — scripts for LAN HTTPS and Cloudflare Tunnel + mTLS client certificates
 
-Everything runs on a single Next.js app + a local SQLite database. Speech-to-text
-and text-to-speech run entirely client-side (no extra services).
+Everything runs on a single Next.js app + a local SQLite database. Without an
+xAI key, speech-to-text and text-to-speech fall back to client-side/browser
+engines. With an xAI key, STT/TTS and realtime voice use xAI APIs.
 
-> Note: the Whisper model (~150MB) is downloaded from the Hugging Face hub on the
-> first voice recording, then cached in your browser. Transcription itself runs
-> locally. TTS uses your OS voices (fully offline).
+> Note: browser microphone access requires a secure context. `localhost` works
+> on the same machine; phones on LAN need HTTPS (or the Cloudflare mTLS tunnel).
+> On mobile, Enter inserts a newline; send with the paper-plane button.
 
 ## Stack
 
@@ -37,8 +42,8 @@ and text-to-speech run entirely client-side (no extra services).
 | Styling | Tailwind CSS v4 |
 | LLM transport | `openai` SDK → LM Studio / llama.cpp OpenAI-compatible API |
 | Storage | SQLite via `better-sqlite3` (conversations + RAG vectors) |
-| Speech-to-text | `@huggingface/transformers` (Whisper, WASM/WebGPU, in-browser) |
-| Text-to-speech | Web Speech API (OS voices, offline) |
+| Speech-to-text | xAI STT when configured; browser Whisper fallback |
+| Text-to-speech | xAI TTS when configured; Web Speech API fallback |
 
 ## Code-enforced SOP control layer
 
@@ -68,6 +73,9 @@ left to a system prompt. Every chat turn runs through a control pipeline
 Toggle via env (`SOP_INTENT_GATE`, `SOP_STRICT_MONITOR`, `SOP_BLOCKING`,
 `SOP_VERIFY_GATE`). The system prompt states the rules, but the gates above are what
 actually enforce them — in code, not on trust.
+
+Recent SOP events are recorded in SQLite and shown in the **Console** sidebar
+view alongside background job telemetry.
 
 ## Grok search tool (xAI)
 
@@ -135,6 +143,14 @@ works and stays installed. `/workspace` remains the file/document layer.
 > outbound network (NAT) by default and runs as root inside its own kernel. Set
 > `SANDBOX_VM_MAX_CONCURRENT` to cap how many VMs run at once.
 
+Local/host background jobs are available through model tools
+(`start_background`, `read_background_log`, `list_background`,
+`kill_background`). They support multiple concurrent jobs, per-conversation and
+global concurrency limits, log persistence, timeouts, kill, and automatic model
+wake-up when a job completes. The first microVM version intentionally keeps the
+existing one-background-`run_code`-per-conversation restriction because the VM
+system disk is shared inside that conversation.
+
 Code blocks have syntax highlighting, a copy button, and auto-collapse when long;
 images open in a lightbox.
 
@@ -163,6 +179,38 @@ npm run dev
 
 Open <http://localhost:3000>.
 
+### Remote access without port forwarding
+
+This repo includes helper scripts for two secure local-to-remote setups:
+
+1. **LAN HTTPS** for phone testing on the same network:
+
+   ```powershell
+   npm run https:setup -- --ip 192.168.1.2
+   npm run https:proxy
+   ```
+
+   This exposes `https://<LAN-IP>:3443` through a local HTTPS proxy. Install the
+   generated root CA on the phone if you use this route.
+
+2. **Cloudflare named tunnel + mTLS** for public access without exposing your
+   origin or using router port forwarding:
+
+   ```powershell
+   cloudflared tunnel login
+   cloudflared tunnel create local-llm-chat
+   cloudflared tunnel route dns local-llm-chat grok.coderyo.com
+   npm run mtls:p12 -- --cert certs/cf-client.crt --key certs/cf-client.key --out certs/grok-phone.p12
+   npm run tunnel:named
+   ```
+
+   Configure Cloudflare mTLS/WAF to block requests where
+   `not cf.tls_client_auth.cert_verified` for the hostname. Without the client
+   certificate, Cloudflare returns 403 before traffic reaches the local app.
+   Chrome/Edge may need QUIC disabled for reliable client-certificate selection;
+   `scripts/open-grok-chrome-mtls.ps1` launches a dedicated Chrome profile with
+   HTTP/3/QUIC disabled.
+
 ### Configuration
 
 All settings come from environment variables (see `.env.example`):
@@ -173,6 +221,10 @@ All settings come from environment variables (see `.env.example`):
 | `LLM_API_KEY` | `lm-studio` | any non-empty string |
 | `LLM_MODEL` | `gemma-3-4b-it` | must match the loaded chat model |
 | `EMBEDDING_MODEL` | `text-embedding-nomic-embed-text-v1.5` | must match the loaded embedding model |
+| `BACKGROUND_MAX_CONCURRENT_GLOBAL` | `8` | local background job global limit |
+| `BACKGROUND_MAX_CONCURRENT_PER_CONVERSATION` | `5` | local background job per-conversation limit |
+| `SOP_STRICT_MONITOR` | `true` | enable strict SOP monitor |
+| `SOP_BLOCKING` | `true` | block unsafe/non-compliant output instead of warning only |
 
 ## Project layout
 
@@ -183,7 +235,11 @@ src/
     page.tsx        chat UI
   components/        React UI components
   lib/              server logic (llm client, db, rag, config)
+  lib/live/         streaming generation + background job manager
+  lib/sop/          code-enforced SOP gates, monitor, validators
 data/                SQLite DB + uploaded files (git-ignored)
+certs/               local certificates (git-ignored)
+logs/                server/tunnel logs (git-ignored)
 ```
 
 ## Roadmap / build phases
@@ -195,6 +251,8 @@ data/                SQLite DB + uploaded files (git-ignored)
 - [x] Phase 4 — RAG (document upload + retrieval + citations)
 - [x] Phase 5 — voice in (Whisper) / out (TTS)
 - [x] Phase 6 — settings, health check & polish
+- [x] Phase 7 — background jobs + Jobs/SOP console
+- [x] Phase 8 — secure phone/remote access helpers (LAN HTTPS, Cloudflare mTLS)
 
 ## License
 

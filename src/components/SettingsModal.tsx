@@ -314,6 +314,10 @@ export function SettingsModal({
                   label="Chunk size / overlap"
                   value={`${config.rag.chunkSize} / ${config.rag.chunkOverlap}`}
                 />
+                <Row
+                  label="Background limits"
+                  value={`${config.background.maxConcurrentPerConversation} / conversation, ${config.background.maxConcurrentGlobal} global`}
+                />
               </div>
 
               <h3 className="mb-1 mt-5 text-xs font-semibold uppercase tracking-wide text-muted">

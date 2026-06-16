@@ -14,6 +14,7 @@ import { Chat } from "./Chat";
 import { DocumentsModal } from "./DocumentsModal";
 import { SettingsModal } from "./SettingsModal";
 import { SkillsModal } from "./SkillsModal";
+import { ControlDashboardModal } from "./ControlDashboardModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useIsMobile } from "@/lib/useIsMobile";
 
@@ -38,6 +39,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
   const [docsOpen, setDocsOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const isMobile = useIsMobile();
@@ -201,6 +203,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
         onDelete={handleDelete}
         onOpenDocs={() => setDocsOpen(true)}
         onOpenSkills={() => setSkillsOpen(true)}
+        onOpenDashboard={() => setDashboardOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <Chat
@@ -228,6 +231,11 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
         onClose={() => setSettingsOpen(false)}
       />
       <SkillsModal open={skillsOpen} onClose={() => setSkillsOpen(false)} />
+      <ControlDashboardModal
+        open={dashboardOpen}
+        activeConversationId={activeId}
+        onClose={() => setDashboardOpen(false)}
+      />
       <ConfirmDialog
         open={pendingDelete !== null}
         danger

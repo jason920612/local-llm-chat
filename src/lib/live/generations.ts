@@ -132,7 +132,10 @@ async function run(gen: ActiveGen, body: ChatRequestBody): Promise<void> {
   let headerVideos: string[] = [];
 
   try {
-    const res = await runControlledChat(body, gen.controller.signal);
+    const res = await runControlledChat(
+      { ...body, conversationId, messageId },
+      gen.controller.signal,
+    );
     headerCitations = parseCitationsHeader(res.headers.get("X-Citations"));
     headerImages = parseImagesHeader(res.headers.get("X-Images"));
     headerVideos = parseVideosHeader(res.headers.get("X-Videos"));

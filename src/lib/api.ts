@@ -1,4 +1,5 @@
 import type {
+  BgStatus,
   Citation,
   Conversation,
   RagDocument,
@@ -273,6 +274,10 @@ export interface AppConfig {
   chatModel: string;
   embeddingModel: string;
   rag: { chunkSize: number; chunkOverlap: number; topK: number };
+  background: {
+    maxConcurrentGlobal: number;
+    maxConcurrentPerConversation: number;
+  };
   sop: {
     intentGate: boolean;
     verifyGate: boolean;
@@ -288,6 +293,86 @@ export async function fetchAppConfig(): Promise<AppConfig> {
   const res = await fetch("/api/config");
   if (!res.ok) throw new Error("Failed to load config");
   return res.json();
+}
+
+// --- Background jobs & SOP console ----------------------------------------
+
+export interface BackgroundJob {
+  id: string;
+  conversationId: string;
+  command: string;
+  status: BgStatus;
+  exitCode: number | null;
+  log: string | null;
+  logTail?: string;
+  startedAt: number;
+  timeoutAt: number;
+  endedAt: number | null;
+}
+
+export interface SopControlEvent {
+  id: string;
+  conversationId: string | null;
+  messageId: string | null;
+  phase:
+    | "intent_check"
+    | "tool_policy_check"
+    | "execution_check"
+    | "answer_check"
+    | "correction_loop"
+    | "emit"
+    | "refuse";
+  status: "pass" | "fail";
+  violations: string[];
+  correctionRounds: number;
+  action: string;
+  createdAt: number;
+}
+
+export async function fetchBackgroundJobs(params: {
+  conversationId?: string | null;
+  status?: BgStatus | null;
+  limit?: number;
+} = {}): Promise<BackgroundJob[]> {
+  const q = new URLSearchParams();
+  if (params.conversationId) q.set("conversationId", params.conversationId);
+  if (params.status) q.set("status", params.status);
+  if (params.limit) q.set("limit", String(params.limit));
+  const res = await fetch(`/api/background/jobs${q.size ? `?${q}` : ""}`);
+  if (!res.ok) throw new Error("Failed to load background jobs");
+  const data = await res.json();
+  return (data.jobs ?? []) as BackgroundJob[];
+}
+
+export async function fetchBackgroundJob(id: string): Promise<BackgroundJob> {
+  const res = await fetch(`/api/background/jobs/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error("Failed to load background job");
+  const data = await res.json();
+  return data.job as BackgroundJob;
+}
+
+export async function killBackgroundJobApi(id: string): Promise<void> {
+  const res = await fetch(
+    `/api/background/jobs/${encodeURIComponent(id)}/kill`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to kill job");
+  }
+}
+
+export async function fetchSopEvents(params: {
+  conversationId?: string | null;
+  limit?: number;
+} = {}): Promise<SopControlEvent[]> {
+  const q = new URLSearchParams();
+  if (params.conversationId) q.set("conversationId", params.conversationId);
+  if (params.limit) q.set("limit", String(params.limit));
+  const res = await fetch(`/api/sop/events${q.size ? `?${q}` : ""}`);
+  if (!res.ok) throw new Error("Failed to load SOP events");
+  const data = await res.json();
+  return (data.events ?? []) as SopControlEvent[];
 }
 
 // --- Runtime settings ------------------------------------------------------

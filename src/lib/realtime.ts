@@ -12,7 +12,7 @@
  * against xAI's spec; this is a best-effort implementation.
  */
 
-const WS_URL = "wss://api.x.ai/v1/realtime";
+const WS_URL = "wss://api.x.ai/v1/realtime?model=grok-voice-latest";
 const SAMPLE_RATE = 24000;
 
 export interface RealtimeCallbacks {
@@ -73,12 +73,24 @@ export class RealtimeSession {
         JSON.stringify({
           type: "session.update",
           session: {
-            model: "grok-voice-latest",
             voice,
-            modalities: ["audio", "text"],
-            input_audio_format: "pcm16",
-            output_audio_format: "pcm16",
-            turn_detection: { type: "server_vad" },
+            instructions:
+              "You are a concise, helpful voice assistant. Reply in the user's language.",
+            audio: {
+              input: {
+                format: { type: "audio/pcm", rate: SAMPLE_RATE },
+                transcription: { model: "grok-transcribe" },
+              },
+              output: {
+                format: { type: "audio/pcm", rate: SAMPLE_RATE },
+              },
+            },
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.45,
+              silence_duration_ms: 900,
+              prefix_padding_ms: 500,
+            },
           },
         }),
       );
@@ -114,7 +126,13 @@ export class RealtimeSession {
   }
 
   private handle(raw: string): void {
-    let msg: { type?: string; delta?: string; transcript?: string };
+    let msg: {
+      type?: string;
+      delta?: string;
+      transcript?: string;
+      error?: { message?: string };
+      item?: { content?: Array<{ transcript?: string; text?: string }> };
+    };
     try {
       msg = JSON.parse(raw);
     } catch {
@@ -131,11 +149,19 @@ export class RealtimeSession {
       case "conversation.item.input_audio_transcription.delta":
         if (msg.delta) this.cb.onUserText?.(msg.delta);
         break;
+      case "conversation.item.input_audio_transcription.updated":
+      case "conversation.item.input_audio_transcription.completed": {
+        const transcript =
+          msg.transcript ??
+          msg.item?.content?.map((c) => c.transcript ?? c.text ?? "").join(" ");
+        if (transcript) this.cb.onUserText?.(transcript);
+        break;
+      }
       case "response.done":
         this.cb.onStatus?.("listening");
         break;
       case "error":
-        this.cb.onError?.(msg.transcript || "realtime error");
+        this.cb.onError?.(msg.error?.message || msg.transcript || "realtime error");
         break;
     }
   }

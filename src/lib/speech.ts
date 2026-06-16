@@ -131,21 +131,44 @@ export async function transcribe(blob: Blob): Promise<string> {
   const fd = new FormData();
   fd.append("file", file, name);
   const res = await fetch("/api/stt", { method: "POST", body: fd });
-
-  if (res.status === 503) return transcribeLocal(blob); // no key → offline whisper
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `STT failed (${res.status})`);
+    try {
+      return await transcribeLocal(blob);
+    } catch (fallbackErr) {
+      const data = await res.json().catch(() => ({}));
+      const cloudError = data.error || `STT failed (${res.status})`;
+      const localError =
+        fallbackErr instanceof Error ? fallbackErr.message : "local STT failed";
+      throw new Error(`${cloudError}; local fallback failed: ${localError}`);
+    }
   }
+
   const data = await res.json();
-  return typeof data.text === "string" ? data.text.trim() : "";
+  const text = typeof data.text === "string" ? data.text.trim() : "";
+  if (text) return text;
+  return transcribeLocal(blob);
+}
+
+export function mediaPermissionBlockedReason(): string | null {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return "語音輸入只能在瀏覽器中使用";
+  }
+
+  if (!window.isSecureContext) {
+    return "手機瀏覽器需要 HTTPS 才能使用麥克風；目前的 LAN HTTP 網址會被瀏覽器封鎖";
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return "這個瀏覽器沒有開放麥克風存取 API";
+  }
+
+  if (typeof MediaRecorder === "undefined") {
+    return "這個瀏覽器不支援錄音";
+  }
+
+  return null;
 }
 
 export function recordingSupported(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof navigator !== "undefined" &&
-    !!navigator.mediaDevices?.getUserMedia &&
-    typeof MediaRecorder !== "undefined"
-  );
+  return mediaPermissionBlockedReason() === null;
 }

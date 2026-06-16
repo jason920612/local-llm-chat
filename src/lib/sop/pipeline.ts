@@ -16,6 +16,7 @@ import { grokSearchTool, generateImageTool } from "../grok/tool";
 import { streamGrokResponses } from "../grok/responses";
 import { skillsSummary } from "../skills";
 import { compactConversation } from "../compaction";
+import { insertSopControlEvent, type SopControlEvent } from "../repo";
 import type { Citation } from "../types";
 import { callStructured } from "./structured";
 import {
@@ -34,6 +35,24 @@ import { runMonitor, type MonitorResult } from "./monitor";
 type ChatParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
 const RAG_REFUSAL = "The provided documents do not contain this information.";
+
+function recordSopEvent(
+  body: ChatRequestBody,
+  event: Omit<
+    SopControlEvent,
+    "id" | "createdAt" | "conversationId" | "messageId"
+  >,
+): void {
+  try {
+    insertSopControlEvent({
+      conversationId: body.conversationId ?? null,
+      messageId: body.messageId ?? null,
+      ...event,
+    });
+  } catch {
+    /* monitoring must never break chat generation */
+  }
+}
 
 /**
  * Return a copy of `messages` with a volatile time note appended to the LAST
@@ -98,6 +117,13 @@ export async function runControlledChat(
     // client-side image tool). A frontier model needs no intent gate or
     // scold-correction, so we return its answer directly.
     if (chatTarget() === "grok") {
+      recordSopEvent(body, {
+        phase: "tool_policy_check",
+        status: "pass",
+        violations: [],
+        correctionRounds: 0,
+        action: "grok_native",
+      });
       const systemPrompt = buildSystemPrompt({
         hasImages,
         ragContext,
@@ -124,17 +150,38 @@ export async function runControlledChat(
         summary,
         signal,
       );
+      recordSopEvent(body, {
+        phase: "execution_check",
+        status: "pass",
+        violations: [],
+        correctionRounds: 0,
+        action: "stream_grok_responses",
+      });
       return streamResponse(stream);
     }
 
     // GATE 1 — intent (code short-circuit). Local models only.
     if (config.sop.intentGate) {
       const clarification = await runIntentGate(messages);
+      recordSopEvent(body, {
+        phase: "intent_check",
+        status: clarification ? "fail" : "pass",
+        violations: clarification ? ["ambiguous request"] : [],
+        correctionRounds: 0,
+        action: clarification ? "clarify" : "proceed",
+      });
       if (clarification) return textResponse(clarification);
     }
 
     // Local model borrowing Grok tools (search + image) via function calling.
     const useTools = Boolean(body.useGrok) && config.grok.enabled;
+    recordSopEvent(body, {
+      phase: "tool_policy_check",
+      status: "pass",
+      violations: [],
+      correctionRounds: 0,
+      action: useTools ? "grok_tool_enabled" : "no_external_tool",
+    });
 
     const systemPrompt = buildSystemPrompt({
       hasImages,
@@ -150,6 +197,13 @@ export async function runControlledChat(
     // Grok tool path: the model can call grok_search (X + web) and generate_image;
     // we resolve them server-side and finalize with citations + generated images.
     if (useTools) {
+      recordSopEvent(body, {
+        phase: "execution_check",
+        status: "pass",
+        violations: [],
+        correctionRounds: 0,
+        action: "run_with_grok_tool",
+      });
       return await runWithGrokTool(openaiMessages, citations, signal);
     }
 
@@ -160,9 +214,39 @@ export async function runControlledChat(
         requireCitations: allowedSources > 0,
         signal,
       });
+      recordSopEvent(body, {
+        phase: "answer_check",
+        status: result.action === "emit" ? "pass" : "fail",
+        violations: result.violations,
+        correctionRounds: result.correctionRounds,
+        action: result.action,
+      });
+      if (result.correctionRounds > 0) {
+        recordSopEvent(body, {
+          phase: "correction_loop",
+          status: result.action === "emit" ? "pass" : "fail",
+          violations: result.violations,
+          correctionRounds: result.correctionRounds,
+          action: result.action,
+        });
+      }
+      recordSopEvent(body, {
+        phase: result.action,
+        status: result.action === "emit" ? "pass" : "fail",
+        violations: result.violations,
+        correctionRounds: result.correctionRounds,
+        action: result.action,
+      });
       return monitorResponse(result, citations);
     }
 
+    recordSopEvent(body, {
+      phase: "execution_check",
+      status: "pass",
+      violations: [],
+      correctionRounds: 0,
+      action: config.sop.blocking ? "blocking" : "streaming",
+    });
     return config.sop.blocking
       ? await runBlocking(openaiMessages, allowedSources, citations, signal)
       : await runStreaming(openaiMessages, allowedSources, citations, signal);

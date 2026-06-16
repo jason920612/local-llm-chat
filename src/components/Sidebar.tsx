@@ -8,6 +8,7 @@ import {
   Pencil,
   Bot,
   Library,
+  Activity,
   Settings,
   Link2,
   Check,
@@ -28,6 +29,7 @@ export function Sidebar({
   onDelete,
   onOpenDocs,
   onOpenSkills,
+  onOpenDashboard,
   onOpenSettings,
 }: {
   conversations: Conversation[];
@@ -42,6 +44,7 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onOpenDocs: () => void;
   onOpenSkills: () => void;
+  onOpenDashboard: () => void;
   onOpenSettings: () => void;
 }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -152,6 +155,13 @@ export function Sidebar({
         >
           <Sparkles size={15} />
           <span className="flex-1 text-left">Skills</span>
+        </button>
+        <button
+          onClick={onOpenDashboard}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted hover:bg-surface-2 hover:text-foreground"
+        >
+          <Activity size={15} />
+          <span className="flex-1 text-left">Console</span>
         </button>
         <button
           onClick={onOpenSettings}

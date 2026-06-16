@@ -1,0 +1,7 @@
+tunnel: YOUR_TUNNEL_ID
+credentials-file: C:\Users\jason\.cloudflared\YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: chat.example.com
+    service: http://127.0.0.1:3000
+  - service: http_status:404

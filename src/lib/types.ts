@@ -63,6 +63,13 @@ export interface Conversation {
   updatedAt: number;
 }
 
+export type BgStatus =
+  | "running"
+  | "exited"
+  | "killed"
+  | "timeout"
+  | "terminated";
+
 export interface RagDocument {
   id: string;
   name: string;
@@ -75,6 +82,8 @@ export interface RagDocument {
 export interface ChatRequestBody {
   messages: Pick<UIMessage, "role" | "content" | "images">[];
   conversationId?: string;
+  /** Assistant message id for SOP/job telemetry correlation. */
+  messageId?: string;
   /** Whether to ground the answer in uploaded documents. */
   useRag?: boolean;
   /** Whether to expose the Grok X/web search tool to the model. */

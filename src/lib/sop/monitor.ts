@@ -12,6 +12,7 @@ import {
 type ChatParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
 const RAG_REFUSAL = "The provided documents do not contain this information.";
+const CONTROL_FAILURE_PREFIX = "Control check failed";
 const UNFIXABLE_REFUSAL =
   "I can't give a properly sourced answer here — the available information does not support a citable response.";
 
@@ -98,6 +99,9 @@ export interface MonitorResult {
   text: string;
   /** Neutral, user-safe note about what monitoring corrected (no scolding). */
   controlNote: string | null;
+  violations: string[];
+  correctionRounds: number;
+  action: "emit" | "refuse";
 }
 
 async function generate(
@@ -173,6 +177,7 @@ export async function runMonitor(
 ): Promise<MonitorResult> {
   let correctionRounds = 0;
   let lastReasoning = "";
+  let lastViolations: string[] = [];
   let draft: string;
   if (initialDraft != null) {
     draft = stripBoilerplate(initialDraft);
@@ -192,6 +197,7 @@ export async function runMonitor(
       ...det.violations,
       ...(config.sop.verifyGate ? await audit(messages, draft) : []),
     ];
+    lastViolations = [...new Set(violations)];
 
     if (violations.length === 0) break;
 
@@ -204,11 +210,21 @@ export async function runMonitor(
       if (opts.requireCitations && stillUncited) {
         return {
           text: UNFIXABLE_REFUSAL,
+          violations: lastViolations,
+          correctionRounds,
+          action: "refuse",
           controlNote:
             "Control check: refused — could not produce a properly cited answer after correction.",
         };
       }
-      break;
+      return {
+        text: `${CONTROL_FAILURE_PREFIX}: ${lastViolations.join("; ")}`,
+        controlNote:
+          "Control check: refused ??the answer did not pass mandatory checks after correction.",
+        violations: lastViolations,
+        correctionRounds,
+        action: "refuse",
+      };
     }
 
     // Harsh internal correction — never shown to the user.
@@ -245,5 +261,11 @@ export async function runMonitor(
         }) to meet sourcing and accuracy rules.`
       : null;
 
-  return { text: draft, controlNote };
+  return {
+    text: draft,
+    controlNote,
+    violations: [],
+    correctionRounds,
+    action: "emit",
+  };
 }

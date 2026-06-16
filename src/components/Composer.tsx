@@ -2,7 +2,11 @@
 
 import { useRef, useEffect, useState } from "react";
 import { Send, Square, Paperclip, X, Mic, Loader2, FileUp } from "lucide-react";
-import { recordingSupported, transcribe } from "@/lib/speech";
+import {
+  mediaPermissionBlockedReason,
+  recordingSupported,
+  transcribe,
+} from "@/lib/speech";
 import type { SandboxFileMeta } from "@/lib/types";
 
 export function Composer({
@@ -17,6 +21,7 @@ export function Composer({
   onRemoveAttachment,
   sandboxFiles,
   onRemoveSandboxFile,
+  isMobile,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -29,6 +34,7 @@ export function Composer({
   onRemoveAttachment: (index: number) => void;
   sandboxFiles: SandboxFileMeta[];
   onRemoveSandboxFile: (name: string) => void;
+  isMobile?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -40,10 +46,14 @@ export function Composer({
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
+  const [voiceUnavailableReason, setVoiceUnavailableReason] = useState<
+    string | null
+  >(null);
   const [sttError, setSttError] = useState<string | null>(null);
 
   useEffect(() => {
     setVoiceSupported(recordingSupported());
+    setVoiceUnavailableReason(mediaPermissionBlockedReason());
   }, []);
 
   useEffect(() => {
@@ -57,6 +67,11 @@ export function Composer({
 
   async function startRecording() {
     setSttError(null);
+    const blockedReason = mediaPermissionBlockedReason();
+    if (blockedReason) {
+      setSttError(blockedReason);
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream);
@@ -89,7 +104,7 @@ export function Composer({
       setRecording(true);
     } catch {
       setRecording(false);
-      setSttError("無法存取麥克風（請確認權限，且網址需為 localhost 或 https）");
+      setSttError("無法存取麥克風，請確認瀏覽器權限與系統麥克風設定");
     }
   }
 
@@ -100,6 +115,7 @@ export function Composer({
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (isMobile) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!streaming && canSend) onSend();
@@ -185,35 +201,34 @@ export function Composer({
             onChange={handleFileInput}
           />
 
-          {voiceSupported && (
-            <button
-              onClick={recording ? stopRecording : startRecording}
-              disabled={disabled || transcribing}
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl disabled:opacity-40 ${
-                recording
-                  ? "bg-red-500/20 text-red-400"
-                  : "text-muted hover:bg-surface hover:text-foreground"
-              }`}
-              title={
-                recording
-                  ? "Stop recording"
-                  : transcribing
-                    ? "Transcribing…"
-                    : "Record voice (Whisper, in-browser)"
-              }
-            >
-              {transcribing ? (
-                <Loader2 size={18} className="animate-spin" />
-              ) : recording ? (
-                <span className="relative flex h-2.5 w-2.5">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
-                </span>
-              ) : (
-                <Mic size={18} />
-              )}
-            </button>
-          )}
+          <button
+            onClick={recording ? stopRecording : startRecording}
+            disabled={disabled || transcribing || !voiceSupported}
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl disabled:cursor-not-allowed disabled:opacity-40 ${
+              recording
+                ? "bg-red-500/20 text-red-400"
+                : "text-muted hover:bg-surface hover:text-foreground"
+            }`}
+            title={
+              voiceUnavailableReason ??
+              (recording
+                ? "停止錄音"
+                : transcribing
+                  ? "語音辨識中…"
+                  : "語音輸入")
+            }
+          >
+            {transcribing ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : recording ? (
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
+              </span>
+            ) : (
+              <Mic size={18} />
+            )}
+          </button>
 
           <textarea
             ref={ref}
@@ -223,7 +238,11 @@ export function Composer({
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Send a message or attach an image…  (Enter to send)"
+            placeholder={
+              isMobile
+                ? "Send a message or attach an image..."
+                : "Send a message or attach an image...  (Enter to send)"
+            }
             className="max-h-[200px] flex-1 resize-none bg-transparent py-1.5 text-base outline-none placeholder:text-muted disabled:opacity-50 sm:text-sm"
             // Browser extensions (writing assistants, etc.) inject attributes
             // into inputs after SSR; suppress the resulting benign hydration diff.
@@ -250,9 +269,9 @@ export function Composer({
           )}
         </div>
       </div>
-      {sttError ? (
+      {sttError || voiceUnavailableReason ? (
         <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-red-400">
-          {sttError}
+          {sttError ?? voiceUnavailableReason}
         </p>
       ) : (
         <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-muted">

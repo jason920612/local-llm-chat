@@ -10,6 +10,7 @@ export async function GET() {
     chatModel: config.llm.model,
     embeddingModel: config.llm.embeddingModel,
     rag: config.rag,
+    background: config.background,
     sop: config.sop,
     grok: { enabled: config.grok.enabled, model: config.grok.model },
   });

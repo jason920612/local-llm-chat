@@ -6,6 +6,7 @@ import {
   updateBackgroundJob,
   getBackgroundJob,
   listBackgroundJobs,
+  listBackgroundJobsForDashboard,
   listRunningBackgroundJobs,
   addMessage,
   getConversation,
@@ -29,7 +30,6 @@ import { publishConv } from "./bus";
  * any still-"running" rows to "terminated" and wake the model about them.
  */
 
-const MAX_CONCURRENT = 5;
 const MAX_SECONDS = 7 * 24 * 60 * 60; // 7 days
 const LOG_CAP = 256 * 1024; // ring-buffer cap per job
 const WAKE_RETRY_MS = 1500;
@@ -56,6 +56,10 @@ function countRunning(conversationId: string): number {
   return n;
 }
 
+function countRunningGlobal(): number {
+  return live.size;
+}
+
 export interface StartResult {
   id?: string;
   error?: string;
@@ -78,8 +82,17 @@ export function startBackground(
         "background jobs are unavailable with the microVM sandbox (run_code only). Use a foreground run_code call instead.",
     };
   }
-  if (countRunning(conversationId) >= MAX_CONCURRENT) {
-    return { error: `concurrency limit reached (max ${MAX_CONCURRENT} per conversation)` };
+  const perConversationLimit = config.background.maxConcurrentPerConversation;
+  const globalLimit = config.background.maxConcurrentGlobal;
+  if (countRunning(conversationId) >= perConversationLimit) {
+    return {
+      error: `concurrency limit reached (max ${perConversationLimit} per conversation)`,
+    };
+  }
+  if (countRunningGlobal() >= globalLimit) {
+    return {
+      error: `global background concurrency limit reached (max ${globalLimit})`,
+    };
   }
   const secs = Math.max(
     1,
@@ -169,6 +182,29 @@ export function readBackgroundLog(
   };
 }
 
+/** Dashboard/admin read: returns a job with live log tail when available. */
+export function getBackgroundJobDetail(
+  id: string,
+  tailChars = 8000,
+): (BackgroundJob & { logTail: string }) | null {
+  const l = live.get(id);
+  if (l) {
+    return {
+      ...l.job,
+      status: "running",
+      exitCode: null,
+      log: l.log,
+      logTail: l.log.slice(-tailChars) || "(no output yet)",
+    };
+  }
+  const job = getBackgroundJob(id);
+  if (!job) return null;
+  return {
+    ...job,
+    logTail: (job.log ?? "").slice(-tailChars) || "(no output)",
+  };
+}
+
 /** Force-kill a running job (only one belonging to this conversation). */
 export function killBackground(conversationId: string, id: string): boolean {
   const l = live.get(id);
@@ -182,9 +218,24 @@ export function killBackground(conversationId: string, id: string): boolean {
   return true;
 }
 
+/** Dashboard/admin kill by id. Ownership is resolved from the persisted row. */
+export function killBackgroundJob(id: string): boolean {
+  const job = getBackgroundJob(id);
+  if (!job) return false;
+  return killBackground(job.conversationId, id);
+}
+
 /** List this conversation's background jobs (newest first). */
 export function listBackground(conversationId: string): BackgroundJob[] {
   return listBackgroundJobs(conversationId);
+}
+
+export function listBackgroundDashboard(filters: {
+  conversationId?: string | null;
+  status?: BgStatus | null;
+  limit?: number;
+} = {}): BackgroundJob[] {
+  return listBackgroundJobsForDashboard(filters);
 }
 
 function finish(id: string, status: BgStatus, code: number | null): void {

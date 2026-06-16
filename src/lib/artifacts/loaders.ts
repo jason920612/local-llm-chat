@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * Runtime CDN loaders for the heavy, client-only rendering libraries
- * (mermaid, vega-embed, pyodide). They are loaded on demand via injected
- * <script> tags so they never enter the Next.js bundle or run during SSR.
+ * Runtime loaders for heavy, client-only rendering libraries. CDN-only tools
+ * are loaded on demand via injected <script> tags; Vega-Lite charts use the
+ * locally installed vega/vega-lite packages so chart artifacts work offline.
  * Each loader is memoized so the library is fetched at most once per page.
  */
 
@@ -127,13 +127,21 @@ let vegaReady: Promise<VegaEmbed> | null = null;
 export function loadVega(): Promise<VegaEmbed> {
   if (!vegaReady) {
     vegaReady = (async () => {
-      // vega-embed needs vega + vega-lite present first.
-      await loadScript("https://cdn.jsdelivr.net/npm/vega@5");
-      await loadScript("https://cdn.jsdelivr.net/npm/vega-lite@5");
-      await loadScript("https://cdn.jsdelivr.net/npm/vega-embed@6");
-      const v = (window as AnyWindow).vegaEmbed;
-      if (!v) throw new Error("vega-embed did not load");
-      return v;
+      const [vega, vegaLite] = await Promise.all([
+        import("vega"),
+        import("vega-lite"),
+      ]);
+      const embed: VegaEmbed = async (el, spec, opts = {}) => {
+        el.innerHTML = "";
+        const compiled = vegaLite.compile(spec as never).spec;
+        const runtime = vega.parse(compiled);
+        const view = new vega.View(runtime, {
+          renderer: String(opts.renderer ?? "canvas") as "canvas" | "svg",
+        }).initialize(el);
+        await view.runAsync();
+        return { finalize: () => view.finalize() };
+      };
+      return embed;
     })();
   }
   return vegaReady;

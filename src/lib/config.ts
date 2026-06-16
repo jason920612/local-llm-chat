@@ -82,6 +82,18 @@ export const config = {
     },
   },
   /**
+   * Host/local background jobs launched by the model through start_background.
+   * These limits intentionally do not affect microVM run_code backgrounding.
+   */
+  background: {
+    maxConcurrentGlobal: Number(
+      process.env.BACKGROUND_MAX_CONCURRENT_GLOBAL ?? 8,
+    ),
+    maxConcurrentPerConversation: Number(
+      process.env.BACKGROUND_MAX_CONCURRENT_PER_CONVERSATION ?? 5,
+    ),
+  },
+  /**
    * SOP control layer. The SOP is enforced in CODE, not by trusting the prompt.
    * These flags toggle the code-controlled gates around every chat turn.
    */
@@ -94,7 +106,7 @@ export const config = {
     verifyGate: envBool("SOP_VERIFY_GATE", false),
     // Blocking mode: generate the full answer, run deterministic + verify gates,
     // and enforce/refuse in code BEFORE sending. Trades streaming UX for control.
-    blocking: envBool("SOP_BLOCKING", false),
+    blocking: envBool("SOP_BLOCKING", true),
     // Strict monitor: the most aggressive path. Generate -> monitor (deterministic
     // + LLM audit) -> harsh internal scold-correction on failure -> sanitize so
     // the scolding never leaks -> refuse if still non-compliant. Requires concrete

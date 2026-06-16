@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X, Mic, PhoneOff } from "lucide-react";
 import { RealtimeSession } from "@/lib/realtime";
+import { mediaPermissionBlockedReason } from "@/lib/speech";
 
 type Status = "connecting" | "listening" | "speaking" | "closed";
 
@@ -25,6 +26,13 @@ export function VoiceMode({
     setUserText("");
     setAssistantText("");
     setStatus("connecting");
+
+    const blockedReason = mediaPermissionBlockedReason();
+    if (blockedReason) {
+      setStatus("closed");
+      setError(blockedReason);
+      return;
+    }
 
     const session = new RealtimeSession({
       onStatus: setStatus,

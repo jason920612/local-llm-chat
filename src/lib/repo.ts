@@ -338,6 +338,25 @@ export interface BackgroundJob {
   endedAt: number | null;
 }
 
+export interface SopControlEvent {
+  id: string;
+  conversationId: string | null;
+  messageId: string | null;
+  phase:
+    | "intent_check"
+    | "tool_policy_check"
+    | "execution_check"
+    | "answer_check"
+    | "correction_loop"
+    | "emit"
+    | "refuse";
+  status: "pass" | "fail";
+  violations: string[];
+  correctionRounds: number;
+  action: string;
+  createdAt: number;
+}
+
 interface BgRow {
   id: string;
   conversation_id: string;
@@ -417,12 +436,128 @@ export function listBackgroundJobs(conversationId: string): BackgroundJob[] {
   return rows.map(rowToBg);
 }
 
+export function listBackgroundJobsForDashboard(filters: {
+  conversationId?: string | null;
+  status?: BgStatus | null;
+  limit?: number;
+} = {}): BackgroundJob[] {
+  const clauses: string[] = [];
+  const args: unknown[] = [];
+  if (filters.conversationId) {
+    clauses.push("conversation_id = ?");
+    args.push(filters.conversationId);
+  }
+  if (filters.status) {
+    clauses.push("status = ?");
+    args.push(filters.status);
+  }
+  const limit = Math.max(1, Math.min(filters.limit ?? 100, 500));
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db
+    .prepare(`SELECT * FROM background_jobs ${where} ORDER BY started_at DESC LIMIT ?`)
+    .all(...args, limit) as BgRow[];
+  return rows.map(rowToBg);
+}
+
 /** Jobs still flagged running (used on boot to reconcile after a restart). */
 export function listRunningBackgroundJobs(): BackgroundJob[] {
   const rows = db
     .prepare(`SELECT * FROM background_jobs WHERE status = 'running'`)
     .all() as BgRow[];
   return rows.map(rowToBg);
+}
+
+// --- SOP control events ----------------------------------------------------
+
+interface SopRow {
+  id: string;
+  conversation_id: string | null;
+  message_id: string | null;
+  phase: SopControlEvent["phase"];
+  status: SopControlEvent["status"];
+  violations: string;
+  correction_rounds: number;
+  action: string;
+  created_at: number;
+}
+
+function rowToSopEvent(r: SopRow): SopControlEvent {
+  let violations: string[] = [];
+  try {
+    violations = JSON.parse(r.violations) as string[];
+  } catch {
+    violations = [];
+  }
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    messageId: r.message_id,
+    phase: r.phase,
+    status: r.status,
+    violations,
+    correctionRounds: r.correction_rounds,
+    action: r.action,
+    createdAt: r.created_at,
+  };
+}
+
+export function insertSopControlEvent(
+  event: Omit<SopControlEvent, "id" | "createdAt"> & {
+    id?: string;
+    createdAt?: number;
+  },
+): SopControlEvent {
+  const full: SopControlEvent = {
+    id: event.id ?? nanoid(),
+    conversationId: event.conversationId ?? null,
+    messageId: event.messageId ?? null,
+    phase: event.phase,
+    status: event.status,
+    violations: event.violations,
+    correctionRounds: event.correctionRounds,
+    action: event.action,
+    createdAt: event.createdAt ?? Date.now(),
+  };
+  db.prepare(
+    `INSERT INTO sop_control_events
+       (id, conversation_id, message_id, phase, status, violations, correction_rounds, action, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    full.id,
+    full.conversationId,
+    full.messageId,
+    full.phase,
+    full.status,
+    JSON.stringify(full.violations),
+    full.correctionRounds,
+    full.action,
+    full.createdAt,
+  );
+  return full;
+}
+
+export function listSopControlEvents(filters: {
+  conversationId?: string | null;
+  limit?: number;
+} = {}): SopControlEvent[] {
+  const limit = Math.max(1, Math.min(filters.limit ?? 100, 500));
+  const rows = filters.conversationId
+    ? (db
+        .prepare(
+          `SELECT * FROM sop_control_events
+           WHERE conversation_id = ?
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(filters.conversationId, limit) as SopRow[])
+    : (db
+        .prepare(
+          `SELECT * FROM sop_control_events
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(limit) as SopRow[]);
+  return rows.map(rowToSopEvent);
 }
 
 // --- RAG documents ---------------------------------------------------------

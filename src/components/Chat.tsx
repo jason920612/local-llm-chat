@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { nanoid } from "nanoid";
 import { Bot, BookOpen, Globe, AudioLines, FolderOpen, Menu } from "lucide-react";
 import type { Conversation, UIMessage, SandboxFileMeta } from "@/lib/types";
@@ -31,6 +38,9 @@ import { Composer } from "./Composer";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { VoiceMode } from "./VoiceMode";
 import { SandboxExplorer } from "./SandboxExplorer";
+import { mediaPermissionBlockedReason, recordingSupported } from "@/lib/speech";
+
+const AUTO_SCROLL_BOTTOM_PX = 96;
 
 export function Chat({
   conversationId,
@@ -68,10 +78,15 @@ export function Chat({
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [voiceUnavailableReason, setVoiceUnavailableReason] = useState<
+    string | null
+  >(null);
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [sandboxFiles, setSandboxFiles] = useState<SandboxFileMeta[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
   const dragDepth = useRef(0);
   // Live-stream state: raw SSE buffer per assistant message id (for parsing
   // partial tokens) and the id currently generating (for stop()).
@@ -88,6 +103,11 @@ export function Chat({
     () => computePath(allMessages, rootChildId),
     [allMessages, rootChildId],
   );
+
+  useEffect(() => {
+    setVoiceSupported(recordingSupported());
+    setVoiceUnavailableReason(mediaPermissionBlockedReason());
+  }, []);
 
   // Add or replace a message in the tree, and select it as its parent's branch
   // (so a newly added/branched message becomes part of the visible path).
@@ -115,6 +135,7 @@ export function Chat({
     if (cid === loadedId.current) return; // already loaded (incl. null === null)
     if (cid && cid === loadingId.current) return; // in-flight (real ids only)
     rawBuffers.current.clear();
+    autoScrollRef.current = true;
     if (!cid) {
       // New chat: clear to an empty thread.
       loadedId.current = null;
@@ -158,6 +179,13 @@ export function Chat({
       if (loadingId.current === cid) loadingId.current = null;
     };
   }, [conversationId]);
+
+  const updateAutoScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    autoScrollRef.current = distanceFromBottom <= AUTO_SCROLL_BOTTOM_PX;
+  }, []);
 
   // Re-fetch the whole tree (used after a truncation broadcast).
   const reloadConversation = useCallback((cid: string) => {
@@ -293,8 +321,10 @@ export function Chat({
     return () => es.close();
   }, [conversationId, applyConvEvent]);
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !autoScrollRef.current) return;
+    el.scrollTo({ top: el.scrollHeight });
   }, [messages]);
 
   // Robust drag-overlay reset: dropping or ending a drag anywhere clears it, and
@@ -614,8 +644,9 @@ export function Chat({
         {grokEnabled && (
           <button
             onClick={() => setVoiceOpen(true)}
-            title="即時語音對話 (xAI Realtime)"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-1 text-xs text-muted transition hover:text-foreground sm:px-3"
+            disabled={!voiceSupported}
+            title={voiceUnavailableReason ?? "即時語音對話 (xAI Realtime)"}
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-1 text-xs text-muted transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 sm:px-3"
           >
             <AudioLines size={13} />
             <span className="hidden lg:inline">Voice</span>
@@ -640,7 +671,11 @@ export function Chat({
         </button>
       </header>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        onScroll={updateAutoScroll}
+        className="flex-1 overflow-y-auto"
+      >
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-2">
@@ -703,6 +738,7 @@ export function Chat({
         onRemoveAttachment={removeAttachment}
         sandboxFiles={sandboxFiles}
         onRemoveSandboxFile={removeSandboxFile}
+        isMobile={isMobile}
       />
 
       <VoiceMode open={voiceOpen} onClose={() => setVoiceOpen(false)} />
