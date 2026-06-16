@@ -150,12 +150,6 @@ const BG_START_FN = "start_background";
 const BG_LOG_FN = "read_background_log";
 const BG_LIST_FN = "list_background";
 const BG_KILL_FN = "kill_background";
-const SEARCHED_IMAGE_MARKER = "[[render_searched_image";
-const SEARCHED_IMAGE_MARKER_RE = /\[\[render_searched_image\b[^\]]*\]\]/g;
-
-function stripSearchedImageMarkers(text: string): string {
-  return text.replace(SEARCHED_IMAGE_MARKER_RE, "");
-}
 
 function looksLikeImageUrl(url: string): boolean {
   try {
@@ -629,39 +623,6 @@ export function streamGrokResponses(
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const enq = (s: string) => controller.enqueue(enc.encode(s));
-      let searchedImagePending = "";
-      const enqOutput = (s: string) => {
-        searchedImagePending += s;
-        while (searchedImagePending) {
-          const start = searchedImagePending.indexOf(SEARCHED_IMAGE_MARKER);
-          if (start < 0) {
-            const keep = Math.min(
-              searchedImagePending.length,
-              SEARCHED_IMAGE_MARKER.length - 1,
-            );
-            const emitLen = searchedImagePending.length - keep;
-            if (emitLen > 0) {
-              enq(searchedImagePending.slice(0, emitLen));
-              searchedImagePending = searchedImagePending.slice(emitLen);
-            }
-            return;
-          }
-
-          if (start > 0) {
-            enq(searchedImagePending.slice(0, start));
-            searchedImagePending = searchedImagePending.slice(start);
-          }
-
-          const end = searchedImagePending.indexOf("]]");
-          if (end < 0) return;
-          searchedImagePending = searchedImagePending.slice(end + 2);
-        }
-      };
-      const flushOutput = () => {
-        if (!searchedImagePending) return;
-        enq(stripSearchedImageMarkers(searchedImagePending));
-        searchedImagePending = "";
-      };
       const emitTool = (tool: string, args: Record<string, unknown> = {}) => {
         const b64 = Buffer.from(
           JSON.stringify({ tool, args }),
@@ -724,7 +685,7 @@ export function streamGrokResponses(
             if (type === "response.output_text.delta") {
               if (thinkOpen && !contentStarted) enq("</think>\n\n");
               contentStarted = true;
-              enqOutput((ev.delta as string) ?? "");
+              enq((ev.delta as string) ?? "");
             } else if (
               type === "response.reasoning_text.delta" ||
               type === "response.reasoning_summary_text.delta"
@@ -1041,7 +1002,7 @@ export function streamGrokResponses(
                 if (t === "response.output_text.delta") {
                   if (thinkOpen && !contentStarted) enq("</think>\n\n");
                   contentStarted = true;
-                  enqOutput((ev.delta as string) ?? "");
+                  enq((ev.delta as string) ?? "");
                 } else if (
                   t === "response.reasoning_text.delta" ||
                   t === "response.reasoning_summary_text.delta"
@@ -1070,8 +1031,6 @@ export function streamGrokResponses(
             /* leave whatever we have */
           }
         }
-        flushOutput();
-
         if (
           !contentStarted &&
           !images.length &&
@@ -1228,7 +1187,7 @@ export async function runGrokResponses(
         ? resp.citations
         : [];
   return {
-    text: stripSearchedImageMarkers(extractText(output)),
+    text: extractText(output),
     reasoning: extractReasoning(output),
     citations: mapGrokCitations(rawCitations, 0),
     images: [...images, ...searchedImages],

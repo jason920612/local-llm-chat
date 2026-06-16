@@ -82,6 +82,16 @@ function AssistantBody({
       className="my-2 max-h-72 cursor-zoom-in rounded-lg border border-border object-contain hover:opacity-90"
     />
   );
+  const grokImageFallbackEl = (imageId: string, size: string, key: string) => (
+    <div
+      key={key}
+      className="my-2 max-w-md rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-muted"
+      title={`render_searched_image image_id=${imageId} size=${size}`}
+    >
+      Grok searched image: {imageId}
+      <span className="ml-2 uppercase opacity-70"> {size}</span>
+    </div>
+  );
   const videoEl = (src: string, key: string) => (
     <div key={key} className="my-2 max-w-md">
       <VideoPlayer src={src} inline />
@@ -147,9 +157,11 @@ function AssistantBody({
   const usedFile = new Set<string>();
   const usedArt = new Set<number>();
   const nodes: React.ReactNode[] = [];
-  const re = /\[\[(image|video|file|artifact):([^\]\n]+)\]\]/g;
+  const re =
+    /\[\[(image|video|file|artifact):([^\]\n]+)\]\]|(?:\*\*)?(?:\[\[\s*)?(?:render\s+)?render_searched_image\s+with\s+image_id\s+is\s+([^\s\]\*]+)\s+size\s+is\s+(?:"([^"\n]+)"|([A-Za-z]+))(?:\s*\]\])?(?:\*\*)?/gi;
   let last = 0;
   let k = 0;
+  let grokImageIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(answer)) !== null) {
     // Drop a stray "image:/video:/file:" label the model may write before a marker.
@@ -162,30 +174,44 @@ function AssistantBody({
           {seg}
         </Markdown>,
       );
-    const ref = m[2].trim();
-    if (m[1] === "image") {
-      const i = parseInt(ref, 10) - 1;
-      if (imgs[i]) {
-        usedImg.add(i);
-        nodes.push(imageEl(imgs[i], `m${k}`));
-      }
-    } else if (m[1] === "video") {
-      const i = parseInt(ref, 10) - 1;
-      if (vids[i]) {
-        usedVid.add(i);
-        nodes.push(videoEl(vids[i], `m${k}`));
-      }
-    } else if (m[1] === "artifact") {
-      const i = parseInt(ref, 10) - 1;
-      if (arts[i]) {
-        usedArt.add(i);
-        nodes.push(artifactEl(arts[i], `m${k}`));
+    if (m[1]) {
+      const ref = m[2].trim();
+      if (m[1] === "image") {
+        const i = parseInt(ref, 10) - 1;
+        if (imgs[i]) {
+          usedImg.add(i);
+          nodes.push(imageEl(imgs[i], `m${k}`));
+        }
+      } else if (m[1] === "video") {
+        const i = parseInt(ref, 10) - 1;
+        if (vids[i]) {
+          usedVid.add(i);
+          nodes.push(videoEl(vids[i], `m${k}`));
+        }
+      } else if (m[1] === "artifact") {
+        const i = parseInt(ref, 10) - 1;
+        if (arts[i]) {
+          usedArt.add(i);
+          nodes.push(artifactEl(arts[i], `m${k}`));
+        }
+      } else {
+        const f = fls.find((x) => x.name === ref);
+        if (f) {
+          usedFile.add(f.name);
+          nodes.push(fileInline(f, `m${k}`));
+        }
       }
     } else {
-      const f = fls.find((x) => x.name === ref);
-      if (f) {
-        usedFile.add(f.name);
-        nodes.push(fileInline(f, `m${k}`));
+      const imageId = m[3] ?? "";
+      const size = m[4] ?? m[5] ?? "SMALL";
+      let i = grokImageIndex;
+      while (i < imgs.length && usedImg.has(i)) i++;
+      grokImageIndex = i + 1;
+      if (imgs[i]) {
+        usedImg.add(i);
+        nodes.push(imageEl(imgs[i], `grok${k}`));
+      } else {
+        nodes.push(grokImageFallbackEl(imageId, size, `grok${k}`));
       }
     }
     last = m.index + m[0].length;
