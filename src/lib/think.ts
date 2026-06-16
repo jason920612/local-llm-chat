@@ -12,19 +12,36 @@ export interface ParsedThinking {
  * Handles the streaming case where </think> hasn't arrived yet.
  */
 export function parseThinking(text: string): ParsedThinking {
-  const start = text.indexOf("<think>");
-  if (start === -1) {
+  if (!text.includes("<think>")) {
     return { thinking: "", answer: text, thinkingStreaming: false };
   }
-  const end = text.indexOf("</think>");
-  if (end === -1) {
-    return {
-      thinking: text.slice(start + 7),
-      answer: text.slice(0, start),
-      thinkingStreaming: true,
-    };
+
+  let answer = "";
+  const thinking: string[] = [];
+  let cursor = 0;
+  let streaming = false;
+
+  while (cursor < text.length) {
+    const start = text.indexOf("<think>", cursor);
+    if (start === -1) {
+      answer += text.slice(cursor);
+      break;
+    }
+    answer += text.slice(cursor, start);
+    const contentStart = start + "<think>".length;
+    const end = text.indexOf("</think>", contentStart);
+    if (end === -1) {
+      thinking.push(text.slice(contentStart));
+      streaming = true;
+      break;
+    }
+    thinking.push(text.slice(contentStart, end));
+    cursor = end + "</think>".length;
   }
-  const thinking = text.slice(start + 7, end).trim();
-  const answer = (text.slice(0, start) + text.slice(end + 8)).trim();
-  return { thinking, answer, thinkingStreaming: false };
+
+  return {
+    thinking: thinking.map((s) => s.trim()).filter(Boolean).join("\n\n---\n\n"),
+    answer: answer.trim(),
+    thinkingStreaming: streaming,
+  };
 }
