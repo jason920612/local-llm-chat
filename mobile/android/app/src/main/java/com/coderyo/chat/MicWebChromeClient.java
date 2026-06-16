@@ -1,29 +1,75 @@
 package com.coderyo.chat;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.webkit.PermissionRequest;
+
+import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeWebChromeClient;
 
 /**
- * Grants the remote page WebView access to the microphone so the existing
- * browser-based voice features (getUserMedia → streaming STT / Whisper) work
- * inside the app. The OS-level RECORD_AUDIO permission is requested separately
- * in {@link MainActivity}.
+ * Lets the remote page use the microphone for the voice / STT features.
+ *
+ * "Could not start audio source" happens when the WebView grants the page-level
+ * audio permission but the app lacks the OS-level RECORD_AUDIO grant — Chromium
+ * then fails to open the mic. So we only grant the page once the OS permission
+ * is actually held, requesting it on demand (and deferring the grant until the
+ * system dialog resolves) the first time the page asks.
  */
 public class MicWebChromeClient extends BridgeWebChromeClient {
-    public MicWebChromeClient(Bridge bridge) {
+    private final MainActivity activity;
+    private PermissionRequest pendingAudioRequest;
+
+    public MicWebChromeClient(Bridge bridge, MainActivity activity) {
         super(bridge);
+        this.activity = activity;
     }
 
     @Override
     public void onPermissionRequest(final PermissionRequest request) {
-        for (String resource : request.getResources()) {
-            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)) {
-                request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
-                return;
+        boolean wantsAudio = false;
+        for (String r : request.getResources()) {
+            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) {
+                wantsAudio = true;
+                break;
             }
         }
-        super.onPermissionRequest(request);
+        if (!wantsAudio) {
+            super.onPermissionRequest(request);
+            return;
+        }
+
+        if (hasOsMicPermission()) {
+            grant(request);
+        } else {
+            // Defer the page grant until the RECORD_AUDIO dialog resolves.
+            pendingAudioRequest = request;
+            activity.requestMicPermission();
+        }
+    }
+
+    private boolean hasOsMicPermission() {
+        return ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void grant(PermissionRequest request) {
+        request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+    }
+
+    /** Called by MainActivity once the RECORD_AUDIO system dialog resolves. */
+    void onOsMicPermissionResult(boolean granted) {
+        if (pendingAudioRequest == null) {
+            return;
+        }
+        PermissionRequest req = pendingAudioRequest;
+        pendingAudioRequest = null;
+        if (granted) {
+            grant(req);
+        } else {
+            req.deny();
+        }
     }
 }

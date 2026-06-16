@@ -25,6 +25,7 @@ public class MainActivity extends BridgeActivity {
     private static final long SHARE_POLL_MS = 500;
 
     private ActivityResultLauncher<Intent> certImportLauncher;
+    private MicWebChromeClient micClient;
     private final List<Uri> pendingShare = new ArrayList<>();
 
     @Override
@@ -50,9 +51,11 @@ public class MainActivity extends BridgeActivity {
 
         // Present the client cert for mTLS, and let the page use the mic.
         getBridge().setWebViewClient(new ClientCertWebViewClient(getBridge()));
-        getBridge().getWebView().setWebChromeClient(new MicWebChromeClient(getBridge()));
+        micClient = new MicWebChromeClient(getBridge(), this);
+        getBridge().getWebView().setWebChromeClient(micClient);
 
-        ensureAudioPermission();
+        // Let the realtime voice agent's audio play without a user gesture.
+        getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
 
         if (CertStore.hasCert(this)) {
             // BridgeActivity already kicked off the initial load using the
@@ -124,11 +127,28 @@ public class MainActivity extends BridgeActivity {
         WebView.clearClientCertPreferences(webView::reload);
     }
 
-    private void ensureAudioPermission() {
+    /**
+     * Ask for RECORD_AUDIO on demand (called the first time the page tries to
+     * use the mic). The result is routed back to {@link MicWebChromeClient}.
+     */
+    void requestMicPermission() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                    this, new String[]{Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO);
+                == PackageManager.PERMISSION_GRANTED) {
+            if (micClient != null) micClient.onOsMicPermissionResult(true);
+            return;
+        }
+        ActivityCompat.requestPermissions(
+                this, new String[]{Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_RECORD_AUDIO && micClient != null) {
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            micClient.onOsMicPermissionResult(granted);
         }
     }
 }

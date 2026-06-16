@@ -61,5 +61,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Microphone for the in-WebView voice / STT features. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- WebRTC/getUserMedia audio processing (echo cancellation, audio mode). -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 </manifest>
