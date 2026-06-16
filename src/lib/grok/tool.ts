@@ -10,7 +10,7 @@ export const grokSearchTool: OpenAI.Chat.Completions.ChatCompletionTool = {
   function: {
     name: "grok_search",
     description:
-      "Search X (Twitter) and the web via Grok and get a concise, synthesized answer. Use ONLY when the question needs real-time, recent, or external information you do not already know — e.g. current events, news, prices, weather, sports results, or what people are posting on X. Do NOT use it for general knowledge, math, coding, or anything you can answer directly.",
+      "Search X and the web via Grok and get a concise, synthesized answer. Use ONLY when the question needs real-time, recent, or external information you do not already know — e.g. current events, news, prices, weather, sports results, or what people are posting on X. Do NOT use it for general knowledge, math, coding, or anything you can answer directly.",
     parameters: {
       type: "object",
       properties: {

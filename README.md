@@ -20,7 +20,7 @@ generation, cloud STT/TTS, and realtime voice.
 - 🖼️ **Vision / image input** — drop an image and ask about it (multimodal)
 - 📄 **RAG** — upload PDF / text / markdown, chat grounded in your documents with citations
 - 🎙️ **Voice** — speech-to-text via Whisper (runs in your browser), text-to-speech via OS voices
-- 🌐 **Grok search tool** — the local model can borrow Grok's X (Twitter) + web search via a `grok_search` tool and receive only Grok's synthesized answer (saves context)
+- 🌐 **Grok search tool** — the local model can borrow Grok's X + web search via a `grok_search` tool and receive only Grok's synthesized answer (saves context)
 - 🗂️ **Conversation history** — saved locally in SQLite
 - ⚙️ **Background jobs** — local host background commands can run concurrently with limits, log tails, timeout handling, and kill support
 - 📋 **Jobs / SOP console** — a sidebar console shows background jobs and recent SOP control events
@@ -59,20 +59,27 @@ left to a system prompt. Every chat turn runs through a control pipeline
 3. **Deterministic validators** — citation whitelist (fabricated `[n]` sources are
    stripped/flagged), disclaimer/flattery stripping, empty-response detection. Pure
    code, no model trust.
-4. **Strict monitor (default on)** — the governing path. Generate → monitor
+4. **Stance gate (default on, `SOP_STANCE_GATE`)** — a triggered
+   LLM-as-judge check for artificial balance: false equivalence, fake opposing
+   views, vague "it depends" caveats, unsupported uncertainty, or over-discussing
+   alternatives when the user already chose a direction. Cheap heuristics only
+   decide when to run the judge; the judge returns structured JSON; code decides
+   whether medium/high severity blocks and enters correction. Real tradeoffs,
+   real uncertainty, and genuinely controversial topics still pass.
+5. **Strict monitor (default on)** — the governing path. Generate → monitor
    (deterministic checks) → on failure, issue a **harsh internal scold-correction**
    that forces a fixed answer → **sanitize so the scolding never leaks to the user** →
    refuse if still non-compliant. **Concrete citations are mandatory** whenever sources
    exist (RAG/Grok): every `[n]` must map to a real source, fabricated ones are stripped,
    and an uncited answer is rejected. The user only ever sees the corrected answer plus a
    neutral control note — never the reprimand.
-5. **Verify gate (opt-in, `SOP_VERIFY_GATE`)** — an extra LLM self-audit that can also
+6. **Verify gate (opt-in, `SOP_VERIFY_GATE`)** — an extra LLM self-audit that can also
    trigger corrections. Off by default because a small model auditing itself is noisy;
    useful with a larger model.
 
 Toggle via env (`SOP_INTENT_GATE`, `SOP_STRICT_MONITOR`, `SOP_BLOCKING`,
-`SOP_VERIFY_GATE`). The system prompt states the rules, but the gates above are what
-actually enforce them — in code, not on trust.
+`SOP_STANCE_GATE`, `SOP_VERIFY_GATE`). The system prompt states the rules, but the
+gates above are what actually enforce them — in code, not on trust.
 
 Recent SOP events are recorded in SQLite and shown in the **Console** sidebar
 view alongside background job telemetry.
@@ -80,8 +87,10 @@ view alongside background job telemetry.
 ## Grok search tool (xAI)
 
 The local model can call a `grok_search` function-tool that borrows Grok's
-**server-side X (Twitter) + web search** (via xAI's Responses API
-`POST /v1/responses` with `web_search` + `x_search` tools). Grok runs the whole
+**server-side X + web search** (via xAI's Responses API
+`POST /v1/responses` with `web_search` + `x_search` tools). Web Search is
+configured with image search and image understanding enabled by default, so Grok
+can find real web images when the user asks for real visual references. Grok runs the whole
 search→read→synthesize loop on its servers and returns one answer; the local
 model receives **only that synthesized answer + sources**, not raw results — so
 its context stays small.
@@ -100,15 +109,23 @@ configurable via `GROK_MODEL` (default `grok-build-0.1`). The legacy Live Search
 In Settings you can switch the **chat backend** from local to **Grok (cloud)**.
 On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`):
 
-- **X + web search** run server-side automatically (no toggle needed).
+- **X + web search** run server-side automatically (no toggle needed), including
+  image search / image understanding when enabled by env.
 - **Image generation** (`generate_image` → Grok Imagine, `/v1/images/generations`)
   and **video generation** (`generate_video` → `grok-imagine-video-1.5-preview`,
   `/v1/videos/generations`, async) are client-side function tools — the model calls
   them and the result is shown inline.
-- **Voice**: TTS via `/v1/tts` (natural voices) and STT via `/v1/stt` replace the
+- **Voice**: TTS via `/v1/tts` (natural voices), REST STT via `/v1/stt`, and
+  streaming STT via the local WebSocket proxy `/api/stt/stream` replace the
   browser engines when a key is present (falling back to browser TTS/Whisper otherwise).
+  Streaming STT uses xAI Smart Turn to avoid cutting users off mid-sentence.
 - **Realtime voice agent**: the **Voice** button opens a speech-to-speech session
   over WebSocket (`wss://api.x.ai/v1/realtime`) using an ephemeral token.
+- **Cost tracking**: streamed Responses API calls capture xAI
+  `usage.cost_in_usd_ticks` and show it in the message tool/metadata panel.
+- **Priority processing**: set `XAI_SERVICE_TIER=priority` to request priority
+  scheduling for xAI text/image/video/voice inference. The default stays normal
+  scheduling/cost.
 - **Code sandbox** (`run_code`, opt-in via `SANDBOX_ENABLED`): the model runs
   bash/python in a per-conversation workspace (timeout + auto-cleanup), and files
   it creates appear in the chat — text files open in a viewer, others download.
@@ -224,7 +241,13 @@ All settings come from environment variables (see `.env.example`):
 | `BACKGROUND_MAX_CONCURRENT_GLOBAL` | `8` | local background job global limit |
 | `BACKGROUND_MAX_CONCURRENT_PER_CONVERSATION` | `5` | local background job per-conversation limit |
 | `SOP_STRICT_MONITOR` | `true` | enable strict SOP monitor |
+| `SOP_STANCE_GATE` | `true` | block artificial balance / false-equivalence drafts |
 | `SOP_BLOCKING` | `true` | block unsafe/non-compliant output instead of warning only |
+| `XAI_SERVICE_TIER` | `default` | set `priority` only when latency matters |
+| `XAI_WEB_SEARCH_IMAGE_SEARCH` | `true` | enable real image results in xAI web search |
+| `XAI_WEB_SEARCH_IMAGE_UNDERSTANDING` | `true` | let xAI inspect images found while browsing |
+| `XAI_STT_STREAMING` | `true` | prefer streaming STT over record-then-upload |
+| `XAI_STT_SMART_TURN` | `0.7` | Smart Turn confidence threshold |
 
 ## Project layout
 

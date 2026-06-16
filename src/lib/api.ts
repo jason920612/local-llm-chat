@@ -61,11 +61,15 @@ export async function setActiveBranch(
   parentId: string | null,
   childId: string,
 ): Promise<void> {
-  await fetch(`/api/conversations/${conversationId}/branch`, {
+  const res = await fetch(`/api/conversations/${conversationId}/branch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ parentId, childId }),
   });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Switch version failed (${res.status})`);
+  }
 }
 
 export async function renameConversationApi(
@@ -87,11 +91,15 @@ export async function saveMessage(
   conversationId: string,
   message: UIMessage,
 ): Promise<void> {
-  await fetch(`/api/conversations/${conversationId}/messages`, {
+  const res = await fetch(`/api/conversations/${conversationId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(message),
   });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Save failed (${res.status})`);
+  }
 }
 
 /**
@@ -281,12 +289,26 @@ export interface AppConfig {
   sop: {
     intentGate: boolean;
     verifyGate: boolean;
+    stanceGate: boolean;
     blocking: boolean;
     strictMonitor: boolean;
     maxCorrections: number;
     maxStructuredRetries: number;
   };
-  grok: { enabled: boolean; model: string };
+  grok: {
+    enabled: boolean;
+    model: string;
+    serviceTier: "default" | "priority";
+    webSearch: {
+      enableImageSearch: boolean;
+      enableImageUnderstanding: boolean;
+    };
+    stt: {
+      streaming: boolean;
+      smartTurn: number;
+      smartTurnTimeoutMs: number;
+    };
+  };
 }
 
 export async function fetchAppConfig(): Promise<AppConfig> {
@@ -461,6 +483,7 @@ export interface StreamMedia {
   videos: string[];
   files: SandboxFileMeta[];
   artifacts: ArtifactMeta[];
+  xai: { costInUsdTicks: number };
 }
 
 /** Split a streamed body into answer text and trailing media metadata. */
@@ -474,6 +497,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
       videos: [],
       files: [],
       artifacts: [],
+      xai: { costInUsdTicks: 0 },
     };
   const text = full.slice(0, idx).replace(/\s+$/, "");
   const media = decodeB64Json<{
@@ -482,6 +506,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
     videos?: string[];
     files?: SandboxFileMeta[];
     artifacts?: ArtifactMeta[];
+    xai?: { costInUsdTicks?: number };
   }>(full.slice(idx + MEDIA_MARKER.length), {});
   return {
     text,
@@ -490,5 +515,6 @@ export function parseMediaSentinel(full: string): StreamMedia {
     videos: media.videos ?? [],
     files: media.files ?? [],
     artifacts: media.artifacts ?? [],
+    xai: { costInUsdTicks: media.xai?.costInUsdTicks ?? 0 },
   };
 }

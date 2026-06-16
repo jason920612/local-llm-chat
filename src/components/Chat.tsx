@@ -104,6 +104,17 @@ export function Chat({
     [allMessages, rootChildId],
   );
 
+  const reflectStreamingFromPath = useCallback(
+    (tree: UIMessage[], rootId: string | null) => {
+      const inflight = computePath(tree, rootId).find(
+        (m) => m.status === "streaming",
+      );
+      streamingIdRef.current = inflight?.id ?? null;
+      setStreaming(Boolean(inflight));
+    },
+    [],
+  );
+
   useEffect(() => {
     setVoiceSupported(recordingSupported());
     setVoiceUnavailableReason(mediaPermissionBlockedReason());
@@ -157,10 +168,10 @@ export function Chat({
           setAllMessages(d.messages);
           setRootChildId(d.rootChildId);
           // Reflect any generation still running server-side (e.g. started on
-          // another device, or before this device reconnected).
-          const inflight = d.messages.find((m) => m.status === "streaming");
-          streamingIdRef.current = inflight?.id ?? null;
-          setStreaming(Boolean(inflight));
+          // another device, or before this device reconnected). Only the active
+          // path should lock controls; stale streaming messages on hidden
+          // branches must not disable version switching for the whole thread.
+          reflectStreamingFromPath(d.messages, d.rootChildId);
         })
         .catch(() => {
           if (cancelled) return;
@@ -178,7 +189,7 @@ export function Chat({
       cancelled = true;
       if (loadingId.current === cid) loadingId.current = null;
     };
-  }, [conversationId]);
+  }, [conversationId, reflectStreamingFromPath]);
 
   const updateAutoScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -193,9 +204,10 @@ export function Chat({
       .then((d) => {
         setAllMessages(d.messages);
         setRootChildId(d.rootChildId);
+        reflectStreamingFromPath(d.messages, d.rootChildId);
       })
       .catch(() => {});
-  }, []);
+  }, [reflectStreamingFromPath]);
 
   // Apply a live event from the conversation's SSE stream.
   const applyConvEvent = useCallback(
@@ -489,7 +501,10 @@ export function Chat({
     async (messageId: string, newText: string) => {
       if (streaming || !conversationId) return;
       const original = allMessages.find((m) => m.id === messageId);
-      if (!original) return;
+      if (!original) {
+        setError("Could not find the message to edit. Reload and try again.");
+        return;
+      }
       setError(null);
 
       const sibling: UIMessage = {
@@ -500,8 +515,8 @@ export function Chat({
         parentId: original.parentId ?? null,
         createdAt: Date.now(),
       };
-      attach(sibling);
       await saveMessage(conversationId, sibling);
+      attach(sibling);
 
       if (sibling.role === "user") {
         await beginTurn(conversationId, sibling.id);
@@ -509,7 +524,14 @@ export function Chat({
         onPersisted();
       }
     },
-    [streaming, conversationId, beginTurn, onPersisted, attach],
+    [
+      streaming,
+      conversationId,
+      allMessages,
+      beginTurn,
+      onPersisted,
+      attach,
+    ],
   );
 
   // Regenerate any assistant message: add another sibling version under the same
@@ -537,6 +559,8 @@ export function Chat({
       if (count < 2) return;
       const target = siblings[(index + dir + count) % count];
       const parentId = target.parentId ?? null;
+      const previousMessages = allMessages;
+      const previousRootChildId = rootChildId;
       if (parentId) {
         setAllMessages((prev) =>
           prev.map((m) =>
@@ -546,9 +570,16 @@ export function Chat({
       } else {
         setRootChildId(target.id);
       }
-      await setActiveBranch(conversationId, parentId, target.id);
+      try {
+        await setActiveBranch(conversationId, parentId, target.id);
+        setError(null);
+      } catch (err) {
+        setAllMessages(previousMessages);
+        setRootChildId(previousRootChildId);
+        setError(err instanceof Error ? err.message : "Switch version failed");
+      }
     },
-    [streaming, conversationId, allMessages],
+    [streaming, conversationId, allMessages, rootChildId],
   );
 
   // Fork: branch a new conversation containing everything up to this message.

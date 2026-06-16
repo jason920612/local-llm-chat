@@ -60,3 +60,78 @@ export const VerifyResult = z.object({
   violations: z.array(z.string()),
 });
 export type VerifyResult = z.infer<typeof VerifyResult>;
+
+// --- Stance / artificial-balance gate -------------------------------------
+export const stanceJsonSchema = {
+  type: "object",
+  properties: {
+    passed: {
+      type: "boolean",
+      description:
+        "True if the draft's uncertainty, caveats, and opposing views match the real ambiguity of the user's request.",
+    },
+    issueType: {
+      type: ["string", "null"],
+      enum: [
+        "artificial_balance",
+        "false_equivalence",
+        "vague_caveat",
+        "unsupported_uncertainty",
+        "unnecessary_tradeoff",
+        "ignores_user_direction",
+        null,
+      ],
+      description: "Main issue if passed is false; otherwise null.",
+    },
+    severity: {
+      type: "string",
+      enum: ["none", "low", "medium", "high"],
+      description:
+        "Only medium/high should block emission and trigger correction.",
+    },
+    reason: {
+      type: "string",
+      description:
+        "Short explanation. Must be specific to the user's request and draft.",
+    },
+    offendingText: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Exact short snippets from the draft that caused the issue. Empty if passed.",
+    },
+    rewriteInstruction: {
+      type: ["string", "null"],
+      description:
+        "Targeted instruction for rewriting the answer if failed; otherwise null.",
+    },
+  },
+  required: [
+    "passed",
+    "issueType",
+    "severity",
+    "reason",
+    "offendingText",
+    "rewriteInstruction",
+  ],
+  additionalProperties: false,
+} as const;
+
+export const StanceResult = z.object({
+  passed: z.boolean(),
+  issueType: z
+    .enum([
+      "artificial_balance",
+      "false_equivalence",
+      "vague_caveat",
+      "unsupported_uncertainty",
+      "unnecessary_tradeoff",
+      "ignores_user_direction",
+    ])
+    .nullable(),
+  severity: z.enum(["none", "low", "medium", "high"]),
+  reason: z.string(),
+  offendingText: z.array(z.string()),
+  rewriteInstruction: z.string().nullable(),
+});
+export type StanceResult = z.infer<typeof StanceResult>;

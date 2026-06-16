@@ -5,6 +5,10 @@ const VIDEO_MODEL = "grok-imagine-video-1.5-preview";
 const POLL_INTERVAL_MS = 5000;
 const MAX_WAIT_MS = 180000; // 3 min — generation is async and slow
 
+function maybeServiceTier(): Record<string, unknown> {
+  return config.grok.serviceTier ? { service_tier: config.grok.serviceTier } : {};
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -38,6 +42,7 @@ export async function generateVideo(
       duration: 6,
       resolution: "720p",
       aspect_ratio: "16:9",
+      ...maybeServiceTier(),
     }),
   });
   if (!start.ok) {

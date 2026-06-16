@@ -2,6 +2,10 @@ import { config } from "../config";
 
 const IMAGE_MODEL = "grok-imagine-image-quality";
 
+function maybeServiceTier(): Record<string, unknown> {
+  return config.grok.serviceTier ? { service_tier: config.grok.serviceTier } : {};
+}
+
 /**
  * Generate an image with Grok Imagine (xAI). Returns a displayable image src:
  * a hosted URL or a base64 data URI. Throws on API error.
@@ -21,6 +25,7 @@ export async function generateImage(prompt: string): Promise<string> {
       model: IMAGE_MODEL,
       prompt,
       n: 1,
+      ...maybeServiceTier(),
     }),
   });
 

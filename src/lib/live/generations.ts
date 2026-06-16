@@ -198,6 +198,13 @@ function finalize(
   const citations = [...headerCitations, ...media.citations];
   const images = [...headerImages, ...media.images];
   const videos = [...headerVideos, ...media.videos];
+  const toolCalls = [...parsed.toolCalls];
+  if (media.xai.costInUsdTicks > 0) {
+    toolCalls.push({
+      tool: "xai_cost",
+      args: { cost_in_usd_ticks: media.xai.costInUsdTicks },
+    });
+  }
 
   const final: UIMessage = {
     id: messageId,
@@ -205,7 +212,7 @@ function finalize(
     content: parsed.text,
     parentId: gen.parentId,
     createdAt: gen.startedAt,
-    toolCalls: parsed.toolCalls.length ? parsed.toolCalls : undefined,
+    toolCalls: toolCalls.length ? toolCalls : undefined,
     citations: citations.length ? citations : undefined,
     images: images.length ? images : undefined,
     videos: videos.length ? videos : undefined,

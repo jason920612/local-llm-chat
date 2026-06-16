@@ -151,8 +151,26 @@ const BG_LOG_FN = "read_background_log";
 const BG_LIST_FN = "list_background";
 const BG_KILL_FN = "kill_background";
 
+function maybeServiceTier(): Record<string, unknown> {
+  return config.grok.serviceTier ? { service_tier: config.grok.serviceTier } : {};
+}
+
+function webSearchTool(): Record<string, unknown> {
+  return {
+    type: "web_search",
+    enable_image_search: config.grok.webSearch.enableImageSearch,
+    enable_image_understanding: config.grok.webSearch.enableImageUnderstanding,
+  };
+}
+
+function costTicksFromUsage(usage: unknown): number {
+  if (!usage || typeof usage !== "object") return 0;
+  const ticks = (usage as { cost_in_usd_ticks?: unknown }).cost_in_usd_ticks;
+  return typeof ticks === "number" && Number.isFinite(ticks) ? ticks : 0;
+}
+
 const BASE_TOOLS = [
-  { type: "web_search" },
+  webSearchTool(),
   { type: "x_search" },
   {
     type: "function",
@@ -423,6 +441,7 @@ export interface GrokResponseResult {
   citations: Citation[];
   images: string[];
   videos: string[];
+  costInUsdTicks: number;
 }
 
 /**
@@ -582,6 +601,7 @@ export function streamGrokResponses(
       const files: SandboxFileMeta[] = [];
       const artifacts: ArtifactMeta[] = [];
       let citations: Citation[] = [...baseCitations];
+      let costInUsdTicks = 0;
       let thinkOpen = false;
       let contentStarted = false;
 
@@ -596,6 +616,7 @@ export function streamGrokResponses(
         tools: toolset(),
         stream: true,
         prompt_cache_key: cacheKey,
+        ...maybeServiceTier(),
       };
 
       let answered = false;
@@ -657,10 +678,14 @@ export function streamGrokResponses(
                     id?: string;
                     citations?: unknown[];
                     output?: { type?: string }[];
-                    usage?: { num_server_side_tools_used?: number };
+                    usage?: {
+                      num_server_side_tools_used?: number;
+                      cost_in_usd_ticks?: number;
+                    };
                   }
                 | undefined;
               respId = r?.id;
+              costInUsdTicks += costTicksFromUsage(r?.usage);
               // Sources come from url_citation annotations on the message
               // output (xAI has no top-level `citations` field). Keep the old
               // field as a fallback in case that changes.
@@ -909,6 +934,7 @@ export function streamGrokResponses(
             previous_response_id: respId,
             stream: true,
             prompt_cache_key: cacheKey,
+            ...maybeServiceTier(),
           };
         }
 
@@ -944,8 +970,9 @@ export function streamGrokResponses(
                   enq((ev.delta as string) ?? "");
                 } else if (t === "response.completed") {
                   const r = ev.response as
-                    | { citations?: unknown[]; output?: unknown }
+                    | { citations?: unknown[]; output?: unknown; usage?: unknown }
                     | undefined;
+                  costInUsdTicks += costTicksFromUsage(r?.usage);
                   citations = mergeCitationUrls(
                     citations,
                     extractCitationUrls(r?.output),
@@ -973,12 +1000,20 @@ export function streamGrokResponses(
           images.length ||
           videos.length ||
           files.length ||
-          artifacts.length
+          artifacts.length ||
+          costInUsdTicks > 0
         ) {
           // Resolve real page titles for search-source citations (best-effort).
           if (citations.length) await enrichCitationTitles(citations);
           const meta = Buffer.from(
-            JSON.stringify({ citations, images, videos, files, artifacts }),
+            JSON.stringify({
+              citations,
+              images,
+              videos,
+              files,
+              artifacts,
+              xai: { costInUsdTicks },
+            }),
             "utf-8",
           ).toString("base64");
           enq(`\n${MEDIA_MARKER}${meta}`);
@@ -1002,6 +1037,7 @@ async function postResponses(body: Record<string, unknown>): Promise<{
   id?: string;
   output?: OutItem[];
   citations?: unknown[];
+  usage?: unknown;
 }> {
   const res = await fetch(`${config.grok.baseURL}/responses`, {
     method: "POST",
@@ -1009,7 +1045,7 @@ async function postResponses(body: Record<string, unknown>): Promise<{
       "Content-Type": "application/json",
       Authorization: `Bearer ${config.grok.apiKey}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...maybeServiceTier(), ...body }),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -1035,6 +1071,7 @@ export async function runGrokResponses(
     input: toInput(messages),
     tools: toolset(),
   });
+  let costInUsdTicks = costTicksFromUsage(resp.usage);
 
   for (let round = 0; round < config.grok.maxRounds; round++) {
     const output = resp.output ?? [];
@@ -1085,16 +1122,24 @@ export async function runGrokResponses(
       input: toolOutputs,
       previous_response_id: resp.id,
     });
+    costInUsdTicks += costTicksFromUsage(resp.usage);
   }
 
   const output = resp.output ?? [];
-  const rawCitations = Array.isArray(resp.citations) ? resp.citations : [];
+  const citationUrls = extractCitationUrls(output);
+  const rawCitations =
+    citationUrls.length > 0
+      ? citationUrls
+      : Array.isArray(resp.citations)
+        ? resp.citations
+        : [];
   return {
     text: extractText(output),
     reasoning: extractReasoning(output),
     citations: mapGrokCitations(rawCitations, 0),
     images,
     videos,
+    costInUsdTicks,
   };
 }
 
@@ -1157,4 +1202,3 @@ export async function summarizeForCompaction(
   });
   return extractText(resp.output ?? []);
 }
-
