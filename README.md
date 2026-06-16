@@ -66,11 +66,11 @@ left to a system prompt. Every chat turn runs through a control pipeline
    evaluates the draft when the gate is enabled, returns structured JSON, and
    code decides whether medium/high severity blocks and enters correction. Real
    tradeoffs, real uncertainty, and genuinely controversial topics still pass.
-5. **Strict monitor (default on)** — the governing path. Generate → monitor
+5. **Strict monitor (default on, local backend only)** — the governing path. Generate → monitor
    (deterministic checks) → on failure, issue a **harsh internal scold-correction**
    that forces a fixed answer → **sanitize so the scolding never leaks to the user** →
    refuse if still non-compliant. **Concrete citations are mandatory** whenever sources
-   exist (RAG/Grok): every `[n]` must map to a real source, fabricated ones are stripped,
+   exist (RAG/local Grok tool): every `[n]` must map to a real source, fabricated ones are stripped,
    and an uncited answer is rejected. The user only ever sees the corrected answer plus a
    neutral control note — never the reprimand.
 6. **Verify gate (opt-in, `SOP_VERIFY_GATE`)** — an extra LLM self-audit that can also
@@ -83,6 +83,13 @@ gates above are what actually enforce them — in code, not on trust.
 
 Recent SOP events are recorded in SQLite and shown in the **Console** sidebar
 view alongside background job telemetry.
+
+The **Grok (cloud)** chat backend intentionally bypasses the SOP correction
+monitor. Native Grok responses are streamed through directly so xAI's own tool
+syntax, citations, media metadata, and token-by-token behavior are preserved.
+When strict monitoring is enabled globally, Grok turns still record a
+`stream_grok_responses_sop_disabled` event for observability, but no
+post-stream correction is applied.
 
 ## Grok search tool (xAI)
 
@@ -123,6 +130,11 @@ On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`
   over WebSocket (`wss://api.x.ai/v1/realtime`) using an ephemeral token.
 - **Cost tracking**: streamed Responses API calls capture xAI
   `usage.cost_in_usd_ticks` and show it in the message tool/metadata panel.
+- **Searched image rendering**: Grok searched-image render markers such as
+  `[[render_searched_image with image_id is img-1 size is "LARGE"]]` are
+  interpreted by the frontend. The server preserves xAI image id -> URL
+  metadata as `imageRefs` when the provider supplies it; unresolved markers are
+  shown with a small debug notice so missing metadata is observable.
 - **Priority processing**: set `XAI_SERVICE_TIER=priority` to request priority
   scheduling for xAI text/image/video/voice inference. The default stays normal
   scheduling/cost.
@@ -240,7 +252,7 @@ All settings come from environment variables (see `.env.example`):
 | `EMBEDDING_MODEL` | `text-embedding-nomic-embed-text-v1.5` | must match the loaded embedding model |
 | `BACKGROUND_MAX_CONCURRENT_GLOBAL` | `8` | local background job global limit |
 | `BACKGROUND_MAX_CONCURRENT_PER_CONVERSATION` | `5` | local background job per-conversation limit |
-| `SOP_STRICT_MONITOR` | `true` | enable strict SOP monitor |
+| `SOP_STRICT_MONITOR` | `true` | enable strict SOP monitor for local-model turns; Grok cloud backend bypasses correction monitoring |
 | `SOP_STANCE_GATE` | `true` | block artificial balance / false-equivalence drafts |
 | `SOP_BLOCKING` | `true` | block unsafe/non-compliant output instead of warning only |
 | `XAI_SERVICE_TIER` | `default` | set `priority` only when latency matters |
