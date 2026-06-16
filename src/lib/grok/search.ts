@@ -4,6 +4,7 @@ import type { Citation } from "../types";
 export interface GrokResult {
   answer: string;
   citations: Citation[];
+  costInUsdTicks: number;
 }
 
 interface RawOutputContent {
@@ -79,8 +80,26 @@ export function mapGrokCitations(
     }));
 }
 
+function maybeServiceTier(): Record<string, unknown> {
+  return config.grok.serviceTier ? { service_tier: config.grok.serviceTier } : {};
+}
+
+function webSearchTool(): Record<string, unknown> {
+  return {
+    type: "web_search",
+    enable_image_search: config.grok.webSearch.enableImageSearch,
+    enable_image_understanding: config.grok.webSearch.enableImageUnderstanding,
+  };
+}
+
+function costTicksFromUsage(usage: unknown): number {
+  if (!usage || typeof usage !== "object") return 0;
+  const ticks = (usage as { cost_in_usd_ticks?: unknown }).cost_in_usd_ticks;
+  return typeof ticks === "number" && Number.isFinite(ticks) ? ticks : 0;
+}
+
 /**
- * Ask Grok a question with server-side X (Twitter) + web search enabled.
+ * Ask Grok a question with server-side X + web search enabled.
  * Grok orchestrates the search loop and returns a synthesized answer; we return
  * only that answer (plus citations) so the caller's context stays small.
  */
@@ -98,7 +117,8 @@ export async function askGrok(query: string): Promise<GrokResult> {
     body: JSON.stringify({
       model: config.grok.model,
       input: [{ role: "user", content: query }],
-      tools: [{ type: "web_search" }, { type: "x_search" }],
+      tools: [webSearchTool(), { type: "x_search" }],
+      ...maybeServiceTier(),
     }),
   });
 
@@ -113,5 +133,9 @@ export async function askGrok(query: string): Promise<GrokResult> {
     ? data.citations
     : [];
 
-  return { answer, citations: mapGrokCitations(rawCitations, 0) };
+  return {
+    answer,
+    citations: mapGrokCitations(rawCitations, 0),
+    costInUsdTicks: costTicksFromUsage(data.usage),
+  };
 }

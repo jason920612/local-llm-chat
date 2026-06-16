@@ -309,6 +309,25 @@ export function SettingsModal({
                     )
                   }
                 />
+                <Row label="xAI service tier" value={config.grok.serviceTier} />
+                <Row
+                  label="Web image search"
+                  value={<Flag on={config.grok.webSearch.enableImageSearch} />}
+                />
+                <Row
+                  label="Web image understanding"
+                  value={
+                    <Flag on={config.grok.webSearch.enableImageUnderstanding} />
+                  }
+                />
+                <Row
+                  label="Streaming STT"
+                  value={
+                    config.grok.stt.streaming
+                      ? `smart ${config.grok.stt.smartTurn} / ${config.grok.stt.smartTurnTimeoutMs}ms`
+                      : "off"
+                  }
+                />
                 <Row label="RAG top-K" value={config.rag.topK} />
                 <Row
                   label="Chunk size / overlap"
@@ -325,6 +344,10 @@ export function SettingsModal({
               </h3>
               <div className="rounded-xl border border-border bg-surface-2 px-4 py-2">
                 <Row label="Intent gate" value={<Flag on={config.sop.intentGate} />} />
+                <Row
+                  label="Stance gate"
+                  value={<Flag on={config.sop.stanceGate} />}
+                />
                 <Row
                   label="Strict monitor"
                   value={<Flag on={config.sop.strictMonitor} />}

@@ -12,6 +12,12 @@ export async function GET() {
     rag: config.rag,
     background: config.background,
     sop: config.sop,
-    grok: { enabled: config.grok.enabled, model: config.grok.model },
+    grok: {
+      enabled: config.grok.enabled,
+      model: config.grok.model,
+      serviceTier: config.grok.serviceTier ?? "default",
+      webSearch: config.grok.webSearch,
+      stt: config.grok.stt,
+    },
   });
 }

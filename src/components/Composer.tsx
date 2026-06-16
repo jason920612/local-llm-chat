@@ -7,6 +7,7 @@ import {
   recordingSupported,
   transcribe,
 } from "@/lib/speech";
+import { StreamingSttSession } from "@/lib/streaming-stt";
 import type { SandboxFileMeta } from "@/lib/types";
 
 export function Composer({
@@ -39,8 +40,10 @@ export function Composer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamingSttRef = useRef<StreamingSttSession | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const valueRef = useRef(value);
+  const committedStreamTextRef = useRef("");
   valueRef.current = value;
 
   const [recording, setRecording] = useState(false);
@@ -50,6 +53,7 @@ export function Composer({
     string | null
   >(null);
   const [sttError, setSttError] = useState<string | null>(null);
+  const [sttPartial, setSttPartial] = useState("");
 
   useEffect(() => {
     setVoiceSupported(recordingSupported());
@@ -65,50 +69,87 @@ export function Composer({
 
   const canSend = value.trim().length > 0 || attachments.length > 0;
 
+  function appendTranscript(text: string) {
+    const clean = text.trim();
+    if (!clean || clean === committedStreamTextRef.current) return;
+    committedStreamTextRef.current = clean;
+    const prev = valueRef.current;
+    onChange(prev ? `${prev} ${clean}` : clean);
+  }
+
+  async function startBufferedRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mr = new MediaRecorder(stream);
+    chunksRef.current = [];
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+    mr.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(chunksRef.current, {
+        type: mr.mimeType || "audio/webm",
+      });
+      setTranscribing(true);
+      try {
+        const text = await transcribe(blob);
+        if (text) {
+          appendTranscript(text);
+        } else {
+          setSttError("沒有辨識到語音");
+        }
+      } catch (err) {
+        setSttError(err instanceof Error ? err.message : "語音辨識失敗");
+      } finally {
+        setTranscribing(false);
+      }
+    };
+    mr.start();
+    recorderRef.current = mr;
+  }
+
   async function startRecording() {
     setSttError(null);
+    setSttPartial("");
+    committedStreamTextRef.current = "";
     const blockedReason = mediaPermissionBlockedReason();
     if (blockedReason) {
       setSttError(blockedReason);
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream);
-      chunksRef.current = [];
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-      mr.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, {
-          type: mr.mimeType || "audio/webm",
-        });
-        setTranscribing(true);
-        try {
-          const text = await transcribe(blob);
-          if (text) {
-            const prev = valueRef.current;
-            onChange(prev ? `${prev} ${text}` : text);
-          } else {
-            setSttError("沒有辨識到語音");
-          }
-        } catch (err) {
-          setSttError(err instanceof Error ? err.message : "語音辨識失敗");
-        } finally {
-          setTranscribing(false);
-        }
-      };
-      mr.start();
-      recorderRef.current = mr;
+      const stt = new StreamingSttSession({
+        onPartial: setSttPartial,
+        onFinal: (text) => {
+          setSttPartial("");
+          appendTranscript(text);
+        },
+        onError: (msg) => setSttError(msg),
+      });
+      await stt.start();
+      streamingSttRef.current = stt;
       setRecording(true);
-    } catch {
-      setRecording(false);
-      setSttError("無法存取麥克風，請確認瀏覽器權限與系統麥克風設定");
+    } catch (err) {
+      streamingSttRef.current?.stop();
+      streamingSttRef.current = null;
+      try {
+        await startBufferedRecording();
+        setRecording(true);
+      } catch {
+        setRecording(false);
+        setSttError(
+          err instanceof Error
+            ? `串流語音無法啟動，且無法存取麥克風：${err.message}`
+            : "無法存取麥克風，請確認瀏覽器權限與系統麥克風設定",
+        );
+      }
     }
   }
 
   function stopRecording() {
+    const streamedText = streamingSttRef.current?.stop().trim() ?? "";
+    streamingSttRef.current = null;
+    if (streamedText) appendTranscript(streamedText);
+    setSttPartial("");
     recorderRef.current?.stop();
     recorderRef.current = null;
     setRecording(false);
@@ -269,7 +310,11 @@ export function Composer({
           )}
         </div>
       </div>
-      {sttError || voiceUnavailableReason ? (
+      {sttPartial ? (
+        <p className="mx-auto mt-1.5 max-w-3xl truncate text-center text-[11px] text-accent">
+          聽寫中：{sttPartial}
+        </p>
+      ) : sttError || voiceUnavailableReason ? (
         <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-red-400">
           {sttError ?? voiceUnavailableReason}
         </p>

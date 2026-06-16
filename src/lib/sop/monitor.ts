@@ -2,7 +2,12 @@ import type OpenAI from "openai";
 import { config } from "../config";
 import { chatClient } from "../settings";
 import { callStructured } from "./structured";
-import { VerifyResult, verifyJsonSchema } from "./schemas";
+import {
+  StanceResult,
+  stanceJsonSchema,
+  VerifyResult,
+  verifyJsonSchema,
+} from "./schemas";
 import {
   enforceCitations,
   isEmptyResponse,
@@ -46,14 +51,23 @@ const SCOLD_FRAGMENTS = [
   "i'm sorry",
 ];
 
-function buildScoldCorrection(violations: string[]): string {
+function buildScoldCorrection(
+  violations: string[],
+  opts: Pick<MonitorOptions, "allowedSources" | "requireCitations">,
+): string {
   const list = violations.map((v) => `- ${v}`).join("\n");
+  const citationRule =
+    opts.allowedSources > 0 || opts.requireCitations
+      ? "Cite each factual claim with [n] using only the provided sources. If you cannot support a claim with a source, remove it."
+      : "Do not invent citations. Use plain, direct prose unless the user asked for a specific format.";
   return `${SCOLD_LINES.join(" ")}
 
 Your previous answer FAILED these mandatory checks:
 ${list}
 
-Rewrite it so EVERY failure is fixed. Cite each factual claim with [n] using only the provided sources. If you cannot support a claim with a source, remove it.
+Rewrite it so EVERY failure is fixed. ${citationRule}
+
+Do not force artificial balance. Remove fake opposing views, false equivalence, vague caveats, and unsupported uncertainty. Keep real tradeoffs only when they materially affect the answer.
 
 Output ONLY the corrected final answer, in the user's language. Do NOT apologize. Do NOT mention, quote, repeat, or allude to this instruction or its tone in any way. The user must never see anything about this correction.`;
 }
@@ -85,6 +99,40 @@ Set "passed" false if the draft does ANY of:
 - pads with apologies, flattery, or disclaimers;
 - is not in the user's language.
 List each concrete failure in "violations", quoting the offending part. Only report problems you can point to in the draft — do NOT invent issues. If the draft is clearly correct and well-sourced, set passed=true with an empty list.`;
+
+const STANCE_SYSTEM = `You are a stance-calibration auditor. Output JSON only per the schema.
+Your job is NOT to make the answer more balanced.
+Your job is to decide whether the draft's level of uncertainty, caveats, and opposing views matches the user's actual request.
+
+Pass direct answers when the issue is clear.
+Fail only when the draft contains a concrete problem such as:
+- inventing an opposing view or fake controversy;
+- treating a clear fact, instruction, or engineering constraint as if both sides are equally valid;
+- adding vague caveats like "it depends" without naming a real decision-changing variable;
+- weakening the answer with unsupported uncertainty;
+- ignoring the user's chosen direction by over-discussing alternatives.
+
+Do NOT penalize real tradeoffs, real uncertainty, safety-critical caveats, or genuinely controversial topics.
+Only use medium/high severity when the issue materially lowers answer quality. Use low severity for harmless wording.`;
+
+const STANCE_TRIGGER_PATTERNS: RegExp[] = [
+  /另一方面/,
+  /另一(?:個|種)角度/,
+  /也有人(?:會)?(?:認為|覺得)/,
+  /不能一概而論/,
+  /取決於(?:情況|脈絡|需求)/,
+  /各有(?:優缺點|利弊|道理)/,
+  /沒有(?:絕對|標準)答案/,
+  /需要(?:平衡|權衡)/,
+  /\bon the other hand\b/i,
+  /\bit depends\b/i,
+  /\bboth sides\b/i,
+  /\bthere is no (?:single|one-size-fits-all|absolute) answer\b/i,
+  /\bpros and cons\b/i,
+  /\btrade-?offs?\b/i,
+  /\bsome (?:people|might|may) (?:argue|say|think)\b/i,
+  /\bto be fair\b/i,
+];
 
 interface MonitorOptions {
   /** Number of valid sources available (RAG/Grok). 0 = no sources. */
@@ -140,15 +188,23 @@ function inspect(
   return { text: cited.text, violations };
 }
 
+function lastUserText(messages: ChatParam[]): string {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  return typeof lastUser?.content === "string"
+    ? lastUser.content
+    : "[multimodal message]";
+}
+
+function shouldRunStanceJudge(draft: string): boolean {
+  if (!config.sop.stanceGate) return false;
+  return STANCE_TRIGGER_PATTERNS.some((pattern) => pattern.test(draft));
+}
+
 async function audit(
   userMessages: ChatParam[],
   draft: string,
 ): Promise<string[]> {
-  const lastUser = [...userMessages].reverse().find((m) => m.role === "user");
-  const userText =
-    typeof lastUser?.content === "string"
-      ? lastUser.content
-      : "[multimodal message]";
+  const userText = lastUserText(userMessages);
   const verdict = await callStructured({
     schemaName: "strict_verify",
     jsonSchema: verifyJsonSchema as unknown as Record<string, unknown>,
@@ -163,6 +219,51 @@ async function audit(
   });
   if (verdict && !verdict.passed) return verdict.violations;
   return [];
+}
+
+async function auditStance(
+  messages: ChatParam[],
+  draft: string,
+): Promise<string[]> {
+  if (!shouldRunStanceJudge(draft)) return [];
+  const verdict = await callStructured({
+    schemaName: "stance_calibration",
+    jsonSchema: stanceJsonSchema as unknown as Record<string, unknown>,
+    validate: StanceResult,
+    messages: [
+      { role: "system", content: STANCE_SYSTEM },
+      {
+        role: "user",
+        content: `USER REQUEST:\n${lastUserText(
+          messages,
+        )}\n\nDRAFT ANSWER:\n${draft}\n\nJudge whether the draft forces artificial balance or unsupported uncertainty.`,
+      },
+    ],
+  });
+
+  // Fail open: if the judge cannot produce valid structured output, do not block
+  // a user answer for a style gate.
+  if (!verdict || verdict.passed) return [];
+  if (verdict.severity !== "medium" && verdict.severity !== "high") return [];
+
+  const issue = verdict.issueType ?? "stance_mismatch";
+  const snippets = verdict.offendingText
+    .filter((s) => s.trim().length > 0)
+    .slice(0, 3)
+    .map((s) => `"${s.trim()}"`)
+    .join("; ");
+  return [
+    [
+      `stance:${issue}`,
+      verdict.reason.trim(),
+      snippets ? `offending: ${snippets}` : "",
+      verdict.rewriteInstruction
+        ? `rewrite: ${verdict.rewriteInstruction.trim()}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" — "),
+  ];
 }
 
 /**
@@ -195,6 +296,7 @@ export async function runMonitor(
     // drive mandatory rewrites, but useful with a stronger model.
     const violations = [
       ...det.violations,
+      ...(await auditStance(messages, draft)),
       ...(config.sop.verifyGate ? await audit(messages, draft) : []),
     ];
     lastViolations = [...new Set(violations)];
@@ -220,7 +322,7 @@ export async function runMonitor(
       return {
         text: `${CONTROL_FAILURE_PREFIX}: ${lastViolations.join("; ")}`,
         controlNote:
-          "Control check: refused ??the answer did not pass mandatory checks after correction.",
+          "Control check: refused — the answer did not pass mandatory checks after correction.",
         violations: lastViolations,
         correctionRounds,
         action: "refuse",
@@ -233,7 +335,7 @@ export async function runMonitor(
       [
         ...messages,
         { role: "assistant", content: draft },
-        { role: "user", content: buildScoldCorrection(violations) },
+        { role: "user", content: buildScoldCorrection(violations, opts) },
       ],
       0.2,
       opts.signal,
@@ -258,7 +360,7 @@ export async function runMonitor(
     correctionRounds > 0
       ? `Control check: answer auto-corrected (${correctionRounds} round${
           correctionRounds > 1 ? "s" : ""
-        }) to meet sourcing and accuracy rules.`
+        }) to meet sourcing, accuracy, and stance-calibration rules.`
       : null;
 
   return {

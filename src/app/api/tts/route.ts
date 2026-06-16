@@ -6,6 +6,10 @@ export const dynamic = "force-dynamic";
 
 const VALID_VOICES = ["eve", "ara", "rex", "sal", "leo"];
 
+function maybeServiceTier(): Record<string, unknown> {
+  return config.grok.serviceTier ? { service_tier: config.grok.serviceTier } : {};
+}
+
 /** Proxy to xAI Text-to-Speech (/v1/tts). Returns MP3 audio bytes. */
 export async function POST(req: NextRequest) {
   if (!config.grok.enabled) {
@@ -27,7 +31,12 @@ export async function POST(req: NextRequest) {
       "Content-Type": "application/json",
       Authorization: `Bearer ${config.grok.apiKey}`,
     },
-    body: JSON.stringify({ text, voice_id: voice, language: "auto" }),
+    body: JSON.stringify({
+      text,
+      voice_id: voice,
+      language: "auto",
+      ...maybeServiceTier(),
+    }),
   });
 
   if (!res.ok) {

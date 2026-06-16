@@ -236,6 +236,7 @@ const TOOL_LABELS: Record<string, string> = {
   read_background_log: "📜 讀背景 log",
   list_background: "📋 背景程式列表",
   kill_background: "⛔ 關閉背景程式",
+  xai_cost: "💳 xAI 成本",
 };
 
 const SEARCH_TOOLS = new Set([
@@ -355,7 +356,7 @@ export function MessageBubble({
   message: UIMessage;
   streaming?: boolean;
   canEdit?: boolean;
-  onEdit?: (id: string, newText: string) => void;
+  onEdit?: (id: string, newText: string) => void | Promise<void>;
   onFork?: (id: string) => void;
   onRegenerate?: (id: string) => void;
   versionIndex?: number;
@@ -371,6 +372,7 @@ export function MessageBubble({
     "idle",
   );
   const [editing, setEditing] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState("");
   const [lightbox, setLightbox] = useState<string | null>(null);
@@ -448,8 +450,9 @@ export function MessageBubble({
           {versionCount && versionCount > 1 && (
             <span className="flex items-center gap-0.5 text-[11px] text-muted">
               <button
+                type="button"
                 onClick={onPrevVersion}
-                className={`disabled:opacity-30 ${btn}`}
+                className="inline-flex h-7 w-7 touch-manipulation items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-30"
                 disabled={streaming}
                 title="上一個版本"
               >
@@ -459,8 +462,9 @@ export function MessageBubble({
                 {versionIndex}/{versionCount}
               </span>
               <button
+                type="button"
                 onClick={onNextVersion}
-                className={`disabled:opacity-30 ${btn}`}
+                className="inline-flex h-7 w-7 touch-manipulation items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-30"
                 disabled={streaming}
                 title="下一個版本"
               >
@@ -566,17 +570,29 @@ export function MessageBubble({
             />
             <div className="mt-1.5 flex items-center gap-2">
               <button
-                onClick={() => {
-                  onEdit?.(message.id, draft);
-                  setEditing(false);
+                onClick={async () => {
+                  if (editSaving) return;
+                  setEditSaving(true);
+                  try {
+                    await onEdit?.(message.id, draft);
+                    setEditing(false);
+                  } finally {
+                    setEditSaving(false);
+                  }
                 }}
+                disabled={editSaving}
                 className="flex items-center gap-1 rounded-md bg-accent-strong px-2.5 py-1 text-xs text-white hover:bg-accent"
               >
-                <Check size={12} />
+                {editSaving ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Check size={12} />
+                )}
                 {isUser ? "儲存並重新產生" : "儲存"}
               </button>
               <button
                 onClick={() => setEditing(false)}
+                disabled={editSaving}
                 className="flex items-center gap-1 rounded-md px-2.5 py-1 text-xs text-muted hover:text-foreground"
               >
                 <X size={12} /> 取消

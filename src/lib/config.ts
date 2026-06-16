@@ -4,6 +4,13 @@ function envBool(name: string, fallback: boolean): boolean {
   return v === "1" || v.toLowerCase() === "true";
 }
 
+function envTier(name: string): "default" | "priority" | undefined {
+  const v = process.env[name]?.toLowerCase();
+  if (v === "priority") return "priority";
+  if (v === "default") return "default";
+  return undefined;
+}
+
 /**
  * Central runtime configuration, read from environment variables.
  * Defaults target a stock LM Studio install on localhost.
@@ -24,7 +31,7 @@ export const config = {
   },
   /**
    * Grok (xAI) search tool. Lets the local model borrow Grok's server-side
-   * X (Twitter) + web search and receive only Grok's synthesized answer.
+   * X + web search and receive only Grok's synthesized answer.
    */
   grok: {
     baseURL: process.env.XAI_BASE_URL ?? "https://api.x.ai/v1",
@@ -38,6 +45,21 @@ export const config = {
       "grok-build-0.1",
     enabled: Boolean(process.env.XAI_API_KEY),
     maxRounds: 6, // max tool-call rounds per turn
+    serviceTier: envTier("XAI_SERVICE_TIER"),
+    webSearch: {
+      enableImageSearch: envBool("XAI_WEB_SEARCH_IMAGE_SEARCH", true),
+      enableImageUnderstanding: envBool(
+        "XAI_WEB_SEARCH_IMAGE_UNDERSTANDING",
+        true,
+      ),
+    },
+    stt: {
+      streaming: envBool("XAI_STT_STREAMING", true),
+      smartTurn: Number(process.env.XAI_STT_SMART_TURN ?? 0.7),
+      smartTurnTimeoutMs: Number(
+        process.env.XAI_STT_SMART_TURN_TIMEOUT_MS ?? 3000,
+      ),
+    },
   },
   /**
    * Code execution sandbox. Runs model-written bash/python in a per-conversation
@@ -104,6 +126,9 @@ export const config = {
     // Verify gate: structured post-check of the draft against the SOP checklist
     // (only runs in blocking mode).
     verifyGate: envBool("SOP_VERIFY_GATE", false),
+    // Stance gate: triggered LLM-as-judge check that blocks artificial balance,
+    // false equivalence, vague caveats, and unsupported uncertainty.
+    stanceGate: envBool("SOP_STANCE_GATE", true),
     // Blocking mode: generate the full answer, run deterministic + verify gates,
     // and enforce/refuse in code BEFORE sending. Trades streaming UX for control.
     blocking: envBool("SOP_BLOCKING", true),
