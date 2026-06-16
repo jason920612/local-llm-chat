@@ -302,14 +302,16 @@ function AssistantBody({
 function DebugNotices({ notices }: { notices: string[] }) {
   if (notices.length === 0) return null;
   return (
-    <div className="mt-3 max-w-2xl rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-muted">
-      <div className="mb-1 font-medium text-amber-200">Debug</div>
+    <details className="mt-3 max-w-2xl rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-muted">
+      <summary className="cursor-pointer select-none font-medium text-amber-200">
+        Debug ({notices.length})
+      </summary>
       <ul className="space-y-1">
         {notices.map((notice, i) => (
           <li key={i}>{notice}</li>
         ))}
       </ul>
-    </div>
+    </details>
   );
 }
 

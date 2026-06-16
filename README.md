@@ -130,11 +130,11 @@ On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`
   over WebSocket (`wss://api.x.ai/v1/realtime`) using an ephemeral token.
 - **Cost tracking**: streamed Responses API calls capture xAI
   `usage.cost_in_usd_ticks` and show it in the message tool/metadata panel.
-- **Searched image rendering**: Grok searched-image render markers such as
-  `[[render_searched_image with image_id is img-1 size is "LARGE"]]` are
-  interpreted by the frontend. The server preserves xAI image id -> URL
-  metadata as `imageRefs` when the provider supplies it; unresolved markers are
-  shown with a small debug notice so missing metadata is observable.
+- **Searched image rendering**: xAI Web Search image results are expected to
+  appear as Markdown image embeds (`![alt](url)`), which the frontend renders
+  directly. Legacy/internal Grok `render_searched_image` markers are parsed only
+  as a compatibility/debug path because xAI does not guarantee public
+  image-id-to-URL metadata for them.
 - **Priority processing**: set `XAI_SERVICE_TIER=priority` to request priority
   scheduling for xAI text/image/video/voice inference. The default stays normal
   scheduling/cost.
