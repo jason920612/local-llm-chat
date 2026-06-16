@@ -200,7 +200,9 @@ function AssistantBody({
     );
   }
 
-  const leftImgs = imgs.filter((_, i) => !usedImg.has(i));
+  const leftImgs = imgs.filter(
+    (src, i) => !usedImg.has(i) && !answer.includes(src),
+  );
   const leftVids = vids.filter((_, i) => !usedVid.has(i));
   const leftArts = arts.filter((_, i) => !usedArt.has(i));
   // Real produced files (PDF, xlsx, …) the model didn't place inline are shown at

@@ -150,6 +150,26 @@ const BG_START_FN = "start_background";
 const BG_LOG_FN = "read_background_log";
 const BG_LIST_FN = "list_background";
 const BG_KILL_FN = "kill_background";
+const SEARCHED_IMAGE_MARKER = "[[render_searched_image";
+const SEARCHED_IMAGE_MARKER_RE = /\[\[render_searched_image\b[^\]]*\]\]/g;
+
+function stripSearchedImageMarkers(text: string): string {
+  return text.replace(SEARCHED_IMAGE_MARKER_RE, "");
+}
+
+function looksLikeImageUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return /\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function pushUniqueImageUrl(images: string[], url: string): void {
+  if (!url || !looksLikeImageUrl(url) || images.includes(url)) return;
+  images.push(url);
+}
 
 function maybeServiceTier(): Record<string, unknown> {
   return config.grok.serviceTier ? { service_tier: config.grok.serviceTier } : {};
@@ -469,6 +489,32 @@ function extractCitationUrls(output: unknown): string[] {
   return urls;
 }
 
+function extractSearchedImageUrls(output: unknown): string[] {
+  const urls: string[] = [];
+  if (!Array.isArray(output)) return urls;
+  for (const item of output as Array<{ content?: unknown }>) {
+    const content = item?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content as Array<{ text?: string; annotations?: unknown }>) {
+      if (typeof part?.text === "string") {
+        const markdownImageRe = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/g;
+        for (const match of part.text.matchAll(markdownImageRe)) {
+          pushUniqueImageUrl(urls, match[1]);
+        }
+      }
+
+      const anns = part?.annotations;
+      if (!Array.isArray(anns)) continue;
+      for (const a of anns as Array<{ type?: string; url?: string }>) {
+        if (a?.type === "url_citation" && typeof a.url === "string") {
+          pushUniqueImageUrl(urls, a.url);
+        }
+      }
+    }
+  }
+  return urls;
+}
+
 /** Append source URLs as citations, de-duplicating by URL (snippet holds URL). */
 function mergeCitationUrls(existing: Citation[], urls: string[]): Citation[] {
   if (!urls.length) return existing;
@@ -583,6 +629,39 @@ export function streamGrokResponses(
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const enq = (s: string) => controller.enqueue(enc.encode(s));
+      let searchedImagePending = "";
+      const enqOutput = (s: string) => {
+        searchedImagePending += s;
+        while (searchedImagePending) {
+          const start = searchedImagePending.indexOf(SEARCHED_IMAGE_MARKER);
+          if (start < 0) {
+            const keep = Math.min(
+              searchedImagePending.length,
+              SEARCHED_IMAGE_MARKER.length - 1,
+            );
+            const emitLen = searchedImagePending.length - keep;
+            if (emitLen > 0) {
+              enq(searchedImagePending.slice(0, emitLen));
+              searchedImagePending = searchedImagePending.slice(emitLen);
+            }
+            return;
+          }
+
+          if (start > 0) {
+            enq(searchedImagePending.slice(0, start));
+            searchedImagePending = searchedImagePending.slice(start);
+          }
+
+          const end = searchedImagePending.indexOf("]]");
+          if (end < 0) return;
+          searchedImagePending = searchedImagePending.slice(end + 2);
+        }
+      };
+      const flushOutput = () => {
+        if (!searchedImagePending) return;
+        enq(stripSearchedImageMarkers(searchedImagePending));
+        searchedImagePending = "";
+      };
       const emitTool = (tool: string, args: Record<string, unknown> = {}) => {
         const b64 = Buffer.from(
           JSON.stringify({ tool, args }),
@@ -597,6 +676,7 @@ export function streamGrokResponses(
         emitTool(name);
       };
       const images: string[] = [];
+      const searchedImages: string[] = [];
       const videos: string[] = [];
       const files: SandboxFileMeta[] = [];
       const artifacts: ArtifactMeta[] = [];
@@ -644,7 +724,7 @@ export function streamGrokResponses(
             if (type === "response.output_text.delta") {
               if (thinkOpen && !contentStarted) enq("</think>\n\n");
               contentStarted = true;
-              enq((ev.delta as string) ?? "");
+              enqOutput((ev.delta as string) ?? "");
             } else if (
               type === "response.reasoning_text.delta" ||
               type === "response.reasoning_summary_text.delta"
@@ -693,6 +773,9 @@ export function streamGrokResponses(
                 citations,
                 extractCitationUrls(r?.output),
               );
+              for (const url of extractSearchedImageUrls(r?.output)) {
+                pushUniqueImageUrl(searchedImages, url);
+              }
               if (Array.isArray(r?.citations)) {
                 citations = mergeCitationUrls(
                   citations,
@@ -958,7 +1041,7 @@ export function streamGrokResponses(
                 if (t === "response.output_text.delta") {
                   if (thinkOpen && !contentStarted) enq("</think>\n\n");
                   contentStarted = true;
-                  enq((ev.delta as string) ?? "");
+                  enqOutput((ev.delta as string) ?? "");
                 } else if (
                   t === "response.reasoning_text.delta" ||
                   t === "response.reasoning_summary_text.delta"
@@ -977,6 +1060,9 @@ export function streamGrokResponses(
                     citations,
                     extractCitationUrls(r?.output),
                   );
+                  for (const url of extractSearchedImageUrls(r?.output)) {
+                    pushUniqueImageUrl(searchedImages, url);
+                  }
                 }
               }
             }
@@ -984,9 +1070,12 @@ export function streamGrokResponses(
             /* leave whatever we have */
           }
         }
+        flushOutput();
+
         if (
           !contentStarted &&
           !images.length &&
+          !searchedImages.length &&
           !videos.length &&
           !artifacts.length
         ) {
@@ -997,6 +1086,7 @@ export function streamGrokResponses(
 
         if (
           citations.length ||
+          searchedImages.length ||
           images.length ||
           videos.length ||
           files.length ||
@@ -1008,7 +1098,7 @@ export function streamGrokResponses(
           const meta = Buffer.from(
             JSON.stringify({
               citations,
-              images,
+              images: [...images, ...searchedImages],
               videos,
               files,
               artifacts,
@@ -1063,6 +1153,7 @@ export async function runGrokResponses(
   messages: UIMessage[],
 ): Promise<GrokResponseResult> {
   const images: string[] = [];
+  const searchedImages: string[] = [];
   const videos: string[] = [];
 
   let resp = await postResponses({
@@ -1127,6 +1218,9 @@ export async function runGrokResponses(
 
   const output = resp.output ?? [];
   const citationUrls = extractCitationUrls(output);
+  for (const url of extractSearchedImageUrls(output)) {
+    pushUniqueImageUrl(searchedImages, url);
+  }
   const rawCitations =
     citationUrls.length > 0
       ? citationUrls
@@ -1134,10 +1228,10 @@ export async function runGrokResponses(
         ? resp.citations
         : [];
   return {
-    text: extractText(output),
+    text: stripSearchedImageMarkers(extractText(output)),
     reasoning: extractReasoning(output),
     citations: mapGrokCitations(rawCitations, 0),
-    images,
+    images: [...images, ...searchedImages],
     videos,
     costInUsdTicks,
   };
