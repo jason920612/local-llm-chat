@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Coderyo Chat</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #0b0b0d;
+        color: #e6e6e6;
+        font-family: system-ui, -apple-system, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      .box { opacity: 0.85; }
+    </style>
+  </head>
+  <body>
+    <!--
+      Fallback shell only. In normal operation the WebView loads the remote
+      tunnel (server.url in capacitor.config.json). This page is shown only if
+      the remote URL is unreachable.
+    -->
+    <div class="box">
+      <p>Coderyo Chat</p>
+      <p>無法連線到伺服器，請確認後端與 Cloudflare tunnel 已啟動。</p>
+    </div>
+  </body>
+</html>

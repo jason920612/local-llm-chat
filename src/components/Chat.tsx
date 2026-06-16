@@ -425,6 +425,53 @@ export function Chat({
     setSandboxFiles((prev) => prev.filter((f) => f.name !== name));
   }, []);
 
+  // Bridge for the Android shell's "share into app" feature. The native layer
+  // pushes shared files onto window.__coderyoSharedQueue (each entry is a JSON
+  // array of {name, mime, data:base64}) and calls __coderyoDrainShared. We mark
+  // __coderyoShareReady so native can poll for the mounted page before sending.
+  // No-op in a normal browser where nothing ever pushes to the queue.
+  useEffect(() => {
+    const w = window as unknown as {
+      __coderyoSharedQueue?: string[];
+      __coderyoDrainShared?: () => void;
+      __coderyoShareReady?: boolean;
+    };
+    const drain = () => {
+      const queue = w.__coderyoSharedQueue;
+      if (!Array.isArray(queue)) return;
+      while (queue.length) {
+        const json = queue.shift();
+        if (!json) continue;
+        try {
+          const items: { name?: string; mime?: string; data?: string }[] =
+            JSON.parse(json);
+          const files = items
+            .filter((it) => it.data)
+            .map((it) => {
+              const binary = atob(it.data as string);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+              }
+              return new File([bytes], it.name || "shared", {
+                type: it.mime || "application/octet-stream",
+              });
+            });
+          if (files.length) handleFiles(files);
+        } catch {
+          // ignore a malformed payload
+        }
+      }
+    };
+    w.__coderyoDrainShared = drain;
+    w.__coderyoShareReady = true;
+    drain(); // process anything queued before this effect ran
+    return () => {
+      delete w.__coderyoDrainShared;
+      delete w.__coderyoShareReady;
+    };
+  }, [handleFiles]);
+
   // Kick off a server-authoritative turn answering `parentId`. The assistant
   // placeholder, live tokens, and final message all arrive via the SSE
   // subscription — generation runs (and persists) on the server, so it survives

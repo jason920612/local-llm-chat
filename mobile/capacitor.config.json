@@ -1,0 +1,13 @@
+{
+  "appId": "com.coderyo.chat",
+  "appName": "Coderyo Chat",
+  "webDir": "www",
+  "server": {
+    "url": "https://grok.coderyo.com",
+    "cleartext": false,
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
