@@ -88,7 +88,7 @@ const NATIVE_GROK_DIRECTIVE = `
 - For requests to illustrate a real-world subject, visual reference, product, place, person, news scene, screenshot, or schematic/reference image, prefer web/image search for existing suitable images first. Use generated images only when the user explicitly asks for a new/original image/artwork or when no suitable existing image is available.
 - You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork and an existing searched image would not satisfy the request. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.
 
-- If web/image search finds existing images, use normal Markdown image URLs, source links, or Grok searched-image render markers such as \`[[render_searched_image with image_id is ID size is "LARGE"]]\`. Do not invent image ids; only use ids supplied by the search/image result.
+- If web/image search finds existing images, use normal Markdown image URLs, source links, or Grok searched-image render markers such as \`[[render_searched_image with image_id is ID size is "LARGE"]]\` or \`<grok:render type="render_searched_image"><argument name="image_id">ID</argument></grok:render>\`. Do not invent image ids; only use ids supplied by the search/image result.
 
 # INLINE MEDIA PLACEMENT
 When you generate images/videos or create files, control WHERE they appear by writing a marker on its own line at that point. Write ONLY the marker, with no label before it:

@@ -40,6 +40,148 @@ import { Artifact } from "./Artifact";
  * markers ([[image:N]] / [[video:N]] / [[file:name]]); unreferenced media is
  * appended at the end.
  */
+type InlineMarker =
+  | {
+      kind: "app";
+      media: "image" | "video" | "file" | "artifact";
+      ref: string;
+      start: number;
+      end: number;
+    }
+  | {
+      kind: "grok_searched_image";
+      imageId: string;
+      size: string;
+      start: number;
+      end: number;
+    };
+type AppMediaKind = Extract<InlineMarker, { kind: "app" }>["media"];
+
+function isAppMediaKind(value: string): value is AppMediaKind {
+  return (
+    value === "image" ||
+    value === "video" ||
+    value === "file" ||
+    value === "artifact"
+  );
+}
+
+function decodeGrokArg(value: string): string {
+  return value
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function readGrokAttr(attrs: string, name: string): string {
+  const m = attrs.match(
+    new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"),
+  );
+  return decodeGrokArg(m?.[1] ?? m?.[2] ?? m?.[3] ?? "");
+}
+
+function readGrokArgument(body: string, name: string): string {
+  const m = body.match(
+    new RegExp(
+      `<argument\\s+name=["']${name}["']\\s*>([\\s\\S]*?)<\\/argument>`,
+      "i",
+    ),
+  );
+  return decodeGrokArg(m?.[1] ?? "");
+}
+
+function parseInlineMarkers(text: string): InlineMarker[] {
+  const candidates: InlineMarker[] = [];
+
+  const pushGrokImage = (
+    start: number,
+    end: number,
+    imageId: string,
+    size: string,
+  ) => {
+    const id = decodeGrokArg(imageId);
+    if (!id) return;
+    candidates.push({
+      kind: "grok_searched_image",
+      imageId: id,
+      size: decodeGrokArg(size || "SMALL").toUpperCase(),
+      start,
+      end,
+    });
+  };
+
+  for (const m of text.matchAll(/\[\[(image|video|file|artifact):([^\]\n]+)\]\]/gi)) {
+    const media = m[1].toLowerCase();
+    if (!isAppMediaKind(media)) continue;
+    candidates.push({
+      kind: "app",
+      media,
+      ref: m[2].trim(),
+      start: m.index ?? 0,
+      end: (m.index ?? 0) + m[0].length,
+    });
+  }
+
+  for (const m of text.matchAll(
+    /\[\[\s*(?:render\s+)?render_searched_image\s+with\s+image_id\s+is\s+([^\s\]\*]+)(?:\s+size\s+is\s+(?:"([^"\n]+)"|([A-Za-z]+)))?\s*\]\]/gi,
+  )) {
+    pushGrokImage(
+      m.index ?? 0,
+      (m.index ?? 0) + m[0].length,
+      m[1],
+      m[2] ?? m[3] ?? "SMALL",
+    );
+  }
+
+  for (const m of text.matchAll(
+    /(?:\*\*)?(?:render\s+)?render_searched_image\s+with\s+image_id\s+is\s+([^\s\]\*]+)(?:\s+size\s+is\s+(?:"([^"\n]+)"|([A-Za-z]+)))?(?:\*\*)?/gi,
+  )) {
+    pushGrokImage(
+      m.index ?? 0,
+      (m.index ?? 0) + m[0].length,
+      m[1],
+      m[2] ?? m[3] ?? "SMALL",
+    );
+  }
+
+  for (const m of text.matchAll(/<grok:render\b([^>]*)>([\s\S]*?)<\/grok:render>/gi)) {
+    const attrs = m[1] ?? "";
+    const body = m[2] ?? "";
+    if (readGrokAttr(attrs, "type") !== "render_searched_image") continue;
+    pushGrokImage(
+      m.index ?? 0,
+      (m.index ?? 0) + m[0].length,
+      readGrokArgument(body, "image_id") || readGrokAttr(attrs, "image_id"),
+      readGrokArgument(body, "size") || readGrokAttr(attrs, "size") || "SMALL",
+    );
+  }
+
+  for (const m of text.matchAll(/<grok:render\b([^>]*)\/>/gi)) {
+    const attrs = m[1] ?? "";
+    if (readGrokAttr(attrs, "type") !== "render_searched_image") continue;
+    pushGrokImage(
+      m.index ?? 0,
+      (m.index ?? 0) + m[0].length,
+      readGrokAttr(attrs, "image_id"),
+      readGrokAttr(attrs, "size") || "SMALL",
+    );
+  }
+
+  candidates.sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start));
+  const result: InlineMarker[] = [];
+  let coveredUntil = -1;
+  for (const marker of candidates) {
+    if (marker.start < coveredUntil) continue;
+    result.push(marker);
+    coveredUntil = marker.end;
+  }
+  return result;
+}
+
 function AssistantBody({
   answer,
   images,
@@ -157,16 +299,14 @@ function AssistantBody({
   const usedFile = new Set<string>();
   const usedArt = new Set<number>();
   const nodes: React.ReactNode[] = [];
-  const re =
-    /\[\[(image|video|file|artifact):([^\]\n]+)\]\]|(?:\*\*)?(?:\[\[\s*)?(?:render\s+)?render_searched_image\s+with\s+image_id\s+is\s+([^\s\]\*]+)\s+size\s+is\s+(?:"([^"\n]+)"|([A-Za-z]+))(?:\s*\]\])?(?:\*\*)?/gi;
   let last = 0;
   let k = 0;
   let grokImageIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(answer)) !== null) {
+  const markers = parseInlineMarkers(answer);
+  for (const marker of markers) {
     // Drop a stray "image:/video:/file:" label the model may write before a marker.
     const seg = answer
-      .slice(last, m.index)
+      .slice(last, marker.start)
       .replace(/(?:image|video|file|artifact)\s*[:：]\s*$/i, "");
     if (seg.trim())
       nodes.push(
@@ -174,21 +314,21 @@ function AssistantBody({
           {seg}
         </Markdown>,
       );
-    if (m[1]) {
-      const ref = m[2].trim();
-      if (m[1] === "image") {
+    if (marker.kind === "app") {
+      const ref = marker.ref;
+      if (marker.media === "image") {
         const i = parseInt(ref, 10) - 1;
         if (imgs[i]) {
           usedImg.add(i);
           nodes.push(imageEl(imgs[i], `m${k}`));
         }
-      } else if (m[1] === "video") {
+      } else if (marker.media === "video") {
         const i = parseInt(ref, 10) - 1;
         if (vids[i]) {
           usedVid.add(i);
           nodes.push(videoEl(vids[i], `m${k}`));
         }
-      } else if (m[1] === "artifact") {
+      } else if (marker.media === "artifact") {
         const i = parseInt(ref, 10) - 1;
         if (arts[i]) {
           usedArt.add(i);
@@ -202,8 +342,6 @@ function AssistantBody({
         }
       }
     } else {
-      const imageId = m[3] ?? "";
-      const size = m[4] ?? m[5] ?? "SMALL";
       let i = grokImageIndex;
       while (i < imgs.length && usedImg.has(i)) i++;
       grokImageIndex = i + 1;
@@ -211,10 +349,12 @@ function AssistantBody({
         usedImg.add(i);
         nodes.push(imageEl(imgs[i], `grok${k}`));
       } else {
-        nodes.push(grokImageFallbackEl(imageId, size, `grok${k}`));
+        nodes.push(
+          grokImageFallbackEl(marker.imageId, marker.size, `grok${k}`),
+        );
       }
     }
-    last = m.index + m[0].length;
+    last = marker.end;
     k++;
   }
   const tail = answer.slice(last);
