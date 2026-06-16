@@ -81,6 +81,7 @@ function AssistantBody({
   files,
   artifacts,
   conversationId,
+  debugNotices,
   onImageClick,
   onOpenFile,
   streaming,
@@ -92,6 +93,7 @@ function AssistantBody({
   files?: SandboxFileMeta[];
   artifacts?: ArtifactMeta[];
   conversationId?: string | null;
+  debugNotices?: string[];
   onImageClick: (src: string) => void;
   onOpenFile: (name: string) => void;
   streaming?: boolean;
@@ -101,6 +103,7 @@ function AssistantBody({
   const vids = videos ?? [];
   const fls = files ?? [];
   const arts = artifacts ?? [];
+  const mediaDebugNotices = [...(debugNotices ?? [])];
 
   const artifactEl = (a: ArtifactMeta, key: string) => (
     <div key={key} className="my-2">
@@ -117,22 +120,6 @@ function AssistantBody({
       onClick={() => onImageClick(src)}
       className="my-2 max-h-72 cursor-zoom-in rounded-lg border border-border object-contain hover:opacity-90"
     />
-  );
-  const grokImageFallbackEl = (
-    imageId: string,
-    size: string,
-    reason: string,
-    key: string,
-  ) => (
-    <div
-      key={key}
-      className="my-2 max-w-md rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-muted"
-      title={`render_searched_image image_id=${imageId} size=${size}`}
-    >
-      Grok searched image unresolved: {imageId}
-      <span className="ml-2 uppercase opacity-70"> {size}</span>
-      <div className="mt-1 opacity-80">{reason}</div>
-    </div>
   );
   const videoEl = (src: string, key: string) => (
     <div key={key} className="my-2 max-w-md">
@@ -271,8 +258,8 @@ function AssistantBody({
               : imgs.length > 0
                 ? "Images were captured, but no logical imageRefs were captured."
                 : "No image metadata was captured for this marker.";
-          nodes.push(
-            grokImageFallbackEl(node.imageId, node.size, reason, `grok${k}`),
+          mediaDebugNotices.push(
+            `Grok searched-image marker unresolved: ${node.imageId} (${node.size}). ${reason}`,
           );
         }
       }
@@ -307,6 +294,7 @@ function AssistantBody({
       {leftImgs.map((s, i) => imageEl(s, `li${i}`))}
       {leftVids.map((s, i) => videoEl(s, `lv${i}`))}
       {leftFiles.map((f, i) => fileInline(f, `lf${i}`))}
+      <DebugNotices notices={mediaDebugNotices} />
     </>
   );
 }
@@ -730,11 +718,11 @@ export function MessageBubble({
               files={message.files}
               artifacts={message.artifacts}
               conversationId={conversationId}
+              debugNotices={debugNotices}
               onImageClick={setLightbox}
               onOpenFile={openFile}
               streaming={streaming}
             />
-            <DebugNotices notices={debugNotices} />
           </>
         )}
 
