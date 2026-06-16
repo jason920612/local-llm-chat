@@ -77,14 +77,18 @@ You have two tools:
    - Do NOT call it for general knowledge, reasoning, math, or coding — answer those directly.
    - After the result, base factual claims on it and cite sources with [n]. If it doesn't answer, say so. Never fabricate.
 2. "generate_image" — generates an image from a text prompt.
-   - Call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork.
+   - For requests to illustrate a real-world subject, visual reference, product, place, person, news scene, screenshot, or schematic/reference image, prefer using web/image search for existing suitable images first. Use generate_image only when the user explicitly asks for a new/original image/artwork or when no suitable existing image is available.
+   - Call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork and an existing searched image would not satisfy the request.
    - The image is shown to the user automatically; after it succeeds, just briefly confirm in the user's language. Do NOT describe a fake image or output image markdown yourself.`;
 
 const NATIVE_GROK_DIRECTIVE = `
 
 # CAPABILITIES
 - You can search X and the web automatically when a question needs real-time or external information — just use it when relevant, and cite sources with [n]. Web search can also find and inspect real images from the web; use that for real products, places, people, news photos, screenshots, or visual references.
-- You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.
+- For requests to illustrate a real-world subject, visual reference, product, place, person, news scene, screenshot, or schematic/reference image, prefer web/image search for existing suitable images first. Use generated images only when the user explicitly asks for a new/original image/artwork or when no suitable existing image is available.
+- You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork and an existing searched image would not satisfy the request. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.
+
+- If web/image search finds existing images, use normal Markdown image URLs or source links only. NEVER output Grok UI-only searched-image render markers such as \`[[render_searched_image ...]]\`; this client cannot render those opaque image ids.
 
 # INLINE MEDIA PLACEMENT
 When you generate images/videos or create files, control WHERE they appear by writing a marker on its own line at that point. Write ONLY the marker, with no label before it:

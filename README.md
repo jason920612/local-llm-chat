@@ -59,13 +59,13 @@ left to a system prompt. Every chat turn runs through a control pipeline
 3. **Deterministic validators** — citation whitelist (fabricated `[n]` sources are
    stripped/flagged), disclaimer/flattery stripping, empty-response detection. Pure
    code, no model trust.
-4. **Stance gate (default on, `SOP_STANCE_GATE`)** — a triggered
+4. **Stance gate (default on, `SOP_STANCE_GATE`)** — a structured
    LLM-as-judge check for artificial balance: false equivalence, fake opposing
    views, vague "it depends" caveats, unsupported uncertainty, or over-discussing
-   alternatives when the user already chose a direction. Cheap heuristics only
-   decide when to run the judge; the judge returns structured JSON; code decides
-   whether medium/high severity blocks and enters correction. Real tradeoffs,
-   real uncertainty, and genuinely controversial topics still pass.
+   alternatives when the user already chose a direction. The judge always
+   evaluates the draft when the gate is enabled, returns structured JSON, and
+   code decides whether medium/high severity blocks and enters correction. Real
+   tradeoffs, real uncertainty, and genuinely controversial topics still pass.
 5. **Strict monitor (default on)** — the governing path. Generate → monitor
    (deterministic checks) → on failure, issue a **harsh internal scold-correction**
    that forces a fixed answer → **sanitize so the scolding never leaks to the user** →

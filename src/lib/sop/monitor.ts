@@ -115,25 +115,6 @@ Fail only when the draft contains a concrete problem such as:
 Do NOT penalize real tradeoffs, real uncertainty, safety-critical caveats, or genuinely controversial topics.
 Only use medium/high severity when the issue materially lowers answer quality. Use low severity for harmless wording.`;
 
-const STANCE_TRIGGER_PATTERNS: RegExp[] = [
-  /另一方面/,
-  /另一(?:個|種)角度/,
-  /也有人(?:會)?(?:認為|覺得)/,
-  /不能一概而論/,
-  /取決於(?:情況|脈絡|需求)/,
-  /各有(?:優缺點|利弊|道理)/,
-  /沒有(?:絕對|標準)答案/,
-  /需要(?:平衡|權衡)/,
-  /\bon the other hand\b/i,
-  /\bit depends\b/i,
-  /\bboth sides\b/i,
-  /\bthere is no (?:single|one-size-fits-all|absolute) answer\b/i,
-  /\bpros and cons\b/i,
-  /\btrade-?offs?\b/i,
-  /\bsome (?:people|might|may) (?:argue|say|think)\b/i,
-  /\bto be fair\b/i,
-];
-
 interface MonitorOptions {
   /** Number of valid sources available (RAG/Grok). 0 = no sources. */
   allowedSources: number;
@@ -195,11 +176,6 @@ function lastUserText(messages: ChatParam[]): string {
     : "[multimodal message]";
 }
 
-function shouldRunStanceJudge(draft: string): boolean {
-  if (!config.sop.stanceGate) return false;
-  return STANCE_TRIGGER_PATTERNS.some((pattern) => pattern.test(draft));
-}
-
 async function audit(
   userMessages: ChatParam[],
   draft: string,
@@ -225,7 +201,7 @@ async function auditStance(
   messages: ChatParam[],
   draft: string,
 ): Promise<string[]> {
-  if (!shouldRunStanceJudge(draft)) return [];
+  if (!config.sop.stanceGate) return [];
   const verdict = await callStructured({
     schemaName: "stance_calibration",
     jsonSchema: stanceJsonSchema as unknown as Record<string, unknown>,
