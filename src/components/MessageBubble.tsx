@@ -26,6 +26,7 @@ import type {
   ToolCallTrace,
   ArtifactMeta,
   Citation,
+  ImageRef,
 } from "@/lib/types";
 import { interpretGrokRenderSyntax } from "@/lib/grok/render-interpreter";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
@@ -39,6 +40,7 @@ import { Artifact } from "./Artifact";
 function AssistantBody({
   answer,
   images,
+  imageRefs,
   videos,
   files,
   artifacts,
@@ -49,6 +51,7 @@ function AssistantBody({
 }: {
   answer: string;
   images?: string[];
+  imageRefs?: ImageRef[];
   videos?: string[];
   files?: SandboxFileMeta[];
   artifacts?: ArtifactMeta[];
@@ -58,6 +61,7 @@ function AssistantBody({
   streaming?: boolean;
 }) {
   const imgs = images ?? [];
+  const imgRefs = imageRefs ?? [];
   const vids = videos ?? [];
   const fls = files ?? [];
   const arts = artifacts ?? [];
@@ -155,7 +159,14 @@ function AssistantBody({
   const nodes: React.ReactNode[] = [];
   let k = 0;
   let grokImageIndex = 0;
+  const imageRefById = new Map(
+    imgRefs.map((ref) => [ref.id.toLowerCase(), ref]),
+  );
+  const imageRefUrls = new Set(imgRefs.map((ref) => ref.url));
   const renderNodes = interpretGrokRenderSyntax(answer);
+  const hasGrokImageRender = renderNodes.some(
+    (node) => node.kind === "grok_searched_image",
+  );
   for (const node of renderNodes) {
     if (node.kind === "text") {
       const seg = node.text.replace(
@@ -199,16 +210,23 @@ function AssistantBody({
         }
       }
     } else {
-      let i = grokImageIndex;
-      while (i < imgs.length && usedImg.has(i)) i++;
-      grokImageIndex = i + 1;
-      if (imgs[i]) {
-        usedImg.add(i);
-        nodes.push(imageEl(imgs[i], `grok${k}`));
+      const ref = imageRefById.get(node.imageId.toLowerCase());
+      if (ref?.url) {
+        const index = imgs.findIndex((src) => src === ref.url);
+        if (index >= 0) usedImg.add(index);
+        nodes.push(imageEl(ref.url, `grok${k}`));
       } else {
-        nodes.push(
-          grokImageFallbackEl(node.imageId, node.size, `grok${k}`),
-        );
+        let i = grokImageIndex;
+        while (i < imgs.length && usedImg.has(i)) i++;
+        grokImageIndex = i + 1;
+        if (imgs[i]) {
+          usedImg.add(i);
+          nodes.push(imageEl(imgs[i], `grok${k}`));
+        } else {
+          nodes.push(
+            grokImageFallbackEl(node.imageId, node.size, `grok${k}`),
+          );
+        }
       }
     }
     k++;
@@ -222,7 +240,10 @@ function AssistantBody({
   }
 
   const leftImgs = imgs.filter(
-    (src, i) => !usedImg.has(i) && !answer.includes(src),
+    (src, i) =>
+      !usedImg.has(i) &&
+      !answer.includes(src) &&
+      !(hasGrokImageRender && (imgRefs.length > 0 || imageRefUrls.has(src))),
   );
   const leftVids = vids.filter((_, i) => !usedVid.has(i));
   const leftArts = arts.filter((_, i) => !usedArt.has(i));
@@ -639,6 +660,7 @@ export function MessageBubble({
             <AssistantBody
               answer={answer}
               images={message.images}
+              imageRefs={message.imageRefs}
               videos={message.videos}
               files={message.files}
               artifacts={message.artifacts}

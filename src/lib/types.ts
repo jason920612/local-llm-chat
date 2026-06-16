@@ -7,6 +7,8 @@ export interface UIMessage {
   content: string;
   /** Base64 data URLs for attached images (vision), or generated image URLs. */
   images?: string[];
+  /** Logical image ids from a provider response, mapped to the rendered URL. */
+  imageRefs?: ImageRef[];
   /** Generated video URLs (Grok Imagine). */
   videos?: string[];
   /** Files produced in the conversation sandbox by code execution. */
@@ -29,6 +31,13 @@ export interface UIMessage {
 export interface ToolCallTrace {
   tool: string;
   args?: Record<string, unknown>;
+}
+
+export interface ImageRef {
+  id: string;
+  url: string;
+  title?: string;
+  source?: string;
 }
 
 export interface SandboxFileMeta {

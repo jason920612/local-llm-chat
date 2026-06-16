@@ -7,6 +7,7 @@ import type {
   ToolCallTrace,
   UIMessage,
   ArtifactMeta,
+  ImageRef,
 } from "./types";
 
 export async function fetchConversations(): Promise<Conversation[]> {
@@ -480,6 +481,7 @@ export interface StreamMedia {
   text: string;
   citations: Citation[];
   images: string[];
+  imageRefs: ImageRef[];
   videos: string[];
   files: SandboxFileMeta[];
   artifacts: ArtifactMeta[];
@@ -494,6 +496,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
       text: full,
       citations: [],
       images: [],
+      imageRefs: [],
       videos: [],
       files: [],
       artifacts: [],
@@ -503,6 +506,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
   const media = decodeB64Json<{
     citations?: Citation[];
     images?: string[];
+    imageRefs?: ImageRef[];
     videos?: string[];
     files?: SandboxFileMeta[];
     artifacts?: ArtifactMeta[];
@@ -512,6 +516,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
     text,
     citations: media.citations ?? [],
     images: media.images ?? [],
+    imageRefs: media.imageRefs ?? [],
     videos: media.videos ?? [],
     files: media.files ?? [],
     artifacts: media.artifacts ?? [],

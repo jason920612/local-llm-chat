@@ -413,6 +413,7 @@ function encodeMediaSentinel(media: ReturnType<typeof parseMediaSentinel>): stri
   const hasMedia =
     media.citations.length > 0 ||
     media.images.length > 0 ||
+    media.imageRefs.length > 0 ||
     media.videos.length > 0 ||
     media.files.length > 0 ||
     media.artifacts.length > 0 ||
@@ -422,6 +423,7 @@ function encodeMediaSentinel(media: ReturnType<typeof parseMediaSentinel>): stri
     JSON.stringify({
       citations: media.citations,
       images: media.images,
+      imageRefs: media.imageRefs,
       videos: media.videos,
       files: media.files,
       artifacts: media.artifacts,

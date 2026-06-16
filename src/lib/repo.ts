@@ -12,6 +12,7 @@ import type {
   SandboxFileMeta,
   ToolCallTrace,
   ArtifactMeta,
+  ImageRef,
 } from "./types";
 
 interface MessageRow {
@@ -20,6 +21,7 @@ interface MessageRow {
   role: string;
   content: string;
   images: string | null;
+  image_refs: string | null;
   videos: string | null;
   files: string | null;
   tool_calls: string | null;
@@ -38,6 +40,9 @@ function rowToMessage(row: MessageRow): UIMessage {
     content: row.content,
     status: (row.status as UIMessage["status"]) ?? undefined,
     images: row.images ? (JSON.parse(row.images) as string[]) : undefined,
+    imageRefs: row.image_refs
+      ? (JSON.parse(row.image_refs) as ImageRef[])
+      : undefined,
     videos: row.videos ? (JSON.parse(row.videos) as string[]) : undefined,
     files: row.files
       ? (JSON.parse(row.files) as SandboxFileMeta[])
@@ -233,14 +238,15 @@ export function addMessage(conversationId: string, m: UIMessage): void {
   // OR REPLACE so a finalized assistant message can overwrite a placeholder.
   db.prepare(
     `INSERT OR REPLACE INTO messages
-       (id, conversation_id, role, content, images, videos, files, tool_calls, citations, artifacts, created_at, parent_id, active_child_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, conversation_id, role, content, images, image_refs, videos, files, tool_calls, citations, artifacts, created_at, parent_id, active_child_id, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     m.id,
     conversationId,
     m.role,
     m.content,
     m.images ? JSON.stringify(m.images) : null,
+    m.imageRefs ? JSON.stringify(m.imageRefs) : null,
     m.videos ? JSON.stringify(m.videos) : null,
     m.files ? JSON.stringify(m.files) : null,
     m.toolCalls ? JSON.stringify(m.toolCalls) : null,

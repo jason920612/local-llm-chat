@@ -1,5 +1,11 @@
 ﻿import { config } from "../config";
-import type { Citation, UIMessage, SandboxFileMeta, ArtifactMeta } from "../types";
+import type {
+  Citation,
+  UIMessage,
+  SandboxFileMeta,
+  ArtifactMeta,
+  ImageRef,
+} from "../types";
 import {
   validateMermaid,
   validateChart,
@@ -163,6 +169,15 @@ function looksLikeImageUrl(url: string): boolean {
 function pushUniqueImageUrl(images: string[], url: string): void {
   if (!url || !looksLikeImageUrl(url) || images.includes(url)) return;
   images.push(url);
+}
+
+function pushUniqueImageRef(refs: ImageRef[], ref: ImageRef): void {
+  if (!ref.id || !looksLikeImageUrl(ref.url)) return;
+  const sameId = refs.some(
+    (x) => x.id.toLowerCase() === ref.id.toLowerCase(),
+  );
+  if (sameId || refs.some((x) => x.url === ref.url)) return;
+  refs.push(ref);
 }
 
 function maybeServiceTier(): Record<string, unknown> {
@@ -454,6 +469,7 @@ export interface GrokResponseResult {
   reasoning: string;
   citations: Citation[];
   images: string[];
+  imageRefs: ImageRef[];
   videos: string[];
   costInUsdTicks: number;
 }
@@ -483,30 +499,54 @@ function extractCitationUrls(output: unknown): string[] {
   return urls;
 }
 
-function extractSearchedImageUrls(output: unknown): string[] {
-  const urls: string[] = [];
-  if (!Array.isArray(output)) return urls;
+function imageRefIdFromAnnotation(
+  annotation: Record<string, unknown>,
+  fallbackIndex: number,
+): string {
+  const direct =
+    annotation.image_id ?? annotation.imageId ?? annotation.id ?? annotation.title;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  return `img-${fallbackIndex}`;
+}
+
+function extractSearchedImageRefs(output: unknown): ImageRef[] {
+  const refs: ImageRef[] = [];
+  if (!Array.isArray(output)) return refs;
   for (const item of output as Array<{ content?: unknown }>) {
     const content = item?.content;
     if (!Array.isArray(content)) continue;
     for (const part of content as Array<{ text?: string; annotations?: unknown }>) {
-      if (typeof part?.text === "string") {
-        const markdownImageRe = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/g;
-        for (const match of part.text.matchAll(markdownImageRe)) {
-          pushUniqueImageUrl(urls, match[1]);
+      const anns = part?.annotations;
+      if (Array.isArray(anns)) {
+        for (const a of anns as Array<Record<string, unknown>>) {
+          const url = typeof a.url === "string" ? a.url : "";
+          if (a?.type === "url_citation" && typeof a.url === "string") {
+            const title = typeof a.title === "string" ? a.title : undefined;
+            pushUniqueImageRef(refs, {
+              id: imageRefIdFromAnnotation(a, refs.length + 1),
+              url,
+              title,
+              source: "grok",
+            });
+          }
         }
       }
 
-      const anns = part?.annotations;
-      if (!Array.isArray(anns)) continue;
-      for (const a of anns as Array<{ type?: string; url?: string }>) {
-        if (a?.type === "url_citation" && typeof a.url === "string") {
-          pushUniqueImageUrl(urls, a.url);
+      if (typeof part?.text === "string") {
+        const markdownImageRe = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g;
+        for (const match of part.text.matchAll(markdownImageRe)) {
+          const title = match[1]?.trim() || undefined;
+          pushUniqueImageRef(refs, {
+            id: title || `img-${refs.length + 1}`,
+            url: match[2],
+            title,
+            source: "grok",
+          });
         }
       }
     }
   }
-  return urls;
+  return refs;
 }
 
 /** Append source URLs as citations, de-duplicating by URL (snippet holds URL). */
@@ -637,7 +677,7 @@ export function streamGrokResponses(
         emitTool(name);
       };
       const images: string[] = [];
-      const searchedImages: string[] = [];
+      const searchedImageRefs: ImageRef[] = [];
       const videos: string[] = [];
       const files: SandboxFileMeta[] = [];
       const artifacts: ArtifactMeta[] = [];
@@ -734,8 +774,8 @@ export function streamGrokResponses(
                 citations,
                 extractCitationUrls(r?.output),
               );
-              for (const url of extractSearchedImageUrls(r?.output)) {
-                pushUniqueImageUrl(searchedImages, url);
+              for (const ref of extractSearchedImageRefs(r?.output)) {
+                pushUniqueImageRef(searchedImageRefs, ref);
               }
               if (Array.isArray(r?.citations)) {
                 citations = mergeCitationUrls(
@@ -1021,8 +1061,8 @@ export function streamGrokResponses(
                     citations,
                     extractCitationUrls(r?.output),
                   );
-                  for (const url of extractSearchedImageUrls(r?.output)) {
-                    pushUniqueImageUrl(searchedImages, url);
+                  for (const ref of extractSearchedImageRefs(r?.output)) {
+                    pushUniqueImageRef(searchedImageRefs, ref);
                   }
                 }
               }
@@ -1034,7 +1074,7 @@ export function streamGrokResponses(
         if (
           !contentStarted &&
           !images.length &&
-          !searchedImages.length &&
+          !searchedImageRefs.length &&
           !videos.length &&
           !artifacts.length
         ) {
@@ -1045,7 +1085,7 @@ export function streamGrokResponses(
 
         if (
           citations.length ||
-          searchedImages.length ||
+          searchedImageRefs.length ||
           images.length ||
           videos.length ||
           files.length ||
@@ -1057,7 +1097,11 @@ export function streamGrokResponses(
           const meta = Buffer.from(
             JSON.stringify({
               citations,
-              images: [...images, ...searchedImages],
+              images: [
+                ...images,
+                ...searchedImageRefs.map((ref) => ref.url),
+              ],
+              imageRefs: searchedImageRefs,
               videos,
               files,
               artifacts,
@@ -1112,7 +1156,7 @@ export async function runGrokResponses(
   messages: UIMessage[],
 ): Promise<GrokResponseResult> {
   const images: string[] = [];
-  const searchedImages: string[] = [];
+  const searchedImageRefs: ImageRef[] = [];
   const videos: string[] = [];
 
   let resp = await postResponses({
@@ -1177,8 +1221,8 @@ export async function runGrokResponses(
 
   const output = resp.output ?? [];
   const citationUrls = extractCitationUrls(output);
-  for (const url of extractSearchedImageUrls(output)) {
-    pushUniqueImageUrl(searchedImages, url);
+  for (const ref of extractSearchedImageRefs(output)) {
+    pushUniqueImageRef(searchedImageRefs, ref);
   }
   const rawCitations =
     citationUrls.length > 0
@@ -1190,7 +1234,8 @@ export async function runGrokResponses(
     text: extractText(output),
     reasoning: extractReasoning(output),
     citations: mapGrokCitations(rawCitations, 0),
-    images: [...images, ...searchedImages],
+    images: [...images, ...searchedImageRefs.map((ref) => ref.url)],
+    imageRefs: searchedImageRefs,
     videos,
     costInUsdTicks,
   };

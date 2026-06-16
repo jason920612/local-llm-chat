@@ -120,6 +120,11 @@ function init(): Database.Database {
     /* column already exists */
   }
   try {
+    db.exec(`ALTER TABLE messages ADD COLUMN image_refs TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
     db.exec(`ALTER TABLE messages ADD COLUMN files TEXT`);
   } catch {
     /* column already exists */
