@@ -1231,6 +1231,61 @@ def run_job(job_dir, req):
     )
 
 
+def capture_stream_frame(width, height):
+    """Grab the VM screen and write a downscaled JPEG for the live VM Console.
+    Uses a dedicated file so it never races observe's screen-small.jpg."""
+    env = computer_env()
+    full = COMPUTER / "stream-full.png"
+    rc, _out, _err = run_cmd(["scrot", "-o", str(full)], timeout=8, env=env)
+    if rc != 0 or not full.exists():
+        return False
+    try:
+        from PIL import Image
+
+        img = Image.open(full).convert("RGB")
+        max_w = 960
+        if img.width > max_w:
+            h = max(1, int(img.height * (max_w / img.width)))
+            img = img.resize((max_w, h))
+        tmp = COMPUTER / "screen-stream.tmp.jpg"
+        final = COMPUTER / "screen-stream.jpg"
+        img.save(tmp, format="JPEG", quality=60, optimize=True)
+        os.replace(tmp, final)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def screen_stream_loop(computer_cfg):
+    """Live VM Console capture loop. Captures ~2-3 fps ONLY while the server keeps
+    `.run/computer/stream.on` fresh (a heartbeat it refreshes per SSE subscriber);
+    when nobody is watching it idles so it never burns VM CPU. Brings the desktop
+    up on first demand so opening the console auto-starts the screen."""
+    flag = COMPUTER / "stream.on"
+    auto = bool(computer_cfg.get("autoInstall", True))
+    width = int(computer_cfg.get("width") or 1280)
+    height = int(computer_cfg.get("height") or 720)
+    booted = False
+    while True:
+        try:
+            fresh = flag.exists() and (time.time() - flag.stat().st_mtime) < 6
+        except Exception:  # noqa: BLE001
+            fresh = False
+        if not fresh:
+            booted = False
+            time.sleep(0.5)
+            continue
+        try:
+            if not booted:
+                # Ensure Xvfb/openbox/Chromium/xterm are up (no OCR needed).
+                start_computer(width, height, auto_install=auto, ocr=False)
+                booted = True
+            capture_stream_frame(width, height)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.35)
+
+
 def daemon():
     RUN.mkdir(parents=True, exist_ok=True)
     JOBS.mkdir(parents=True, exist_ok=True)
@@ -1248,6 +1303,12 @@ def daemon():
                 "auto_install": bool(computer_cfg.get("autoInstall", True)),
                 "ocr": bool(computer_cfg.get("ocr", True)),
             },
+            daemon=True,
+        ).start()
+        # Live VM Console capture loop (idle until the server requests frames).
+        threading.Thread(
+            target=screen_stream_loop,
+            args=(computer_cfg,),
             daemon=True,
         ).start()
 

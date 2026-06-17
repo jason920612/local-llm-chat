@@ -182,6 +182,35 @@ export function browserAction(
   return driver.browserAction(conversationId, action);
 }
 
+/**
+ * Refresh the live VM Console heartbeat. The guest daemon's capture loop only
+ * grabs frames while `.run/computer/stream.on` is fresh, so the SSE route calls
+ * this each tick; when subscribers leave, the file goes stale and capture stops.
+ */
+export function refreshScreenStream(conversationId: string): void {
+  const dir = workspaceDir(conversationId);
+  const cdir = path.join(dir, ".run", "computer");
+  try {
+    fs.mkdirSync(cdir, { recursive: true });
+    fs.writeFileSync(path.join(cdir, "stream.on"), String(Date.now()));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Read the latest live VM Console frame (downscaled JPEG), or null if none yet. */
+export async function readScreenFrame(
+  conversationId: string,
+): Promise<Buffer | null> {
+  const dir = workspaceDir(conversationId);
+  const p = path.join(dir, ".run", "computer", "screen-stream.jpg");
+  try {
+    return await fsp.readFile(p);
+  } catch {
+    return null;
+  }
+}
+
 /** Shallow-clone a git repo into the conversation sandbox; return its tree. */
 export function cloneRepo(
   conversationId: string,

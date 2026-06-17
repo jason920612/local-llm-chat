@@ -9,7 +9,15 @@ import {
   useState,
 } from "react";
 import { nanoid } from "nanoid";
-import { Bot, BookOpen, Globe, AudioLines, FolderOpen, Menu } from "lucide-react";
+import {
+  Bot,
+  BookOpen,
+  Globe,
+  AudioLines,
+  FolderOpen,
+  Menu,
+  Monitor,
+} from "lucide-react";
 import type { Conversation, UIMessage, SandboxFileMeta } from "@/lib/types";
 import {
   createConversationApi,
@@ -55,6 +63,8 @@ export function Chat({
   onToggleGrok,
   onCreated,
   onPersisted,
+  onToggleConsole,
+  consoleOpen = false,
 }: {
   conversationId: string | null;
   title: string | null;
@@ -68,6 +78,8 @@ export function Chat({
   onToggleGrok: () => void;
   onCreated: (conv: Conversation) => void;
   onPersisted: () => void;
+  onToggleConsole?: () => void;
+  consoleOpen?: boolean;
 }) {
   // The full message TREE for this conversation; the displayed thread is the
   // path derived from it (computePath), following each node's selected branch.
@@ -752,6 +764,20 @@ export function Chat({
           >
             <FolderOpen size={13} />
             <span className="hidden lg:inline">Files</span>
+          </button>
+        )}
+        {conversationId && onToggleConsole && (
+          <button
+            onClick={onToggleConsole}
+            title="View the VM screen (view-only)"
+            className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-xs transition sm:px-3 ${
+              consoleOpen
+                ? "border-accent bg-accent/15 text-accent"
+                : "border-border text-muted hover:text-foreground"
+            }`}
+          >
+            <Monitor size={13} />
+            <span className="hidden lg:inline">Console</span>
           </button>
         )}
         {grokEnabled && (

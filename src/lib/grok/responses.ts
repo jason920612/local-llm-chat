@@ -157,6 +157,7 @@ const COMPUTER_ACTION_FN = "computer_action";
 const BROWSER_OPEN_URL_FN = "browser_open_url";
 const BROWSER_OBSERVE_FN = "browser_observe";
 const BROWSER_ACTION_FN = "browser_action";
+const SEND_SCREENSHOT_FN = "send_screenshot";
 
 function looksLikeImageUrl(url: string): boolean {
   try {
@@ -583,6 +584,29 @@ const BROWSER_ACTION_TOOL = {
   },
 };
 
+const SEND_SCREENSHOT_TOOL = {
+  type: "function",
+  name: SEND_SCREENSHOT_FN,
+  description:
+    "Capture the current VM screen (or browser page) and SHOW it to the user as an image embedded in your reply. Use when the user asks to see the screen, or to share the visual state/result of a computer-use task. This is the ONLY way the user sees the VM screen — computer_observe/browser_observe screenshots are for you, not the user.",
+  parameters: {
+    type: "object",
+    properties: {
+      target: {
+        type: "string",
+        enum: ["screen", "browser"],
+        description:
+          "What to capture: the full VM desktop ('screen', default) or the browser page ('browser').",
+      },
+      caption: {
+        type: "string",
+        description:
+          "Optional short caption for the image; also mention it in your reply text.",
+      },
+    },
+  },
+};
+
 /**
  * Tools sent to the Responses API. The sandbox-backed tools (run_code, clone_repo,
  * use_skill, install_skill, background-process tools) are only offered when the
@@ -607,6 +631,7 @@ function toolset() {
   ) {
     tools.push(COMPUTER_OBSERVE_TOOL, COMPUTER_ACTION_TOOL);
     tools.push(BROWSER_OPEN_URL_TOOL, BROWSER_OBSERVE_TOOL, BROWSER_ACTION_TOOL);
+    tools.push(SEND_SCREENSHOT_TOOL);
   }
   return tools;
 }
@@ -1073,6 +1098,8 @@ export function streamGrokResponses(
               ms?: number;
               element_id?: string;
               timeout_ms?: number;
+              target?: string;
+              caption?: string;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -1291,6 +1318,40 @@ export function streamGrokResponses(
               } else {
                 const result = await browserAction(conversationId, action);
                 out = JSON.stringify(result);
+              }
+            } else if (c.name === SEND_SCREENSHOT_FN) {
+              const target = args.target === "browser" ? "browser" : "screen";
+              const caption =
+                typeof args.caption === "string" ? args.caption : "";
+              emitTool("send_screenshot", { target, caption });
+              const obs =
+                target === "browser"
+                  ? await browserObserve(conversationId, {
+                      includeScreenshot: true,
+                    })
+                  : await computerObserve(conversationId, {
+                      includeScreenshot: true,
+                      ocr: false,
+                    });
+              const shotPath = obs.screenshot?.path;
+              if (obs.ok && shotPath) {
+                // Surface the full-res screenshot to the chat via the message's
+                // images[] (same channel generated images use). Served with an
+                // image MIME by the sandbox file route so it renders inline.
+                // (Push directly: this is a trusted internal URL whose extension
+                // lives in the query string, so the looksLikeImageUrl guard —
+                // meant for arbitrary model URLs — would wrongly reject it.)
+                const shotUrl = `/api/sandbox/${encodeURIComponent(
+                  conversationId,
+                )}/file?name=${encodeURIComponent(shotPath)}`;
+                if (!images.includes(shotUrl)) images.push(shotUrl);
+                out = `Screenshot shown to the user${
+                  caption ? ` (caption: ${caption})` : ""
+                }.`;
+              } else {
+                out = `send_screenshot failed: ${
+                  obs.error ?? "no screenshot captured"
+                }`;
               }
             } else {
               out = `Unknown tool: ${c.name}`;

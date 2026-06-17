@@ -15,6 +15,7 @@ import { DocumentsModal } from "./DocumentsModal";
 import { SettingsModal } from "./SettingsModal";
 import { SkillsModal } from "./SkillsModal";
 import { ControlDashboardModal } from "./ControlDashboardModal";
+import { VmConsolePanel } from "./VmConsolePanel";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useIsMobile } from "@/lib/useIsMobile";
 
@@ -40,6 +41,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [consoleOpen, setConsoleOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const isMobile = useIsMobile();
@@ -219,6 +221,14 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
         onToggleGrok={() => setUseGrok((v) => !v)}
         onCreated={handleCreated}
         onPersisted={refresh}
+        onToggleConsole={() => setConsoleOpen((v) => !v)}
+        consoleOpen={consoleOpen}
+      />
+      <VmConsolePanel
+        open={consoleOpen}
+        conversationId={activeId}
+        isMobile={isMobile}
+        onClose={() => setConsoleOpen(false)}
       />
       <DocumentsModal
         open={docsOpen}
