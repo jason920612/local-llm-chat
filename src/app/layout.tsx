@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { ChunkLoadRecovery } from "@/components/ChunkLoadRecovery";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -19,7 +20,10 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-Hant">
-      <body>{children}</body>
+      <body>
+        <ChunkLoadRecovery />
+        {children}
+      </body>
     </html>
   );
 }
