@@ -21,6 +21,8 @@ generation, cloud STT/TTS, and realtime voice.
 - 📄 **RAG** — upload PDF / text / markdown, chat grounded in your documents with citations
 - 🎙️ **Voice** — speech-to-text via Whisper (runs in your browser), text-to-speech via OS voices
 - 🌐 **Grok search tool** — the local model can borrow Grok's X + web search via a `grok_search` tool and receive only Grok's synthesized answer (saves context)
+- 💻 **Code sandbox** — run model-written Python/bash per conversation; optionally in a per-conversation Cloud Hypervisor **microVM** (own kernel, root, persistent disk, true isolation)
+- 🖥️ **Computer use** — inside the VM the model can drive a virtual desktop and browser (`computer_*` / `browser_*` tools), read the screen with **PP-OCRv6** OCR, and post screenshots to the chat; a live view-only **VM Console** lets you watch it work
 - 🗂️ **Conversation history** — saved locally in SQLite
 - ⚙️ **Background jobs** — local host background commands can run concurrently with limits, log tails, timeout handling, and kill support
 - 📋 **Jobs / SOP console** — a sidebar console shows background jobs and recent SOP control events
@@ -177,12 +179,15 @@ computer-use call auto-installs the required VM packages by default
 downscaled screenshot data URL for Grok. OCR is opt-in: when Grok sets
 `ocr=true` it also gets on-screen text elements with bounding boxes and clickable
 center coordinates, via **PP-OCRv6 (medium)** (PaddleOCR) running CPU-only inside
-the VM (~1-2s/frame). Bake it into `base.img` with
-`sandbox-host/build/stage3f-ocr.sh` so OCR works offline and the first call is
-fast; otherwise it lazily pip-installs PaddleOCR and downloads weights at runtime.
-Actions send smooth mouse movement, clicks, keyboard input, scroll, or wait
-events only to the VM display; the host desktop, host clipboard, and host input
-devices are not touched.
+the VM (~1-2s/frame). Because the VM's system Python is 3.14 (no PaddlePaddle
+wheel), PaddleOCR runs under a standalone CPython 3.12 baked into `base.img` and
+driven as a warm long-lived worker (`sandbox-host/guest/ocr-worker.py`). Bake it
+with `sandbox-host/build/stage3f-ocr.sh` — OCR requires this prebake and cannot be
+installed at runtime. Actions send smooth mouse movement, clicks, keyboard input,
+scroll, or wait events only to the VM display; the host desktop, host clipboard,
+and host input devices are not touched. `computer_observe`/`browser_observe`
+screenshots go to the model only — to put a screenshot in front of the user, Grok
+calls `send_screenshot`, which embeds the current screen as an image in its reply.
 
 Browser-aware computer use is exposed through `browser_open_url`,
 `browser_observe`, and `browser_action`. These run Playwright Chromium inside
@@ -191,6 +196,13 @@ boxes, URL, and title. Prefer these browser tools for websites; keep raw
 coordinate `computer_action` for non-browser GUI/canvas/image-only targets.
 Run `sandbox-host/build/stage3e-browser.sh` during VM provisioning to bake the
 Playwright Chromium bundle into `base.img`.
+
+A live, **view-only VM Console** (the *Console* button in the chat header) lets
+you watch what the model is doing: it streams the VM screen to the browser over
+SSE (`/api/sandbox/<id>/screen-stream`) at ~2-3 fps as downscaled JPEG frames.
+The guest only captures frames while the panel is open (a heartbeat the server
+refreshes per viewer), so it costs no VM CPU when nobody is watching, and opening
+it auto-starts the virtual desktop.
 
 Inside the VM the model runs as **root** on a **writable** filesystem: a tmpfs
 overlay over the read-only base, with the upper layer + `/tmp` backed by a

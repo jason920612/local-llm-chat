@@ -11,6 +11,7 @@ import {
   type HealthStatus,
   type RuntimeSettings,
 } from "@/lib/api";
+import { getAutoScroll, setAutoScroll } from "@/lib/uiPrefs";
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -42,9 +43,11 @@ export function SettingsModal({
   const [saving, setSaving] = useState(false);
   const [promptDraft, setPromptDraft] = useState("");
   const [promptSaved, setPromptSaved] = useState(false);
+  const [autoScroll, setAutoScrollState] = useState(true);
 
   useEffect(() => {
     if (!open) return;
+    setAutoScrollState(getAutoScroll());
     fetchAppConfig().then(setConfig).catch(() => setConfig(null));
     fetchHealth().then(setHealth);
     fetchSettings()
@@ -147,6 +150,41 @@ export function SettingsModal({
             ) : (
               <div className="text-xs text-red-300">{health?.error}</div>
             )}
+          </div>
+
+          <h3 className="mb-1 mt-5 text-xs font-semibold uppercase tracking-wide text-muted">
+            Interface
+          </h3>
+          <div className="rounded-xl border border-border bg-surface-2 px-4 py-3">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm text-muted">
+                Auto-scroll
+                <span className="ml-1 text-[11px] text-muted/70">
+                  (follow new messages to the bottom)
+                </span>
+              </span>
+              <button
+                onClick={() => {
+                  const next = !autoScroll;
+                  setAutoScroll(next);
+                  setAutoScrollState(next);
+                }}
+                className={`relative h-5 w-9 shrink-0 rounded-full transition ${
+                  autoScroll ? "bg-accent-strong" : "bg-border"
+                }`}
+                title="Toggle auto-scroll"
+              >
+                <span
+                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                    autoScroll ? "left-[18px]" : "left-0.5"
+                  }`}
+                />
+              </button>
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted">
+              When off, the conversation won&apos;t jump to the bottom as replies
+              stream in — you scroll freely. Saved on this device.
+            </p>
           </div>
 
           {settings && (

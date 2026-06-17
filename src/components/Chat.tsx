@@ -47,6 +47,7 @@ import { ConnectionStatus } from "./ConnectionStatus";
 import { VoiceMode } from "./VoiceMode";
 import { SandboxExplorer } from "./SandboxExplorer";
 import { mediaPermissionBlockedReason, recordingSupported } from "@/lib/speech";
+import { useAutoScrollPref } from "@/lib/uiPrefs";
 
 const AUTO_SCROLL_BOTTOM_PX = 96;
 
@@ -112,6 +113,8 @@ export function Chat({
   const loadedId = useRef<string | null>(null);
   // The conversation whose fetch is currently in flight (dedupe re-renders).
   const loadingId = useRef<string | null>(null);
+  // Per-device preference: when off, the thread never auto-scrolls to the bottom.
+  const autoScrollEnabled = useAutoScrollPref();
 
   // The visible conversation path through the tree.
   const messages = useMemo(
@@ -380,9 +383,9 @@ export function Chat({
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el || !autoScrollRef.current) return;
+    if (!el || !autoScrollRef.current || !autoScrollEnabled) return;
     el.scrollTo({ top: el.scrollHeight });
-  }, [messages]);
+  }, [messages, autoScrollEnabled]);
 
   // Robust drag-overlay reset: dropping or ending a drag anywhere clears it, and
   // we preventDefault globally so the browser never opens a stray dropped file.

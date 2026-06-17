@@ -33,9 +33,16 @@ bash build/stage2b.sh       # copy kernel + smoke-test it boots under CH
 bash build/stage3.sh        # build base ext4 rootfs (ubuntu-base + python/pip/git/busybox)
 bash build/stage3b.sh       # add kmod + depmod (so guest can modprobe virtiofs/overlay)
 bash build/stage3c.sh       # add iproute2/curl + net-test init
+bash build/stage3d-computer.sh # (optional) bake the GUI stack: Xvfb/openbox/Chromium/xdotool/scrot/wmctrl/xterm
+bash build/stage3e-browser.sh  # (optional) bake Playwright Chromium for the browser_* tools
+bash build/stage3f-ocr.sh      # (optional) bake standalone CPython 3.12 + PaddleOCR PP-OCRv6 for OCR
 bash build/stage4-inject.sh # inject guest files into base.img via debugfs
 bash install-sudoers.sh     # scoped passwordless sudo for the per-session bridge
 ```
+
+The `stage3d/3e/3f` bakes are optional but required for computer-use, browser
+tools, and OCR respectively. `base.img` needs headroom for them — grow it first
+if tight (`truncate -s 6G images/base.img && e2fsck -fy images/base.img && resize2fs images/base.img`).
 
 Artifacts produced (git-ignored, not committed): `bin/cloud-hypervisor`,
 `kernel/vmlinuz`, `images/base.img`.
@@ -44,9 +51,12 @@ Artifacts produced (git-ignored, not committed): `bin/cloud-hypervisor`,
 
 - `build/stage*.sh`: one-time provisioning steps.
 - `vm-run.sh`: the per-conversation bridge the app invokes as
-  `vm-run.sh <convId> <vcpus> <memMiB> <sessionTimeoutSec>`. It sets up
+  `vm-run.sh <convId> <vcpus> <memMiB> <sessionTimeoutSec> <sysGiB>`. It sets up
   bridge+NAT, allocates a tap/IP slot, starts virtiofsd, boots the VM, and
-  returns when the VM powers off.
+  returns when the VM powers off. Also supports `vm-run.sh stop <convId>`, which
+  the app calls to tear a VM down: it kills only that conversation's
+  cloud-hypervisor (matched by its `sys.img` path) and frees its tap/IP slot —
+  killing the `wsl.exe` relay alone does **not** stop the Linux VM.
 - `install-sudoers.sh`: installs a root-owned copy of the bridge at
   `/usr/local/sbin/llm-vm-run` and grants passwordless sudo for only that
   script. Re-run it after editing `vm-run.sh`.
@@ -57,7 +67,11 @@ Artifacts produced (git-ignored, not committed): `bin/cloud-hypervisor`,
   daemon, and powers off when the daemon exits.
 - `guest/llm-runner.py`: daemon that watches
   `/workspace/.run/jobs/<job-id>/request.json`, starts each job as root inside
-  the VM, streams logs into that job directory, and writes `result.json`.
+  the VM, streams logs into that job directory, and writes `result.json`. Also
+  runs the live VM Console capture loop (writes `.run/computer/screen-stream.jpg`
+  while the server keeps `.run/computer/stream.on` fresh).
+- `guest/ocr-worker.py`: PP-OCRv6 OCR worker, run under the baked CPython 3.12;
+  the daemon talks to it over pipes and keeps it warm.
 
 ## Notes
 
@@ -70,6 +84,6 @@ Artifacts produced (git-ignored, not committed): `bin/cloud-hypervisor`,
   once. It does not cap job count inside a conversation VM.
 - `SANDBOX_VM_SESSION_MAX_MS` is the hard ceiling for one VM session.
   `SANDBOX_VM_IDLE_MS` controls when an idle guest daemon exits and powers off.
-- Updating the guest daemon: after editing `sandbox-host/guest/llm-runner.py`,
-  re-bake it into the base image with `sandbox-host/update-guest-runner.sh`.
-  No VM may be running during the inject.
+- Updating the guest daemon: after editing `sandbox-host/guest/llm-runner.py`
+  (or `ocr-worker.py`), re-bake them into the base image with
+  `sandbox-host/update-guest-runner.sh`. No VM may be running during the inject.
