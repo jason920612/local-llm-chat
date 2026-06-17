@@ -26,6 +26,7 @@ import {
   browserAction,
   saveMediaToSandbox,
   mountSkill,
+  listSandboxFiles,
   type RunResult,
   type SandboxFile,
   type ComputerAction,
@@ -56,6 +57,43 @@ function formatRunResult(r: RunResult): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/**
+ * Make `[[file:NAME]]` markers actually deliver the file. The marker is only a
+ * client-side placement hint — the file must be in the message's `files[]` to
+ * render. Foreground run_code auto-collects its files, but files produced by a
+ * BACKGROUNDED run (or in an earlier turn) are not, so the model can write a
+ * marker that shows nothing ("I sent it" but the user gets nothing). Here we scan
+ * the reply for markers and pull any referenced-but-missing sandbox file into
+ * `files[]` so the marker resolves.
+ */
+async function attachReferencedFiles(
+  conversationId: string,
+  replyText: string,
+  files: SandboxFileMeta[],
+): Promise<void> {
+  const wanted = new Set<string>();
+  const re = /\[\[file:([^\]]+)\]\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(replyText))) {
+    const name = m[1].trim();
+    if (name) wanted.add(name);
+  }
+  if (!wanted.size) return;
+  const have = new Set(files.map((f) => f.name));
+  const missing = [...wanted].filter((n) => !have.has(n));
+  if (!missing.length) return;
+  let all: SandboxFile[];
+  try {
+    all = await listSandboxFiles(conversationId);
+  } catch {
+    return;
+  }
+  for (const name of missing) {
+    const f = all.find((x) => x.name === name);
+    if (f) files.push({ name: f.name, size: f.size, isText: f.isText });
+  }
 }
 
 /** Wake the model when a backgrounded run_code finishes. */
@@ -941,6 +979,9 @@ export function streamGrokResponses(
       let costInUsdTicks = 0;
       let thinkOpen = false;
       let contentStarted = false;
+      // Accumulated answer text (excludes <think>), scanned at the end for
+      // [[file:NAME]] markers so referenced sandbox files get attached.
+      let answerText = "";
 
       // Stable cache key per conversation so xAI reuses the cached prompt prefix
       // (system prompt + history) across turns — cheaper and lower latency.
@@ -981,7 +1022,11 @@ export function streamGrokResponses(
             if (type === "response.output_text.delta") {
               if (thinkOpen && !contentStarted) enq("</think>\n\n");
               contentStarted = true;
-              enq((ev.delta as string) ?? "");
+              {
+                const d = (ev.delta as string) ?? "";
+                answerText += d;
+                enq(d);
+              }
             } else if (
               type === "response.reasoning_text.delta" ||
               type === "response.reasoning_summary_text.delta"
@@ -1111,22 +1156,20 @@ export function streamGrokResponses(
               emitTool("generate_image", { prompt: args.prompt ?? "" });
               try {
                 const src = await generateImage(args.prompt ?? "");
-                images.push(src);
-                const n = images.length;
-                // Also persist a copy into the conversation sandbox so it shows up
-                // in the file explorer / is usable by run_code.
-                // Persist a copy into the sandbox (for the explorer / run_code),
-                // but DON'T add it to the message file list — it's already shown
-                // inline via [[image:N]], so a file chip would duplicate it.
+                // Persist into the sandbox and reference it by its durable
+                // FILENAME (not order) so the model can place it precisely with
+                // [[image:NAME]]; fall back to the raw URL if the save failed.
                 const saved = await saveMediaToSandbox(
                   conversationId,
                   src,
-                  `image_${n}`,
+                  `image_${images.length + 1}`,
                   "jpg",
                 );
-                out = `Image #${n} generated. Place it inline by writing the marker [[image:${n}]] at the exact point in your reply where it should appear (omit it to append at the end).${
-                  saved ? ` Saved to the sandbox as ${saved.name}.` : ""
-                }`;
+                const id = saved?.name ?? src;
+                images.push(id);
+                out = `Image generated${
+                  saved ? ` and saved to the sandbox as ${saved.name}` : ""
+                }. Show it by writing the marker [[image:${id}]] on its own line where it should appear (omit to append at the end).`;
               } catch (err) {
                 out = `generate_image failed: ${
                   err instanceof Error ? err.message : "error"
@@ -1136,17 +1179,17 @@ export function streamGrokResponses(
               emitTool("generate_video", { prompt: args.prompt ?? "" });
               try {
                 const src = await generateVideo(args.prompt ?? "");
-                videos.push(src);
-                const n = videos.length;
                 const saved = await saveMediaToSandbox(
                   conversationId,
                   src,
-                  `video_${n}`,
+                  `video_${videos.length + 1}`,
                   "mp4",
                 );
-                out = `Video #${n} generated. Place it inline by writing the marker [[video:${n}]] where it should appear in your reply (omit it to append at the end).${
-                  saved ? ` Saved to the sandbox as ${saved.name}.` : ""
-                }`;
+                const id = saved?.name ?? src;
+                videos.push(id);
+                out = `Video generated${
+                  saved ? ` and saved to the sandbox as ${saved.name}` : ""
+                }. Show it by writing the marker [[video:${id}]] on its own line where it should appear (omit to append at the end).`;
               } catch (err) {
                 out = `generate_video failed: ${
                   err instanceof Error ? err.message : "error"
@@ -1335,16 +1378,10 @@ export function streamGrokResponses(
                     });
               const shotPath = obs.screenshot?.path;
               if (obs.ok && shotPath) {
-                // Surface the full-res screenshot to the chat via the message's
-                // images[] (same channel generated images use). Served with an
-                // image MIME by the sandbox file route so it renders inline.
-                // (Push directly: this is a trusted internal URL whose extension
-                // lives in the query string, so the looksLikeImageUrl guard —
-                // meant for arbitrary model URLs — would wrongly reject it.)
-                const shotUrl = `/api/sandbox/${encodeURIComponent(
-                  conversationId,
-                )}/file?name=${encodeURIComponent(shotPath)}`;
-                if (!images.includes(shotUrl)) images.push(shotUrl);
+                // Surface the full-res screenshot to the chat via images[] using
+                // its sandbox PATH as the identifier (the client serves it via the
+                // file route with an image MIME). Consistent with generated images.
+                if (!images.includes(shotPath)) images.push(shotPath);
                 out = `Screenshot shown to the user${
                   caption ? ` (caption: ${caption})` : ""
                 }.`;
@@ -1394,7 +1431,11 @@ export function streamGrokResponses(
                 if (t === "response.output_text.delta") {
                   if (thinkOpen && !contentStarted) enq("</think>\n\n");
                   contentStarted = true;
-                  enq((ev.delta as string) ?? "");
+                  {
+                    const d = (ev.delta as string) ?? "";
+                    answerText += d;
+                    enq(d);
+                  }
                 } else if (
                   t === "response.reasoning_text.delta" ||
                   t === "response.reasoning_summary_text.delta"
@@ -1434,6 +1475,11 @@ export function streamGrokResponses(
         }
 
         if (thinkOpen && !contentStarted) enq("</think>\n\n");
+
+        // Pull in any sandbox file the reply referenced with [[file:NAME]] but
+        // that wasn't auto-collected (e.g. produced by a backgrounded run_code),
+        // so the marker actually delivers the file instead of showing nothing.
+        await attachReferencedFiles(conversationId, answerText, files);
 
         if (
           citations.length ||

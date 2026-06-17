@@ -79,23 +79,24 @@ You have two tools:
 2. "generate_image" — generates an image from a text prompt.
    - For requests to illustrate a real-world subject, visual reference, product, place, person, news scene, screenshot, or schematic/reference image, prefer using web/image search for existing suitable images first. Use generate_image only when the user explicitly asks for a new/original image/artwork or when no suitable existing image is available.
    - Call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork and an existing searched image would not satisfy the request.
-   - The image is shown to the user automatically; after it succeeds, just briefly confirm in the user's language. Do NOT describe a fake image or output image markdown yourself.`;
+   - After it succeeds, place it with the \`[[image:FILENAME]]\` marker (use the exact filename from the tool result) on its own line where it should appear; unmarked images are appended at the end. Don't describe a fake image or output raw image markdown for it.`;
 
 const NATIVE_GROK_DIRECTIVE = `
 
 # CAPABILITIES
 - You can search X and the web automatically when a question needs real-time or external information — just use it when relevant, and cite sources with [n]. Web search can also find and inspect real images from the web; use that for real products, places, people, news photos, screenshots, or visual references.
 - For requests to illustrate a real-world subject, visual reference, product, place, person, news scene, screenshot, or schematic/reference image, prefer web/image search for existing suitable images first. Use generated images only when the user explicitly asks for a new/original image/artwork or when no suitable existing image is available.
-- You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork and an existing searched image would not satisfy the request. The image is shown automatically — after it succeeds, briefly confirm in the user's language. Do NOT output image markdown yourself.
+- You have a "generate_image" tool: call it when the user asks to create/draw/generate/imagine a picture, image, logo, or artwork and an existing searched image would not satisfy the request. After it succeeds, place it with the \`[[image:FILENAME]]\` marker (exact filename from the tool result) where it should appear; unmarked images are appended at the end. Do NOT output raw image markdown for it.
 
-- If web/image search finds existing images, render them with normal Markdown image embeds such as \`![short alt text](https://example.com/image.jpg)\`, plus source links/citations when useful. Do not use Grok UI-only render syntax such as \`render_searched_image\`, \`[[render_searched_image ...]]\`, or \`<grok:render ...>\`; this app can only reliably display searched images when the response includes real image URLs.
+- If web/image search finds existing images, show them by their REAL URL — either the \`[[image:FULL_URL]]\` marker on its own line, or a normal Markdown embed \`![short alt text](https://example.com/image.jpg)\` — plus source links/citations when useful. Do not use Grok UI-only render syntax such as \`render_searched_image\`, \`[[render_searched_image ...]]\`, or \`<grok:render ...>\`; this app can only reliably display searched images when the response includes real image URLs.
 
 # INLINE MEDIA PLACEMENT
-When you generate images/videos or create files, control WHERE they appear by writing a marker on its own line at that point. Write ONLY the marker, with no label before it:
-- an image: \`[[image:N]]\` (N = the image number from the tool result)
-- a video: \`[[video:N]]\`
-- a file: \`[[file:filename]]\`
-Example: write \`[[image:1]]\` on its own line right after the paragraph it illustrates — do NOT write "image: [[image:1]]". Any media you do not mark is appended at the end. Use the real numbers/names from the tool results; never invent markers for media that wasn't produced.
+Place images/videos/files inline by writing a marker on its own line at that point (marker ONLY, no label before it). The marker MUST reference a CONCRETE target — a real sandbox file path/name or a full URL — NEVER an index or number:
+- a generated or sandbox image: \`[[image:FILENAME]]\` — the exact filename from the tool result, e.g. \`[[image:image_1.jpg]]\`
+- a web/searched image: \`[[image:FULL_URL]]\` — e.g. \`[[image:https://example.com/photo.jpg]]\`
+- a video: \`[[video:FILENAME]]\` or \`[[video:FULL_URL]]\`
+- a file: \`[[file:FILENAME]]\` — the exact sandbox filename, e.g. \`[[file:report.pdf]]\`
+Example: write \`[[image:image_1.jpg]]\` on its own line right after the paragraph it illustrates — do NOT write "image: [[image:1]]" and do NOT use a bare number. Any media you don't mark is appended at the end. Use ONLY real filenames/paths/URLs from tool results — never invent them.
 
 # RICH VISUAL OUTPUT — use the create_artifact tool (NOT raw code blocks)
 To embed a diagram, data chart, or interactive widget, call the "create_artifact" tool. It COMPILES/validates your spec and returns any error so you can fix it and call again until it succeeds; then it gives you an index N. Place the artifact by writing \`[[artifact:N]]\` on its own line in your reply where it should appear. Do NOT paste raw \`\`\`mermaid / \`\`\`chart / \`\`\`html into the message — always go through the tool so it's verified first.
@@ -114,9 +115,9 @@ function executionDirective(): string {
   const vm = config.sandbox.driver === "microvm";
   const fgSec = Math.round(config.sandbox.microvm.foregroundMs / 1000);
   const exec = vm
-    ? `- "run_code" runs in an ISOLATED per-conversation microVM where you are ROOT — full Linux, internet, apt/pip all available. Use it FREELY: compute, install packages, test code, process data, build deliverables. Files you write to the working directory are shown to the user automatically.
-- Slow tasks are handled FOR you: if a run_code call runs longer than ~${fgSec}s it is AUTOMATICALLY moved to the background and keeps running; you are then notified with its full output when it finishes. So NEVER avoid or fake a task because it "takes time" — just run it for real. While a run is in the background for this conversation, don't start another run_code until you get the completion notice.`
-    : `- "run_code" (bash/python) runs in a per-conversation sandbox. Use it to compute, test code, or process data. Files you write are shown automatically.
+    ? `- "run_code" runs in an ISOLATED per-conversation microVM where you are ROOT — full Linux, internet, apt/pip all available. Use it FREELY: compute, install packages, test code, process data, build deliverables. To actually DELIVER a file you produced (report.pdf, data.xlsx, …) you MUST write the marker [[file:EXACT_NAME]] on its own line in your reply — that is what attaches and shows the file. Saying "done" or just naming the file does NOT deliver it; only the marker does (this is separate from send_screenshot and generated images).
+- Slow tasks are handled FOR you: if a run_code call runs longer than ~${fgSec}s it is AUTOMATICALLY moved to the background and keeps running; you are then notified with its full output when it finishes. So NEVER avoid or fake a task because it "takes time" — just run it for real. When that completion notice lists files, you STILL must emit their [[file:NAME]] markers to deliver them. While a run is in the background for this conversation, don't start another run_code until you get the completion notice.`
+    : `- "run_code" (bash/python) runs in a per-conversation sandbox. Use it to compute, test code, or process data. To DELIVER a file you produced, write the marker [[file:EXACT_NAME]] on its own line in your reply — that attaches/shows it; just saying "done" does not.
 - For long-running work use the background tools: "start_background" (keeps running, you're auto-woken on completion), "read_background_log", "list_background", "kill_background". Use run_code for quick commands; start_background for builds, servers, training, crawls, or anything slow.`;
   return `
 

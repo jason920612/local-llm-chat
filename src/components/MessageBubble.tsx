@@ -128,6 +128,13 @@ function AssistantBody({
   );
   const dlUrl = (name: string) =>
     `/api/sandbox/${conversationId}/file?name=${encodeURIComponent(name)}&download=1`;
+  // Resolve a media identifier to a renderable src. An identifier is either a
+  // full URL / data: URI (used as-is) or a sandbox file path (served via the
+  // file route, which sets an image MIME so it renders inline).
+  const mediaSrc = (id: string) =>
+    /^(https?:|data:)/i.test(id) || !conversationId
+      ? id
+      : `/api/sandbox/${conversationId}/file?name=${encodeURIComponent(id)}`;
 
   const fileEl = (f: SandboxFileMeta, key: string) => (
     <div
@@ -181,8 +188,8 @@ function AssistantBody({
     );
   };
 
-  const usedImg = new Set<number>();
-  const usedVid = new Set<number>();
+  const usedImg = new Set<string>();
+  const usedVid = new Set<string>();
   const usedFile = new Set<string>();
   const usedArt = new Set<number>();
   const nodes: React.ReactNode[] = [];
@@ -214,16 +221,17 @@ function AssistantBody({
     if (node.kind === "app_media") {
       const ref = node.ref;
       if (node.media === "image") {
-        const i = parseInt(ref, 10) - 1;
-        if (imgs[i]) {
-          usedImg.add(i);
-          nodes.push(imageEl(imgs[i], `m${k}`));
+        // ref is a concrete identifier: a URL or a sandbox file path. Bare
+        // numbers (legacy order markers) are no longer supported — ignore them
+        // so they don't resolve to a broken URL; the image still appends below.
+        if (!/^\d+$/.test(ref)) {
+          usedImg.add(ref);
+          nodes.push(imageEl(mediaSrc(ref), `m${k}`));
         }
       } else if (node.media === "video") {
-        const i = parseInt(ref, 10) - 1;
-        if (vids[i]) {
-          usedVid.add(i);
-          nodes.push(videoEl(vids[i], `m${k}`));
+        if (!/^\d+$/.test(ref)) {
+          usedVid.add(ref);
+          nodes.push(videoEl(mediaSrc(ref), `m${k}`));
         }
       } else if (node.media === "artifact") {
         const i = parseInt(ref, 10) - 1;
@@ -241,16 +249,15 @@ function AssistantBody({
     } else {
       const ref = imageRefById.get(node.imageId.toLowerCase());
       if (ref?.url) {
-        const index = imgs.findIndex((src) => src === ref.url);
-        if (index >= 0) usedImg.add(index);
-        nodes.push(imageEl(ref.url, `grok${k}`));
+        usedImg.add(ref.url);
+        nodes.push(imageEl(mediaSrc(ref.url), `grok${k}`));
       } else {
         let i = grokImageIndex;
-        while (i < imgs.length && usedImg.has(i)) i++;
+        while (i < imgs.length && usedImg.has(imgs[i])) i++;
         grokImageIndex = i + 1;
         if (imgs[i]) {
-          usedImg.add(i);
-          nodes.push(imageEl(imgs[i], `grok${k}`));
+          usedImg.add(imgs[i]);
+          nodes.push(imageEl(mediaSrc(imgs[i]), `grok${k}`));
         } else if (!streaming) {
           const reason =
             imgRefs.length > 0
@@ -275,24 +282,24 @@ function AssistantBody({
   }
 
   const leftImgs = imgs.filter(
-    (src, i) =>
-      !usedImg.has(i) &&
-      !answer.includes(src) &&
-      !(hasGrokImageRender && (imgRefs.length > 0 || imageRefUrls.has(src))),
+    (id) =>
+      !usedImg.has(id) &&
+      !answer.includes(id) &&
+      !(hasGrokImageRender && (imgRefs.length > 0 || imageRefUrls.has(id))),
   );
-  const leftVids = vids.filter((_, i) => !usedVid.has(i));
+  const leftVids = vids.filter((id) => !usedVid.has(id));
   const leftArts = arts.filter((_, i) => !usedArt.has(i));
-  // Real produced files (PDF, xlsx, …) the model didn't place inline are shown at
-  // the end. Generated images/videos are NOT in this list (they're shown via
-  // [[image/video:N]] and only live in the sandbox), so there's no duplication.
+  // Media (images/videos/files) the model didn't place inline with a marker is
+  // appended here. Each image/video entry is an identifier (URL or sandbox path)
+  // resolved through mediaSrc.
   const leftFiles = fls.filter((f) => !usedFile.has(f.name));
 
   return (
     <>
       {nodes}
       {leftArts.map((a, i) => artifactEl(a, `la${i}`))}
-      {leftImgs.map((s, i) => imageEl(s, `li${i}`))}
-      {leftVids.map((s, i) => videoEl(s, `lv${i}`))}
+      {leftImgs.map((s, i) => imageEl(mediaSrc(s), `li${i}`))}
+      {leftVids.map((s, i) => videoEl(mediaSrc(s), `lv${i}`))}
       {leftFiles.map((f, i) => fileInline(f, `lf${i}`))}
       <DebugNotices notices={mediaDebugNotices} />
     </>
