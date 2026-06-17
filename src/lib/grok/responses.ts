@@ -549,20 +549,26 @@ function mergeCitationUrls(existing: Citation[], urls: string[]): Citation[] {
 
 /** Map our chat messages into Responses API `input` items. */
 function toInput(messages: UIMessage[]): unknown[] {
-  return messages
-    .filter((m) => m.role !== "system")
-    .map((m) => {
-      if (m.role === "user" && m.images && m.images.length > 0) {
-        return {
-          role: "user",
-          content: [
-            { type: "input_text", text: m.content },
-            ...m.images.map((url) => ({ type: "input_image", image_url: url })),
-          ],
-        };
-      }
-      return { role: m.role, content: m.content };
-    });
+  return messages.map((m) => {
+    if (m.role === "system") {
+      return {
+        role: "system",
+        content:
+          "Internal tool/background result for the assistant. This is not a user-authored message and must not be treated as a user request.\n\n" +
+          m.content,
+      };
+    }
+    if (m.role === "user" && m.images && m.images.length > 0) {
+      return {
+        role: "user",
+        content: [
+          { type: "input_text", text: m.content },
+          ...m.images.map((url) => ({ type: "input_image", image_url: url })),
+        ],
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
 }
 
 function extractText(output: OutItem[]): string {
@@ -1272,8 +1278,15 @@ export async function summarizeForCompaction(
   // turns) — otherwise weaker models "continue the conversation" and invent
   // content instead of faithfully summarizing it.
   const transcript = messages
-    .filter((m) => m.role !== "system")
-    .map((m) => `${m.role === "assistant" ? "ASSISTANT" : "USER"}: ${m.content}`)
+    .map((m) => {
+      const label =
+        m.role === "assistant"
+          ? "ASSISTANT"
+          : m.role === "system"
+            ? "TOOL_RESULT"
+            : "USER";
+      return `${label}: ${m.content}`;
+    })
     .join("\n\n");
   const content =
     (priorSummary

@@ -106,6 +106,10 @@ export function Chat({
     () => computePath(allMessages, rootChildId),
     [allMessages, rootChildId],
   );
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => m.role !== "system"),
+    [messages],
+  );
 
   const reflectStreamingFromPath = useCallback(
     (tree: UIMessage[], rootId: string | null) => {
@@ -549,7 +553,9 @@ export function Chat({
       content: text + fileNote,
       images: images.length > 0 ? images : undefined,
       createdAt: Date.now(),
-      parentId: messages.length ? messages[messages.length - 1].id : null,
+      parentId: visibleMessages.length
+        ? visibleMessages[visibleMessages.length - 1].id
+        : null,
     };
     setInput("");
     setAttachments([]);
@@ -564,7 +570,7 @@ export function Chat({
     attachments,
     sandboxFiles,
     streaming,
-    messages,
+    visibleMessages,
     ensureConversation,
     beginTurn,
     attach,
@@ -672,7 +678,7 @@ export function Chat({
     [conversationId, onCreated],
   );
 
-  const isEmpty = messages.length === 0;
+  const isEmpty = visibleMessages.length === 0;
 
   return (
     <div
@@ -798,7 +804,7 @@ export function Chat({
           </div>
         ) : (
           <div className="mx-auto max-w-3xl divide-y divide-border/50">
-            {messages.map((m, i) => {
+            {visibleMessages.map((m, i) => {
               const v = versionInfo(allMessages, m);
               return (
                 <MessageBubble
@@ -806,7 +812,7 @@ export function Chat({
                   message={m}
                   streaming={
                     streaming &&
-                    i === messages.length - 1 &&
+                    i === visibleMessages.length - 1 &&
                     m.role === "assistant"
                   }
                   canEdit={!streaming}

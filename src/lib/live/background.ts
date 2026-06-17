@@ -417,12 +417,13 @@ function buildEventContent(job: BackgroundJob): string {
   const codePart =
     job.exitCode != null ? `（exit code ${job.exitCode}）` : "";
   return [
-    "⚙ Background process event (auto-generated)",
-    `• id: ${job.id}`,
-    `• command: ${job.command}`,
-    `• status: ${job.status}${codePart}`,
+    "INTERNAL TOOL RESULT: background_process_completed",
+    "This is a server-generated tool result, not a user message.",
+    `id: ${job.id}`,
+    `command: ${job.command}`,
+    `status: ${job.status}${codePart}`,
     "",
-    "— log tail —",
+    "log tail:",
     tail,
     "",
     "This background job has finished. Decide and take the next step based on its result.",
@@ -449,7 +450,7 @@ function wakeNow(job: BackgroundJob): void {
 }
 
 /**
- * Post a system-generated user event into a conversation and kick off a Grok
+ * Post a hidden system/tool event into a conversation and kick off a Grok
  * generation so the model reacts to it. Used to wake the model when a background
  * job (or a backgrounded run_code) finishes. No-op if the conversation is gone.
  */
@@ -462,7 +463,7 @@ export function wakeConversation(conversationId: string, content: string): void 
 
   const eventMsg: UIMessage = {
     id: nanoid(),
-    role: "user",
+    role: "system",
     content,
     parentId: parentId ?? null,
     createdAt: Date.now(),
