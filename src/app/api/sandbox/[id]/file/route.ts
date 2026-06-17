@@ -12,7 +12,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const name = req.nextUrl.searchParams.get("name");
   if (!name) return Response.json({ error: "name required" }, { status: 400 });
 
-  const file = readSandboxFile(id, name);
+  const file = await readSandboxFile(id, name);
   if (!file) return Response.json({ error: "not found" }, { status: 404 });
 
   const download = req.nextUrl.searchParams.get("download") === "1";

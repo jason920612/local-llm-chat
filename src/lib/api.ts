@@ -35,7 +35,7 @@ export async function fetchConversation(
   messages: UIMessage[];
   rootChildId: string | null;
 }> {
-  const res = await fetch(`/api/conversations/${id}`);
+  const res = await fetch(`/api/conversations/${id}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load conversation");
   return res.json();
 }

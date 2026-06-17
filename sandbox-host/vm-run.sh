@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Per-run microVM bridge. Called by the Node MicroVMDriver as:
-#   vm-run.sh <CONVID> <VCPUS> <MEM_MIB> <TIMEOUT_SEC>
-# Boots a Cloud Hypervisor microVM with the conversation's persistent workspace
-# mounted over virtio-fs at /workspace; the guest runner reads .run/in.json,
-# executes, writes .run/out.json, and powers off. Returns when the VM exits.
+# Per-conversation microVM bridge. Called by the Node MicroVMDriver as:
+#   vm-run.sh <CONVID> <VCPUS> <MEM_MIB> <SESSION_TIMEOUT_SEC>
+# Boots one Cloud Hypervisor microVM for the conversation with its persistent
+# workspace mounted over virtio-fs at /workspace. The guest daemon accepts many
+# concurrent jobs under .run/jobs/ and exits after an idle timeout.
 set -uo pipefail
 
 # Artifacts (CH binary, kernel, base rootfs) live here. The root-owned installed
@@ -58,7 +58,7 @@ if ! sudo "$NFT" list chain ip llmnat post 2>/dev/null | grep -q "saddr ${SUBNET
   [ -n "$WAN" ] && sudo "$NFT" add rule ip llmnat post ip saddr ${SUBNET}.0/24 oifname "$WAN" masquerade
 fi
 
-# --- serialize runs for the same conversation ---
+# --- allow only one VM session for the same conversation ---
 exec 9>"$WS/.run/.lock"
 flock 9
 
@@ -99,8 +99,7 @@ VFSD=$!
 for i in $(seq 1 100); do [ -S "$SOCK" ] && break; sleep 0.05; done
 [ -S "$SOCK" ] || { echo "ERR virtiofsd socket"; exit 4; }
 
-# --- boot the microVM (outer timeout = guest timeout + margin) ---
-rm -f "$WS/.run/out.json"
+# --- boot the microVM (outer timeout = session timeout + margin) ---
 MAC=$(printf '12:34:56:%02x:%02x:%02x' "$SLOT" $((RANDOM%256)) $((RANDOM%256)))
 HARD=$(( TIMEOUT + 25 ))
 sudo "$TIMEOUT_BIN" "$HARD" "$CH" \

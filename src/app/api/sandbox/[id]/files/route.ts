@@ -9,5 +9,5 @@ type Ctx = { params: Promise<{ id: string }> };
 /** List all files in a conversation's sandbox workspace. */
 export async function GET(_req: NextRequest, { params }: Ctx) {
   const { id } = await params;
-  return Response.json({ files: listSandboxFiles(id) });
+  return Response.json({ files: await listSandboxFiles(id) });
 }

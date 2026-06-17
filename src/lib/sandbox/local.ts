@@ -72,6 +72,7 @@ export class LocalProcessDriver implements SandboxDriver {
     conversationId: string,
     language: "python" | "bash",
     code: string,
+    opts?: { timeoutMs?: number; jobId?: string },
   ): Promise<RunResult> {
     this.cleanupOld();
     const dir = this.workspaceHostPath(conversationId);
@@ -128,9 +129,9 @@ export class LocalProcessDriver implements SandboxDriver {
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill("SIGKILL");
-      }, config.sandbox.timeoutMs);
+      }, opts?.timeoutMs ?? config.sandbox.timeoutMs);
 
-      child.on("close", (exitCode) => {
+      child.on("close", async (exitCode) => {
         clearTimeout(timer);
         resolve({
           stdout: stdout.slice(0, cap),
@@ -138,7 +139,7 @@ export class LocalProcessDriver implements SandboxDriver {
           exitCode,
           durationMs: Date.now() - start,
           timedOut,
-          files: listFiles(dir, start),
+          files: await listFiles(dir, start),
         });
       });
     });
@@ -192,7 +193,7 @@ export class LocalProcessDriver implements SandboxDriver {
         });
       });
       const timer = setTimeout(() => child.kill("SIGKILL"), 120000);
-      child.on("close", (exitCode) => {
+      child.on("close", async (exitCode) => {
         clearTimeout(timer);
         if (exitCode !== 0) {
           resolve({
@@ -203,7 +204,7 @@ export class LocalProcessDriver implements SandboxDriver {
           });
           return;
         }
-        resolve({ ok: true, dir: base, tree: cloneTree(dest, base) });
+        resolve({ ok: true, dir: base, tree: await cloneTree(dest, base) });
       });
     });
   }

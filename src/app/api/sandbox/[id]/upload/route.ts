@@ -32,5 +32,5 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       buffer: Buffer.from(await f.arrayBuffer()),
     })),
   );
-  return Response.json({ files: writeSandboxFiles(id, files) });
+  return Response.json({ files: await writeSandboxFiles(id, files) });
 }

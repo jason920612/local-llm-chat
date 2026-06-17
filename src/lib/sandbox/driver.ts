@@ -22,6 +22,7 @@ export interface RunResult {
   timedOut: boolean;
   files: SandboxFile[];
   error?: string;
+  status?: "exited" | "timeout" | "killed" | "error";
 }
 
 export interface CloneResult {
@@ -53,7 +54,15 @@ export interface SandboxDriver {
     conversationId: string,
     language: "python" | "bash",
     code: string,
+    opts?: { timeoutMs?: number; jobId?: string },
   ): Promise<RunResult>;
+
+  /**
+   * Force-stop a run currently executing for a conversation (used to kill a
+   * VM-backed background job). Returns true if something was killed. Optional —
+   * drivers without a killable handle may omit it.
+   */
+  killRun?(conversationId: string, jobId?: string): boolean;
 
   /** Shallow-clone a git repo into the conversation workspace. */
   cloneRepo(conversationId: string, repoUrl: string): Promise<CloneResult>;

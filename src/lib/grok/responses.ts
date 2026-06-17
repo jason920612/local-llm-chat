@@ -51,14 +51,8 @@ function formatRunResult(r: RunResult): string {
     .join("\n");
 }
 
-// Conversations with a run_code VM still running in the background (microVM
-// backend only). One VM per conversation at a time (shared system disk), so a
-// new run_code is refused while one is in flight here.
-const bgRuns = new Map<string, true>();
-
 /** Wake the model when a backgrounded run_code finishes. */
 function onBgRunComplete(conversationId: string, r: RunResult): void {
-  bgRuns.delete(conversationId);
   const content = [
     "⚙ Background run_code finished (auto-generated)",
     `exit_code: ${r.exitCode}${r.timedOut ? " (timed out)" : ""}`,
@@ -90,10 +84,6 @@ async function handleRunCode(
   addFiles: (files: SandboxFile[]) => void,
 ): Promise<string> {
   const isVM = config.sandbox.driver === "microvm";
-  if (isVM && bgRuns.has(conversationId)) {
-    return "A previous run_code in this conversation is still running in the background; you'll get a completion notice. Do not start another run_code here until then.";
-  }
-
   const p = runCode(conversationId, language, code);
 
   if (!isVM) {
@@ -115,8 +105,7 @@ async function handleRunCode(
     return formatRunResult(raced.r);
   }
 
-  // Still running after the foreground window → move to background.
-  bgRuns.set(conversationId, true);
+  // Still running after the foreground window -> move to background.
   void p.then(
     (r) => onBgRunComplete(conversationId, r),
     (e) =>
@@ -132,7 +121,7 @@ async function handleRunCode(
   );
   return `Still running after ${Math.round(
     fg / 1000,
-  )}s, so it was automatically MOVED TO THE BACKGROUND and keeps running. You'll be notified with its full output when it finishes. Wrap up this turn now — do not wait, and do not start another run_code in this conversation until you get the completion notice.`;
+  )}s, so it was automatically MOVED TO THE BACKGROUND and keeps running. You'll be notified with its full output when it finishes. You may continue using run_code or background tools in this conversation while it runs.`;
 }
 
 /**
@@ -900,7 +889,7 @@ export function streamGrokResponses(
               emitTool("use_skill", { name: args.name ?? "" });
               const skill = getSkill(args.name ?? "");
               if (skill) {
-                const mounted = mountSkill(conversationId, skill.name);
+                const mounted = await mountSkill(conversationId, skill.name);
                 out =
                   `Skill "${skill.name}" loaded. Follow this playbook:\n\n${skill.body}` +
                   (mounted
@@ -976,7 +965,7 @@ export function streamGrokResponses(
                 : `Started background process ${r.id} (timeout ${r.timeoutSeconds}s). It runs in the background; you'll be AUTOMATICALLY woken with its exit code + log when it finishes. You can check on it any time with read_background_log("${r.id}") or stop it with kill_background("${r.id}").`;
             } else if (c.name === BG_LOG_FN) {
               emitTool("read_background_log", { id: args.id ?? "" });
-              const r = readBackgroundLog(
+              const r = await readBackgroundLog(
                 conversationId,
                 args.id ?? "",
                 args.tail_chars ?? 4000,

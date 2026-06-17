@@ -76,6 +76,9 @@ export function Chat({
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
+  // Bumped to force the live-stream EventSource to reconnect after the app
+  // returns from the background (mobile WebViews freeze the connection).
+  const [resyncTick, setResyncTick] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
@@ -316,6 +319,8 @@ export function Chat({
   // Live sync: subscribe to the active conversation's server-sent events so
   // tokens, new/edited messages, and branch switches from ANY device (or a
   // background generation that outlived this tab) appear here in real time.
+  // `resyncTick` lets us force a reconnect after the tab/app returns from the
+  // background (see the visibility effect below).
   useEffect(() => {
     const cid = conversationId;
     if (!cid) return;
@@ -331,7 +336,31 @@ export function Chat({
       /* EventSource reconnects automatically; snapshot re-syncs on reconnect */
     };
     return () => es.close();
-  }, [conversationId, applyConvEvent]);
+  }, [conversationId, applyConvEvent, resyncTick]);
+
+  // Background → foreground resync. On mobile (and backgrounded desktop tabs)
+  // the SSE stream is frozen while the app is in the background, so the final
+  // tokens / completed message that arrived meanwhile are missed and the UI
+  // looks stuck until a manual reload. When we become visible again, re-fetch
+  // the snapshot AND bump resyncTick to reopen the stream.
+  useEffect(() => {
+    const onForeground = () => {
+      if (document.visibilityState === "hidden") return;
+      const cid = conversationId;
+      if (cid) reloadConversation(cid);
+      setResyncTick((t) => t + 1);
+    };
+    document.addEventListener("visibilitychange", onForeground);
+    window.addEventListener("coderyo-resume", onForeground);
+    window.addEventListener("pageshow", onForeground);
+    window.addEventListener("focus", onForeground);
+    return () => {
+      document.removeEventListener("visibilitychange", onForeground);
+      window.removeEventListener("coderyo-resume", onForeground);
+      window.removeEventListener("pageshow", onForeground);
+      window.removeEventListener("focus", onForeground);
+    };
+  }, [conversationId, reloadConversation]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;

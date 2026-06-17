@@ -157,10 +157,15 @@ this backend is Windows + WSL2 only; other hosts fall back to `local`.
 
 One-time host setup (inside WSL2 Ubuntu) provisions cloud-hypervisor + virtiofsd,
 a guest kernel, and a base rootfs under `~/llm-sandbox/`, plus a scoped
-`/etc/sudoers.d/llm-sandbox` so the per-run boot needs no password. Tune via the
-`SANDBOX_VM_*` / `SANDBOX_WSL_*` env vars (see `.env.example`). Background jobs
-(`start_background`) are disabled under this driver (they would run on the host,
-outside the VM boundary).
+`/etc/sudoers.d/llm-sandbox` so the per-conversation VM bridge needs no
+password. Tune via the `SANDBOX_VM_*` / `SANDBOX_WSL_*` env vars (see
+`.env.example`). Background jobs
+(`start_background`) run **inside** the conversation's microVM under this driver
+(not as host processes), so they stay within the VM isolation boundary. The
+conversation VM runs a guest daemon that can execute multiple `run_code` and
+`start_background` jobs concurrently. The model can tail each background job's
+live log under `.run/jobs/<id>/live.log` and is woken with the full output on
+completion.
 
 Inside the VM the model runs as **root** on a **writable** filesystem: a tmpfs
 overlay over the read-only base, with the upper layer + `/tmp` backed by a
@@ -172,13 +177,18 @@ works and stays installed. `/workspace` remains the file/document layer.
 > outbound network (NAT) by default and runs as root inside its own kernel. Set
 > `SANDBOX_VM_MAX_CONCURRENT` to cap how many VMs run at once.
 
-Local/host background jobs are available through model tools
-(`start_background`, `read_background_log`, `list_background`,
-`kill_background`). They support multiple concurrent jobs, per-conversation and
-global concurrency limits, log persistence, timeouts, kill, and automatic model
-wake-up when a job completes. The first microVM version intentionally keeps the
-existing one-background-`run_code`-per-conversation restriction because the VM
-system disk is shared inside that conversation.
+Background jobs are available through model tools (`start_background`,
+`read_background_log`, `list_background`, `kill_background`). On the **local**
+driver they run as host processes with multiple concurrent jobs and
+per-conversation / global concurrency limits; on the **microVM** driver they run
+inside the conversation's single VM session and can coexist with other
+background jobs and `run_code` jobs. Different conversations can have different
+VMs alive at the same time, bounded by `SANDBOX_VM_MAX_CONCURRENT`.
+
+> Updating the guest runner: after editing `sandbox-host/guest/llm-runner.py`,
+> re-bake it into the base image with `sandbox-host/update-guest-runner.sh`
+> (copies it into `~/llm-sandbox/` and re-runs the debugfs inject). No VM may be
+> running during the inject.
 
 Code blocks have syntax highlighting, a copy button, and auto-collapse when long;
 images open in a lightbox.

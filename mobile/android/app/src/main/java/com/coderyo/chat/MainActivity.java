@@ -81,6 +81,17 @@ public class MainActivity extends BridgeActivity {
         handleShareIntent(intent);
     }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        if (webView != null) {
+            webView.evaluateJavascript(
+                    "window.dispatchEvent(new Event('coderyo-resume'))",
+                    null);
+        }
+    }
+
     private void handleShareIntent(Intent intent) {
         if (!ShareIntake.isShare(intent)) {
             return;

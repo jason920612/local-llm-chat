@@ -97,6 +97,11 @@ export const config = {
       foregroundMs: Number(process.env.SANDBOX_VM_FOREGROUND_MS ?? 10000),
       // Hard ceiling for a single run_code VM (foreground or background).
       maxRunMs: Number(process.env.SANDBOX_VM_MAX_RUN_MS ?? 30 * 60 * 1000),
+      // Long-lived per-conversation VM session ceiling and idle shutdown.
+      sessionMaxMs: Number(
+        process.env.SANDBOX_VM_SESSION_MAX_MS ?? 6 * 60 * 60 * 1000,
+      ),
+      idleMs: Number(process.env.SANDBOX_VM_IDLE_MS ?? 30 * 60 * 1000),
       // Per-conversation writable system disk (overlay upper + /tmp): apparent
       // size in GiB. Thin-provisioned (sparse) — only real usage hits the host
       // disk, and it persists across runs so apt/system installs stick.

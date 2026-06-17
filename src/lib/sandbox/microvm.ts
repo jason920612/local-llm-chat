@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { nanoid } from "nanoid";
 import { config } from "../config";
 import {
   type SandboxDriver,
@@ -13,9 +14,8 @@ import {
 import { listFiles, emptyResult, cloneTree } from "./fsutil";
 
 /**
- * Cap how many microVMs boot at once across all conversations (each VM costs a
- * vCPU + RAM). A tiny in-process semaphore queues the rest. Single Next.js
- * process, so module-level state is the whole picture.
+ * Cap how many conversation VMs may be alive at once. A VM slot is held for the
+ * lifetime of that conversation session, not just while it boots.
  */
 let vmActive = 0;
 const vmQueue: Array<() => void> = [];
@@ -28,38 +28,33 @@ async function acquireVmSlot(max: number): Promise<void> {
   vmActive++;
 }
 function releaseVmSlot(): void {
-  vmActive--;
+  vmActive = Math.max(0, vmActive - 1);
   vmQueue.shift()?.();
 }
 
 let lastCleanup = 0;
 
-/**
- * Serialize run_code per conversation: overlapping requests for the same
- * conversation share `.run/{in,out}.json`, so a second stage must wait for the
- * first run to finish before overwriting them.
- */
-const convChain = new Map<string, Promise<unknown>>();
-function withConvLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
-  const prev = convChain.get(id) ?? Promise.resolve();
-  const next = prev.then(fn, fn); // run regardless of a prior run's outcome
-  convChain.set(
-    id,
-    next.catch(() => {}),
-  );
-  return next;
+interface VmSession {
+  key: string;
+  child: ChildProcess;
+  startedAt: number;
+  stderr: string;
+  exited: boolean;
 }
 
+const globalForVm = globalThis as unknown as {
+  __llmVmSessions?: Map<string, VmSession>;
+  __llmVmStarting?: Map<string, Promise<VmSession>>;
+};
+const sessions =
+  globalForVm.__llmVmSessions ?? (globalForVm.__llmVmSessions = new Map());
+const starting =
+  globalForVm.__llmVmStarting ?? (globalForVm.__llmVmStarting = new Map());
+
 /**
- * MicroVMDriver — true per-conversation isolation. Each run_code boots a
- * Cloud Hypervisor microVM (its own Linux kernel) inside WSL2, with the
- * conversation's persistent workspace mounted over virtio-fs at /workspace.
- *
- * The Node process lives on Windows; it reaches the WSL2 side two ways:
- *   - file I/O on the workspace via the UNC path `\\wsl.localhost\<distro>\...`
- *     (the dir is native ext4 in WSL2, so the file-explorer APIs just work);
- *   - execution by invoking the bridge script with `wsl.exe`, which boots the VM
- *     and returns when it powers off. Code/results pass through .run/{in,out}.json.
+ * MicroVMDriver: one long-lived Cloud Hypervisor VM per conversation. The guest
+ * runs a small daemon that accepts many concurrent jobs through files under
+ * `.run/jobs/<job-id>/`.
  */
 export class MicroVMDriver implements SandboxDriver {
   readonly name = "microvm" as const;
@@ -68,7 +63,6 @@ export class MicroVMDriver implements SandboxDriver {
     return config.sandbox.microvm;
   }
 
-  /** Convert a WSL absolute path to a Windows UNC path. */
   private toUnc(wslPath: string): string {
     const rel = wslPath.replace(/^\/+/, "").replace(/\//g, "\\");
     return `\\\\wsl.localhost\\${this.cfg.wslDistro}\\${rel}`;
@@ -78,43 +72,41 @@ export class MicroVMDriver implements SandboxDriver {
     return this.toUnc(this.cfg.wslSandboxRoot);
   }
 
-  /** Per-conversation dir holding both the shared `ws/` and the `sys.img` disk. */
   private convDirHostPath(conversationId: string): string {
     return path.win32.join(this.sandboxRootHostPath(), safeConvId(conversationId));
   }
 
   workspaceHostPath(conversationId: string): string {
-    // The virtio-fs-shared workspace is a `ws/` subdir so the per-conversation
-    // system disk image (sys.img, a sibling) stays OUT of the share.
     return path.win32.join(this.convDirHostPath(conversationId), "ws");
   }
 
   prepareWorkspace(conversationId: string): string {
     const dir = this.workspaceHostPath(conversationId);
-    fs.mkdirSync(path.win32.join(dir, ".run"), { recursive: true });
-    this.cleanupOld();
+    fs.mkdirSync(path.win32.join(dir, ".run", "jobs"), { recursive: true });
+    void this.cleanupOld();
     return dir;
   }
 
-  /**
-   * Delete conversation workspaces older than the TTL. Throttled (≤ once/10 min)
-   * since it scans the share over UNC. Guarded: only ever removes direct
-   * children of the sandbox root.
-   */
-  private cleanupOld(): void {
+  private async cleanupOld(): Promise<void> {
     const now = Date.now();
     if (now - lastCleanup < 10 * 60 * 1000) return;
     lastCleanup = now;
     const root = path.win32.resolve(this.sandboxRootHostPath());
+    const fsp = fs.promises;
     try {
-      if (!fs.existsSync(root)) return;
-      for (const name of fs.readdirSync(root)) {
+      let names: string[];
+      try {
+        names = await fsp.readdir(root);
+      } catch {
+        return;
+      }
+      for (const name of names) {
         const p = path.win32.resolve(root, name);
-        if (!p.startsWith(root + path.win32.sep)) continue; // guard
+        if (!p.startsWith(root + path.win32.sep)) continue;
         try {
-          const st = fs.statSync(p);
+          const st = await fsp.stat(p);
           if (st.isDirectory() && now - st.mtimeMs > config.sandbox.ttlMs) {
-            fs.rmSync(p, { recursive: true, force: true });
+            await fsp.rm(p, { recursive: true, force: true });
           }
         } catch {
           /* ignore */
@@ -126,10 +118,9 @@ export class MicroVMDriver implements SandboxDriver {
   }
 
   deleteSandbox(conversationId: string): void {
+    this.killSession(conversationId);
     const root = path.win32.resolve(this.sandboxRootHostPath());
-    // remove the whole per-conversation dir (ws/ + sys.img)
     const dir = path.win32.resolve(this.convDirHostPath(conversationId));
-    // guard: only ever delete inside the sandbox root
     if (!dir.startsWith(root + path.win32.sep) || dir === root) return;
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -138,79 +129,64 @@ export class MicroVMDriver implements SandboxDriver {
     }
   }
 
-  runCode(
+  async runCode(
     conversationId: string,
     language: "python" | "bash",
     code: string,
-  ): Promise<RunResult> {
-    return withConvLock(safeConvId(conversationId), () =>
-      this.runCodeInner(conversationId, language, code),
-    );
-  }
-
-  private async runCodeInner(
-    conversationId: string,
-    language: "python" | "bash",
-    code: string,
+    opts?: { timeoutMs?: number; jobId?: string },
   ): Promise<RunResult> {
     const dir = this.prepareWorkspace(conversationId);
-    const runDir = path.win32.join(dir, ".run");
-    // The VM may keep running in the background after the foreground window, so
-    // give it the long ceiling; the 10s foreground cutoff is handled by the
-    // caller (grok/responses.ts), not here.
-    const timeoutMs = this.cfg.maxRunMs;
     const cap = config.sandbox.maxOutputChars;
-
-    // hand the job to the guest
-    try {
-      fs.writeFileSync(
-        path.win32.join(runDir, "in.json"),
-        JSON.stringify({ language, code, timeoutMs, maxOutputChars: cap }),
-      );
-      fs.rmSync(path.win32.join(runDir, "out.json"), { force: true });
-    } catch (e) {
-      return emptyResult({ error: `failed to stage job: ${String(e)}` });
-    }
-
+    const timeoutMs = Math.min(
+      opts?.timeoutMs ?? config.sandbox.timeoutMs,
+      this.cfg.maxRunMs,
+    );
+    const jobId = this.safeJobId(opts?.jobId ?? `fg_${nanoid(10)}`);
+    const jobDir = path.win32.join(dir, ".run", "jobs", jobId);
     const start = Date.now();
-    await acquireVmSlot(this.cfg.maxConcurrent);
-    let boot: { error?: string; timedOut: boolean };
-    try {
-      boot = await this.bootVM(conversationId, timeoutMs);
-    } finally {
-      releaseVmSlot();
-    }
-    if (boot.error) return emptyResult({ error: boot.error });
 
-    // read the guest's result
-    let out: {
-      stdout?: string;
-      stderr?: string;
-      exitCode?: number | null;
-      durationMs?: number;
-      timedOut?: boolean;
-    };
+    const session = await this.ensureSession(conversationId);
+    if (session.exited) {
+      return emptyResult({ error: "microVM session exited before job started" });
+    }
+
     try {
-      out = JSON.parse(
-        fs.readFileSync(path.win32.join(runDir, "out.json"), "utf-8"),
-      );
-    } catch {
-      const serial = this.tail(path.win32.join(runDir, "serial.log"), 800);
-      return emptyResult({
-        error: `microVM produced no result${serial ? ` — serial tail:\n${serial}` : ""}`,
-        timedOut: boot.timedOut,
-        durationMs: Date.now() - start,
+      await fs.promises.mkdir(jobDir, { recursive: true });
+      await fs.promises.rm(path.win32.join(jobDir, "result.json"), {
+        force: true,
       });
+      await fs.promises.rm(path.win32.join(jobDir, "kill"), { force: true });
+      await this.writeJsonAtomic(path.win32.join(jobDir, "request.json"), {
+        id: jobId,
+        language,
+        code,
+        timeoutMs,
+        maxOutputChars: cap,
+      });
+    } catch (e) {
+      return emptyResult({ error: `failed to stage VM job: ${String(e)}` });
     }
 
-    return {
-      stdout: (out.stdout ?? "").slice(0, cap),
-      stderr: (out.stderr ?? "").slice(0, cap),
-      exitCode: out.exitCode ?? null,
-      durationMs: out.durationMs ?? Date.now() - start,
-      timedOut: Boolean(out.timedOut) || boot.timedOut,
-      files: listFiles(dir, start),
-    };
+    return this.waitForJob(conversationId, jobId, start, timeoutMs, cap);
+  }
+
+  killRun(conversationId: string, jobId?: string): boolean {
+    if (jobId) {
+      try {
+        const p = path.win32.join(
+          this.workspaceHostPath(conversationId),
+          ".run",
+          "jobs",
+          this.safeJobId(jobId),
+          "kill",
+        );
+        fs.writeFileSync(p, String(Date.now()));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return this.killSession(conversationId);
   }
 
   async cloneRepo(
@@ -222,7 +198,6 @@ export class MicroVMDriver implements SandboxDriver {
       return { ok: false, dir: "", tree: "", error: `invalid repo: ${repoUrl}` };
     }
     const base = repoDirName(url);
-    // clone inside the VM (it has NAT egress); shell-quote the URL safely.
     const q = `'${url.replace(/'/g, "'\\''")}'`;
     const script = `rm -rf ${base} && git clone --depth 1 ${q} ${base} 2>&1`;
     const r = await this.runCode(conversationId, "bash", script);
@@ -235,18 +210,47 @@ export class MicroVMDriver implements SandboxDriver {
       };
     }
     const dest = path.win32.join(this.workspaceHostPath(conversationId), base);
-    return { ok: true, dir: base, tree: cloneTree(dest, base) };
+    return { ok: true, dir: base, tree: await cloneTree(dest, base) };
   }
 
-  /** Invoke the WSL bridge to boot one microVM run; resolves when it exits. */
-  private bootVM(
+  private safeJobId(jobId: string): string {
+    const safe = jobId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
+    return safe || `job_${nanoid(8)}`;
+  }
+
+  private async ensureSession(conversationId: string): Promise<VmSession> {
+    const key = safeConvId(conversationId);
+    const existing = sessions.get(key);
+    if (existing && !existing.exited && (await this.daemonReady(conversationId))) {
+      return existing;
+    }
+    if (existing?.exited) sessions.delete(key);
+    const pending = starting.get(key);
+    if (pending) return pending;
+    const promise = this.startSession(conversationId, key).finally(() =>
+      starting.delete(key),
+    );
+    starting.set(key, promise);
+    return promise;
+  }
+
+  private async startSession(
     conversationId: string,
-    timeoutMs: number,
-  ): Promise<{ error?: string; timedOut: boolean }> {
-    const timeoutSec = Math.ceil(timeoutMs / 1000);
-    // Invoke the ROOT-OWNED bridge via a single scoped sudo rule (install.sh
-    // installs /usr/local/sbin/llm-vm-run and grants NOPASSWD for only it), so
-    // no bare privileged commands are exposed to the unprivileged user.
+    key: string,
+  ): Promise<VmSession> {
+    const dir = this.prepareWorkspace(conversationId);
+    await fs.promises.mkdir(path.win32.join(dir, ".run", "jobs"), {
+      recursive: true,
+    });
+    await this.writeJsonAtomic(path.win32.join(dir, ".run", "session.json"), {
+      idleSeconds: Math.max(30, Math.floor(this.cfg.idleMs / 1000)),
+    });
+    await fs.promises.rm(path.win32.join(dir, ".run", "daemon.json"), {
+      force: true,
+    });
+
+    await acquireVmSlot(this.cfg.maxConcurrent);
+    const timeoutSec = Math.ceil(this.cfg.sessionMaxMs / 1000);
     const args = [
       "-d",
       this.cfg.wslDistro,
@@ -254,57 +258,166 @@ export class MicroVMDriver implements SandboxDriver {
       "sudo",
       "-n",
       "/usr/local/sbin/llm-vm-run",
-      safeConvId(conversationId),
+      key,
       String(this.cfg.vcpus),
       String(this.cfg.memMiB),
       String(timeoutSec),
       String(this.cfg.systemDiskGiB),
     ];
-    // hard wall-clock cap on the bridge itself (guest timeout + boot/teardown margin)
-    const hardMs = timeoutMs + 40000;
 
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = spawn("wsl.exe", args, { windowsHide: true });
-      } catch (e) {
-        resolve({ error: `failed to launch WSL: ${String(e)}`, timedOut: false });
-        return;
+    let child: ChildProcess;
+    try {
+      child = spawn("wsl.exe", args, { windowsHide: true });
+    } catch (e) {
+      releaseVmSlot();
+      throw new Error(`failed to launch WSL: ${String(e)}`);
+    }
+
+    const session: VmSession = {
+      key,
+      child,
+      startedAt: Date.now(),
+      stderr: "",
+      exited: false,
+    };
+    sessions.set(key, session);
+
+    child.stderr?.on("data", (d) => {
+      if (session.stderr.length < 8000) session.stderr += d.toString();
+    });
+    child.on("error", (err) => {
+      session.stderr += `\n${String(err)}`;
+      session.exited = true;
+    });
+    child.on("close", () => {
+      session.exited = true;
+      if (sessions.get(key) === session) sessions.delete(key);
+      releaseVmSlot();
+    });
+
+    try {
+      await this.waitForDaemon(conversationId, session);
+      return session;
+    } catch (e) {
+      this.killSession(conversationId);
+      throw e;
+    }
+  }
+
+  private killSession(conversationId: string): boolean {
+    const key = safeConvId(conversationId);
+    const session = sessions.get(key);
+    if (!session || session.exited) return false;
+    try {
+      session.child.kill("SIGKILL");
+    } catch {
+      /* already gone */
+    }
+    return true;
+  }
+
+  private async daemonReady(conversationId: string): Promise<boolean> {
+    try {
+      const p = path.win32.join(
+        this.workspaceHostPath(conversationId),
+        ".run",
+        "daemon.json",
+      );
+      const d = JSON.parse(await fs.promises.readFile(p, "utf-8")) as {
+        status?: string;
+      };
+      return d.status === "running";
+    } catch {
+      return false;
+    }
+  }
+
+  private async waitForDaemon(
+    conversationId: string,
+    session: VmSession,
+  ): Promise<void> {
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      if (session.exited) {
+        throw new Error(
+          `microVM exited before daemon was ready${session.stderr ? `: ${session.stderr.slice(-1000)}` : ""}`,
+        );
       }
-      let stderr = "";
-      child.stderr?.on("data", (d) => {
-        if (stderr.length < 4000) stderr += d.toString();
-      });
-      child.on("error", (err) => {
-        resolve({
-          error:
-            err instanceof Error && "code" in err && err.code === "ENOENT"
-              ? "wsl.exe not found — is WSL2 installed?"
-              : String(err),
-          timedOut: false,
+      if (await this.daemonReady(conversationId)) return;
+      await this.sleep(250);
+    }
+    throw new Error("microVM daemon did not become ready");
+  }
+
+  private async waitForJob(
+    conversationId: string,
+    jobId: string,
+    start: number,
+    timeoutMs: number,
+    cap: number,
+  ): Promise<RunResult> {
+    const dir = this.workspaceHostPath(conversationId);
+    const jobDir = path.win32.join(dir, ".run", "jobs", jobId);
+    const resultPath = path.win32.join(jobDir, "result.json");
+    const statusPath = path.win32.join(jobDir, "status.json");
+    const waitDeadline = Date.now() + timeoutMs + 60_000;
+
+    while (Date.now() < waitDeadline) {
+      try {
+        const out = JSON.parse(
+          await fs.promises.readFile(resultPath, "utf-8"),
+        ) as {
+          stdout?: string;
+          stderr?: string;
+          exitCode?: number | null;
+          durationMs?: number;
+          timedOut?: boolean;
+          status?: RunResult["status"];
+        };
+        return {
+          stdout: (out.stdout ?? "").slice(0, cap),
+          stderr: (out.stderr ?? "").slice(0, cap),
+          exitCode: out.exitCode ?? null,
+          durationMs: out.durationMs ?? Date.now() - start,
+          timedOut: Boolean(out.timedOut),
+          status: out.status,
+          files: await listFiles(dir, start),
+        };
+      } catch {
+        /* not done yet */
+      }
+      const session = sessions.get(safeConvId(conversationId));
+      if (!session || session.exited) {
+        const status = await this.tail(statusPath, 1000);
+        return emptyResult({
+          error: `microVM session exited before job completed${status ? `; status: ${status}` : ""}`,
+          durationMs: Date.now() - start,
         });
-      });
-      const timer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* gone */
-        }
-        resolve({
-          error: "microVM run exceeded hard time limit (killed)",
-          timedOut: true,
-        });
-      }, hardMs);
-      child.on("close", () => {
-        clearTimeout(timer);
-        resolve({ timedOut: false });
-      });
+      }
+      await this.sleep(250);
+    }
+
+    this.killRun(conversationId, jobId);
+    return emptyResult({
+      error: "microVM job exceeded host wait limit",
+      timedOut: true,
+      durationMs: Date.now() - start,
     });
   }
 
-  private tail(file: string, chars: number): string {
+  private async writeJsonAtomic(file: string, obj: unknown): Promise<void> {
+    const tmp = `${file}.tmp-${nanoid(6)}`;
+    await fs.promises.writeFile(tmp, JSON.stringify(obj));
+    await fs.promises.rename(tmp, file);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async tail(file: string, chars: number): Promise<string> {
     try {
-      const s = fs.readFileSync(file, "utf-8");
+      const s = await fs.promises.readFile(file, "utf-8");
       return s.slice(-chars);
     } catch {
       return "";

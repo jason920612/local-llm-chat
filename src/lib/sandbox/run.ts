@@ -10,12 +10,28 @@ import {
 } from "./driver";
 import { LocalProcessDriver } from "./local";
 import { MicroVMDriver } from "./microvm";
-import { listFiles, looksTextual, pybootEnv } from "./fsutil";
+import { listFiles, pybootEnv } from "./fsutil";
 
 // Re-export the shared types so existing callers keep importing them from here.
 export type { SandboxFile, RunResult, CloneResult };
 
+const fsp = fs.promises;
 const SKILLS_ROOT = path.join(process.cwd(), "skills");
+
+/** Text heuristic straight off a buffer (no extra fs read): no null in first 4KB. */
+function bufferLooksTextual(buf: Buffer): boolean {
+  return !buf.subarray(0, 4096).includes(0);
+}
+
+/** Async path-exists check (the workspace may live on a slow WSL UNC share). */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fsp.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Active sandbox backend, selected by `config.sandbox.driver`. Cached on the
@@ -48,8 +64,24 @@ export function runCode(
   conversationId: string,
   language: "python" | "bash",
   code: string,
+  opts?: { timeoutMs?: number; jobId?: string },
 ): Promise<RunResult> {
-  return getDriver().runCode(conversationId, language, code);
+  return getDriver().runCode(conversationId, language, code, opts);
+}
+
+/** Force-stop the run currently executing for a conversation (VM bg kill). */
+export function killSandboxRun(conversationId: string, jobId?: string): boolean {
+  return getDriver().killRun?.(conversationId, jobId) ?? false;
+}
+
+/** Host-side path to a conversation's workspace (for tailing a bg job log). */
+export function sandboxWorkspacePath(conversationId: string): string {
+  return workspaceDir(conversationId);
+}
+
+/** True when the active sandbox backend runs each job in its own microVM. */
+export function isMicrovmSandbox(): boolean {
+  return getDriver().name === "microvm";
 }
 
 /** Shallow-clone a git repo into the conversation sandbox; return its tree. */
@@ -82,21 +114,22 @@ export function sandboxEnv(): NodeJS.ProcessEnv {
  * conversation sandbox at `.skills/<name>/`, so run_code can execute its scripts.
  * Returns the relative mount path, or null if the skill folder doesn't exist.
  */
-export function mountSkill(
+export async function mountSkill(
   conversationId: string,
   name: string,
-): string | null {
+): Promise<string | null> {
   const safe = name.replace(/[^A-Za-z0-9_-]/g, "");
   if (!safe) return null;
   const src = path.join(SKILLS_ROOT, safe);
   try {
-    if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) return null;
+    const st = await fsp.stat(src).catch(() => null);
+    if (!st || !st.isDirectory()) return null;
     const dir = workspaceDir(conversationId);
     const destRel = `.skills/${safe}`;
     const dest = path.join(dir, destRel);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.rmSync(dest, { recursive: true, force: true });
-    fs.cpSync(src, dest, { recursive: true });
+    await fsp.mkdir(path.dirname(dest), { recursive: true });
+    await fsp.rm(dest, { recursive: true, force: true });
+    await fsp.cp(src, dest, { recursive: true });
     return destRel;
   } catch {
     return null;
@@ -127,20 +160,20 @@ export async function convertToPdf(
 ): Promise<Buffer | null> {
   const dir = workspaceDir(conversationId);
   const src = path.resolve(dir, name);
-  if (!src.startsWith(path.resolve(dir)) || !fs.existsSync(src)) return null;
+  if (!src.startsWith(path.resolve(dir))) return null;
+  const srcStat = await fsp.stat(src).catch(() => null);
+  if (!srcStat) return null;
   const outDir = path.join(dir, ".convert");
-  fs.mkdirSync(outDir, { recursive: true });
+  await fsp.mkdir(outDir, { recursive: true });
   const pdfPath = path.join(
     outDir,
     (path.basename(name).replace(/\.[^.]+$/, "") || "out") + ".pdf",
   );
   try {
     // Reuse a fresh-enough cached conversion.
-    if (
-      fs.existsSync(pdfPath) &&
-      fs.statSync(pdfPath).mtimeMs >= fs.statSync(src).mtimeMs
-    ) {
-      return fs.readFileSync(pdfPath);
+    const pdfStat = await fsp.stat(pdfPath).catch(() => null);
+    if (pdfStat && pdfStat.mtimeMs >= srcStat.mtimeMs) {
+      return await fsp.readFile(pdfPath);
     }
   } catch {
     /* ignore */
@@ -163,10 +196,10 @@ export async function convertToPdf(
       child.kill("SIGKILL");
       resolve(null);
     }, 120000);
-    child.on("close", () => {
+    child.on("close", async () => {
       clearTimeout(timer);
       try {
-        resolve(fs.existsSync(pdfPath) ? fs.readFileSync(pdfPath) : null);
+        resolve(await fsp.readFile(pdfPath));
       } catch {
         resolve(null);
       }
@@ -223,10 +256,12 @@ export async function saveMediaToSandbox(
     const dir = prepareWorkspace(conversationId);
     let name = `${baseName}.${ext}`;
     let i = 1;
-    while (fs.existsSync(path.join(dir, name))) name = `${baseName}_${i++}.${ext}`;
+    while (await pathExists(path.join(dir, name))) {
+      name = `${baseName}_${i++}.${ext}`;
+    }
     const target = path.join(dir, name);
     if (!path.resolve(target).startsWith(path.resolve(dir))) return null;
-    fs.writeFileSync(target, buffer);
+    await fsp.writeFile(target, buffer);
     return { name, size: buffer.length, isText: false };
   } catch {
     return null;
@@ -234,10 +269,10 @@ export async function saveMediaToSandbox(
 }
 
 /** Write uploaded files into a conversation's sandbox workspace. */
-export function writeSandboxFiles(
+export async function writeSandboxFiles(
   conversationId: string,
   files: { name: string; buffer: Buffer }[],
-): SandboxFile[] {
+): Promise<SandboxFile[]> {
   const dir = prepareWorkspace(conversationId);
   const out: SandboxFile[] = [];
   for (const f of files) {
@@ -247,20 +282,26 @@ export function writeSandboxFiles(
     );
     const target = path.join(dir, base);
     if (!path.resolve(target).startsWith(path.resolve(dir))) continue;
-    fs.writeFileSync(target, f.buffer);
+    await fsp.writeFile(target, f.buffer);
     out.push({
       name: base,
       size: f.buffer.length,
-      isText: looksTextual(target),
+      isText: bufferLooksTextual(f.buffer),
     });
   }
   return out;
 }
 
 /** List every file currently in a conversation's sandbox workspace. */
-export function listSandboxFiles(conversationId: string): SandboxFile[] {
+export async function listSandboxFiles(
+  conversationId: string,
+): Promise<SandboxFile[]> {
   const dir = workspaceDir(conversationId);
-  if (!fs.existsSync(dir)) return [];
+  try {
+    await fs.promises.access(dir);
+  } catch {
+    return []; // workspace doesn't exist yet
+  }
   return listFiles(dir, 0);
 }
 
@@ -289,15 +330,19 @@ function tarHeader(name: string, size: number): Buffer {
 }
 
 /** Pack the selected sandbox files into a tar archive (Buffer). */
-export function packTar(conversationId: string, names: string[]): Buffer {
+export async function packTar(
+  conversationId: string,
+  names: string[],
+): Promise<Buffer> {
   const dir = workspaceDir(conversationId);
   const root = path.resolve(dir);
   const parts: Buffer[] = [];
   for (const name of names) {
     const target = path.resolve(dir, name);
     if (!target.startsWith(root)) continue;
-    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) continue;
-    const data = fs.readFileSync(target);
+    const st = await fsp.stat(target).catch(() => null);
+    if (!st || !st.isFile()) continue;
+    const data = await fsp.readFile(target);
     parts.push(tarHeader(name, data.length));
     parts.push(data);
     const pad = (512 - (data.length % 512)) % 512;
@@ -308,13 +353,15 @@ export function packTar(conversationId: string, names: string[]): Buffer {
 }
 
 /** Read a file from a conversation's sandbox (with path-traversal guard). */
-export function readSandboxFile(
+export async function readSandboxFile(
   conversationId: string,
   name: string,
-): { buffer: Buffer; isText: boolean } | null {
+): Promise<{ buffer: Buffer; isText: boolean } | null> {
   const dir = workspaceDir(conversationId);
   const target = path.resolve(dir, name);
   if (!target.startsWith(path.resolve(dir))) return null; // traversal guard
-  if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return null;
-  return { buffer: fs.readFileSync(target), isText: looksTextual(target) };
+  const st = await fsp.stat(target).catch(() => null);
+  if (!st || !st.isFile()) return null;
+  const buffer = await fsp.readFile(target);
+  return { buffer, isText: bufferLooksTextual(buffer) };
 }

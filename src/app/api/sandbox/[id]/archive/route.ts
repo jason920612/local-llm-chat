@@ -16,7 +16,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (names.length === 0) {
     return Response.json({ error: "no files selected" }, { status: 400 });
   }
-  const tar = packTar(id, names);
+  const tar = await packTar(id, names);
   return new Response(new Uint8Array(tar), {
     headers: {
       "Content-Type": "application/x-tar",

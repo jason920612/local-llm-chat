@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { RunResult, SandboxFile } from "./driver";
 
+const fsp = fs.promises;
+
 /** Heuristic: a file is "text" if its first 4KB contains no null byte. */
 export function looksTextual(file: string): boolean {
   try {
@@ -16,11 +18,44 @@ export function looksTextual(file: string): boolean {
   }
 }
 
-/** List user-facing files in a workspace, newest-modified since `since` first. */
-export function listFiles(dir: string, since: number): SandboxFile[] {
+/** Async twin of {@link looksTextual} for the recursive listing hot path. */
+async function looksTextualAsync(file: string): Promise<boolean> {
+  let fh: fs.promises.FileHandle | undefined;
+  try {
+    fh = await fsp.open(file, "r");
+    const buf = Buffer.alloc(4096);
+    const { bytesRead } = await fh.read(buf, 0, 4096, 0);
+    for (let i = 0; i < bytesRead; i++) if (buf[i] === 0) return false;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+}
+
+/**
+ * List user-facing files in a workspace, newest-modified since `since` first.
+ *
+ * Async on purpose: the microVM workspace is reached over a `\\wsl.localhost\`
+ * UNC path where each stat/read carries 9P latency. Doing this with `fs.*Sync`
+ * froze the whole Node event loop (no SSE, no other responses) for the duration
+ * of a run; awaiting yields between files so the server stays responsive.
+ */
+export async function listFiles(
+  dir: string,
+  since: number,
+): Promise<SandboxFile[]> {
   const out: SandboxFile[] = [];
-  const walk = (d: string, prefix: string) => {
-    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+  const walk = async (d: string, prefix: string): Promise<void> => {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fsp.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= 50) return;
       if (entry.name.startsWith("__script_")) continue;
       if (entry.name === ".skills") continue; // mounted skill bundles, not user files
       if (entry.name === ".convert") continue; // cached format conversions
@@ -29,20 +64,24 @@ export function listFiles(dir: string, since: number): SandboxFile[] {
       const full = path.join(d, entry.name);
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
-        walk(full, rel);
+        await walk(full, rel);
       } else {
-        const st = fs.statSync(full);
-        if (st.mtimeMs >= since - 50) {
-          out.push({ name: rel, size: st.size, isText: looksTextual(full) });
+        try {
+          const st = await fsp.stat(full);
+          if (st.mtimeMs >= since - 50) {
+            out.push({
+              name: rel,
+              size: st.size,
+              isText: await looksTextualAsync(full),
+            });
+          }
+        } catch {
+          /* skip unreadable entry */
         }
       }
     }
   };
-  try {
-    walk(dir, "");
-  } catch {
-    /* ignore */
-  }
+  await walk(dir, "");
   return out.slice(0, 50);
 }
 
@@ -59,12 +98,12 @@ export function emptyResult(extra: Partial<RunResult>): RunResult {
 }
 
 /** Build a compact top-level tree (2 levels) of a freshly cloned repo. */
-export function cloneTree(repoDir: string, base: string): string {
+export async function cloneTree(repoDir: string, base: string): Promise<string> {
   const lines: string[] = [`${base}/`];
-  const walk = (d: string, prefix: string, depth: number) => {
+  const walk = async (d: string, prefix: string, depth: number): Promise<void> => {
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(d, { withFileTypes: true });
+      entries = await fsp.readdir(d, { withFileTypes: true });
     } catch {
       return;
     }
@@ -81,11 +120,11 @@ export function cloneTree(repoDir: string, base: string): string {
     for (const e of entries) {
       lines.push(`${prefix}${e.name}${e.isDirectory() ? "/" : ""}`);
       if (e.isDirectory() && depth > 0) {
-        walk(path.join(d, e.name), `${prefix}  `, depth - 1);
+        await walk(path.join(d, e.name), `${prefix}  `, depth - 1);
       }
     }
   };
-  walk(repoDir, "  ", 1);
+  await walk(repoDir, "  ", 1);
   return lines.slice(0, 120).join("\n");
 }
 
