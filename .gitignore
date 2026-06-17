@@ -39,6 +39,11 @@ cloudflared.local-*.yml
 # typescript
 *.tsbuildinfo
 
+# build artifacts / local scratch
+*.apk
+__pycache__/
+scripts/_*
+
 # editor
 .vscode/*
 !.vscode/extensions.json

@@ -37,6 +37,8 @@ export const config = {
     baseURL: process.env.XAI_BASE_URL ?? "https://api.x.ai/v1",
     apiKey: process.env.XAI_API_KEY ?? "",
     model: process.env.GROK_MODEL ?? "grok-build-0.1",
+    imageModel: process.env.XAI_IMAGE_MODEL ?? "grok-imagine-image-quality",
+    videoModel: process.env.XAI_VIDEO_MODEL ?? "grok-imagine-video-1.5",
     // Model used for memory-compaction summaries. Defaults to the chat model;
     // override with GROK_SUMMARY_MODEL for a stronger summarizer if needed.
     summaryModel:
@@ -106,6 +108,13 @@ export const config = {
       // size in GiB. Thin-provisioned (sparse) — only real usage hits the host
       // disk, and it persists across runs so apt/system installs stick.
       systemDiskGiB: Number(process.env.SANDBOX_VM_SYSDISK_GIB ?? 100),
+      computer: {
+        enabled: envBool("SANDBOX_VM_COMPUTER_USE", true),
+        width: Number(process.env.SANDBOX_VM_SCREEN_WIDTH ?? 1280),
+        height: Number(process.env.SANDBOX_VM_SCREEN_HEIGHT ?? 720),
+        autoInstall: envBool("SANDBOX_VM_COMPUTER_AUTOINSTALL", true),
+        ocr: envBool("SANDBOX_VM_COMPUTER_OCR", true),
+      },
     },
   },
   /**

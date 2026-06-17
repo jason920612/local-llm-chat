@@ -1,7 +1,5 @@
 import { config } from "../config";
 
-const IMAGE_MODEL = "grok-imagine-image-quality";
-
 function maybeServiceTier(): Record<string, unknown> {
   return config.grok.serviceTier ? { service_tier: config.grok.serviceTier } : {};
 }
@@ -22,7 +20,7 @@ export async function generateImage(prompt: string): Promise<string> {
       Authorization: `Bearer ${config.grok.apiKey}`,
     },
     body: JSON.stringify({
-      model: IMAGE_MODEL,
+      model: config.grok.imageModel,
       prompt,
       n: 1,
       ...maybeServiceTier(),

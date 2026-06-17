@@ -32,6 +32,93 @@ export interface CloneResult {
   error?: string;
 }
 
+export interface ComputerWindow {
+  id: string;
+  title: string;
+  bbox: [number, number, number, number];
+}
+
+export interface ComputerElement {
+  id: string;
+  kind: "text" | "button" | "input" | "image" | "unknown";
+  text?: string;
+  bbox: [number, number, number, number];
+  center: [number, number];
+  confidence?: number;
+  source: "ocr" | "window" | "accessibility" | "dom" | "vision";
+}
+
+export interface ComputerObservation {
+  ok: boolean;
+  screen?: { width: number; height: number };
+  display?: string;
+  screenshot?: {
+    path: string;
+    dataUrl?: string;
+  };
+  windows: ComputerWindow[];
+  elements: ComputerElement[];
+  missing?: string[];
+  warnings?: string[];
+  error?: string;
+}
+
+export interface BrowserElement extends ComputerElement {
+  tag?: string;
+  role?: string;
+  href?: string;
+  selector?: string;
+}
+
+export interface BrowserObservation {
+  ok: boolean;
+  screen?: { width: number; height: number };
+  url?: string;
+  title?: string;
+  screenshot?: {
+    path: string;
+    dataUrl?: string;
+  } | null;
+  windows: ComputerWindow[];
+  elements: BrowserElement[];
+  warnings?: string[];
+  error?: string;
+}
+
+export type ComputerAction =
+  | {
+      action: "move_mouse" | "left_click" | "right_click";
+      x: number;
+      y: number;
+    }
+  | { action: "type_text"; text: string }
+  | { action: "key"; key: string }
+  | { action: "scroll"; x?: number; y?: number; amount: number }
+  | { action: "wait"; ms?: number };
+
+export interface ComputerActionResult {
+  ok: boolean;
+  action: string;
+  durationMs: number;
+  error?: string;
+}
+
+export type BrowserAction =
+  | { action: "click_element"; elementId: string }
+  | { action: "type_element"; elementId: string; text: string }
+  | { action: "press"; key: string }
+  | { action: "scroll"; amount: number }
+  | { action: "wait_for_text"; text: string; timeoutMs?: number };
+
+export interface BrowserActionResult {
+  ok: boolean;
+  action: string;
+  durationMs: number;
+  url?: string;
+  title?: string;
+  error?: string;
+}
+
 export interface SandboxDriver {
   readonly name: "local" | "microvm";
 
@@ -66,6 +153,36 @@ export interface SandboxDriver {
 
   /** Shallow-clone a git repo into the conversation workspace. */
   cloneRepo(conversationId: string, repoUrl: string): Promise<CloneResult>;
+
+  /** Observe the conversation VM's isolated virtual display. */
+  computerObserve?(
+    conversationId: string,
+    opts?: { includeScreenshot?: boolean; ocr?: boolean },
+  ): Promise<ComputerObservation>;
+
+  /** Act on the conversation VM's isolated virtual display. */
+  computerAction?(
+    conversationId: string,
+    action: ComputerAction,
+  ): Promise<ComputerActionResult>;
+
+  /** Open or navigate the isolated VM browser. */
+  browserOpenUrl?(
+    conversationId: string,
+    url: string,
+  ): Promise<BrowserActionResult>;
+
+  /** Observe DOM/accessibility-like browser elements in the isolated VM browser. */
+  browserObserve?(
+    conversationId: string,
+    opts?: { includeScreenshot?: boolean },
+  ): Promise<BrowserObservation>;
+
+  /** Act on browser elements returned by browserObserve. */
+  browserAction?(
+    conversationId: string,
+    action: BrowserAction,
+  ): Promise<BrowserActionResult>;
 
   /** Remove a conversation's workspace (on conversation delete). */
   deleteSandbox(conversationId: string): void;

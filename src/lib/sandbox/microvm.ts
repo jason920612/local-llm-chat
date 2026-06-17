@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
@@ -7,6 +7,12 @@ import {
   type SandboxDriver,
   type RunResult,
   type CloneResult,
+  type ComputerAction,
+  type ComputerActionResult,
+  type ComputerObservation,
+  type BrowserAction,
+  type BrowserActionResult,
+  type BrowserObservation,
   safeConvId,
   normalizeRepoUrl,
   repoDirName,
@@ -106,6 +112,9 @@ export class MicroVMDriver implements SandboxDriver {
         try {
           const st = await fsp.stat(p);
           if (st.isDirectory() && now - st.mtimeMs > config.sandbox.ttlMs) {
+            // Stop any VM still attached to this conversation before removing its
+            // workspace, so the TTL reaper can never orphan a running VM.
+            this.stopVmInWsl(name);
             await fsp.rm(p, { recursive: true, force: true });
           }
         } catch {
@@ -135,39 +144,26 @@ export class MicroVMDriver implements SandboxDriver {
     code: string,
     opts?: { timeoutMs?: number; jobId?: string },
   ): Promise<RunResult> {
-    const dir = this.prepareWorkspace(conversationId);
     const cap = config.sandbox.maxOutputChars;
     const timeoutMs = Math.min(
       opts?.timeoutMs ?? config.sandbox.timeoutMs,
       this.cfg.maxRunMs,
     );
     const jobId = this.safeJobId(opts?.jobId ?? `fg_${nanoid(10)}`);
-    const jobDir = path.win32.join(dir, ".run", "jobs", jobId);
-    const start = Date.now();
-
-    const session = await this.ensureSession(conversationId);
-    if (session.exited) {
-      return emptyResult({ error: "microVM session exited before job started" });
-    }
-
-    try {
-      await fs.promises.mkdir(jobDir, { recursive: true });
-      await fs.promises.rm(path.win32.join(jobDir, "result.json"), {
-        force: true,
-      });
-      await fs.promises.rm(path.win32.join(jobDir, "kill"), { force: true });
-      await this.writeJsonAtomic(path.win32.join(jobDir, "request.json"), {
+    return this.runVmRequest(
+      conversationId,
+      jobId,
+      {
         id: jobId,
+        type: "run_code",
         language,
         code,
         timeoutMs,
         maxOutputChars: cap,
-      });
-    } catch (e) {
-      return emptyResult({ error: `failed to stage VM job: ${String(e)}` });
-    }
-
-    return this.waitForJob(conversationId, jobId, start, timeoutMs, cap);
+      },
+      timeoutMs,
+      cap,
+    );
   }
 
   killRun(conversationId: string, jobId?: string): boolean {
@@ -213,9 +209,290 @@ export class MicroVMDriver implements SandboxDriver {
     return { ok: true, dir: base, tree: await cloneTree(dest, base) };
   }
 
+  async computerObserve(
+    conversationId: string,
+    opts: { includeScreenshot?: boolean; ocr?: boolean } = {},
+  ): Promise<ComputerObservation> {
+    if (!this.cfg.computer.enabled) {
+      return {
+        ok: false,
+        windows: [],
+        elements: [],
+        error: "VM computer use is disabled",
+      };
+    }
+    const jobId = this.safeJobId(`cu_obs_${nanoid(8)}`);
+    const result = await this.runVmRequest(
+      conversationId,
+      jobId,
+      {
+        id: jobId,
+        type: "computer_observe",
+        timeoutMs: 20 * 60 * 1000,
+        maxOutputChars: 2_000_000,
+        includeScreenshot: Boolean(opts.includeScreenshot),
+        ocr: opts.ocr ?? this.cfg.computer.ocr,
+        autoInstall: this.cfg.computer.autoInstall,
+        width: this.cfg.computer.width,
+        height: this.cfg.computer.height,
+      },
+      20 * 60 * 1000,
+      2_000_000,
+    );
+    return this.parseComputerObservation(result);
+  }
+
+  async computerAction(
+    conversationId: string,
+    action: ComputerAction,
+  ): Promise<ComputerActionResult> {
+    if (!this.cfg.computer.enabled) {
+      return {
+        ok: false,
+        action: action.action,
+        durationMs: 0,
+        error: "VM computer use is disabled",
+      };
+    }
+    const jobId = this.safeJobId(`cu_act_${nanoid(8)}`);
+    const result = await this.runVmRequest(
+      conversationId,
+      jobId,
+      {
+        id: jobId,
+        type: "computer_action",
+        timeoutMs: 20 * 60 * 1000,
+        maxOutputChars: 100_000,
+        autoInstall: this.cfg.computer.autoInstall,
+        width: this.cfg.computer.width,
+        height: this.cfg.computer.height,
+        ...action,
+      },
+      20 * 60 * 1000,
+      100_000,
+    );
+    return this.parseComputerActionResult(result, action.action);
+  }
+
+  async browserOpenUrl(
+    conversationId: string,
+    url: string,
+  ): Promise<BrowserActionResult> {
+    const jobId = this.safeJobId(`br_open_${nanoid(8)}`);
+    const result = await this.runVmRequest(
+      conversationId,
+      jobId,
+      {
+        id: jobId,
+        type: "browser_open_url",
+        timeoutMs: 20 * 60 * 1000,
+        maxOutputChars: 100_000,
+        autoInstall: this.cfg.computer.autoInstall,
+        width: this.cfg.computer.width,
+        height: this.cfg.computer.height,
+        url,
+      },
+      20 * 60 * 1000,
+      100_000,
+    );
+    return this.parseBrowserActionResult(result, "browser_open_url");
+  }
+
+  async browserObserve(
+    conversationId: string,
+    opts: { includeScreenshot?: boolean } = {},
+  ): Promise<BrowserObservation> {
+    const jobId = this.safeJobId(`br_obs_${nanoid(8)}`);
+    const result = await this.runVmRequest(
+      conversationId,
+      jobId,
+      {
+        id: jobId,
+        type: "browser_observe",
+        timeoutMs: 20 * 60 * 1000,
+        maxOutputChars: 2_000_000,
+        autoInstall: this.cfg.computer.autoInstall,
+        width: this.cfg.computer.width,
+        height: this.cfg.computer.height,
+        includeScreenshot: Boolean(opts.includeScreenshot),
+      },
+      20 * 60 * 1000,
+      2_000_000,
+    );
+    return this.parseBrowserObservation(result);
+  }
+
+  async browserAction(
+    conversationId: string,
+    action: BrowserAction,
+  ): Promise<BrowserActionResult> {
+    const jobId = this.safeJobId(`br_act_${nanoid(8)}`);
+    const result = await this.runVmRequest(
+      conversationId,
+      jobId,
+      {
+        id: jobId,
+        type: "browser_action",
+        timeoutMs: 20 * 60 * 1000,
+        maxOutputChars: 100_000,
+        autoInstall: this.cfg.computer.autoInstall,
+        width: this.cfg.computer.width,
+        height: this.cfg.computer.height,
+        ...action,
+      },
+      20 * 60 * 1000,
+      100_000,
+    );
+    return this.parseBrowserActionResult(result, action.action);
+  }
+
   private safeJobId(jobId: string): string {
     const safe = jobId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
     return safe || `job_${nanoid(8)}`;
+  }
+
+  private async runVmRequest(
+    conversationId: string,
+    jobId: string,
+    request: Record<string, unknown>,
+    timeoutMs: number,
+    cap: number,
+  ): Promise<RunResult> {
+    const dir = this.prepareWorkspace(conversationId);
+    const safeJobId = this.safeJobId(jobId);
+    const jobDir = path.win32.join(dir, ".run", "jobs", safeJobId);
+    const start = Date.now();
+
+    const session = await this.ensureSession(conversationId);
+    if (session.exited) {
+      return emptyResult({ error: "microVM session exited before job started" });
+    }
+
+    try {
+      await fs.promises.mkdir(jobDir, { recursive: true });
+      await fs.promises.rm(path.win32.join(jobDir, "result.json"), {
+        force: true,
+      });
+      await fs.promises.rm(path.win32.join(jobDir, "kill"), { force: true });
+      await this.writeJsonAtomic(path.win32.join(jobDir, "request.json"), {
+        ...request,
+        id: safeJobId,
+      });
+    } catch (e) {
+      return emptyResult({ error: `failed to stage VM job: ${String(e)}` });
+    }
+
+    return this.waitForJob(conversationId, safeJobId, start, timeoutMs, cap);
+  }
+
+  private parseComputerObservation(result: RunResult): ComputerObservation {
+    if (result.error || result.stderr) {
+      return {
+        ok: false,
+        windows: [],
+        elements: [],
+        error: result.error ?? result.stderr,
+      };
+    }
+    try {
+      const parsed = JSON.parse(result.stdout) as ComputerObservation;
+      return {
+        ...parsed,
+        windows: Array.isArray(parsed.windows) ? parsed.windows : [],
+        elements: Array.isArray(parsed.elements) ? parsed.elements : [],
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        windows: [],
+        elements: [],
+        error: `invalid computer observation: ${String(e)}; ${result.stdout.slice(0, 500)}`,
+      };
+    }
+  }
+
+  private parseComputerActionResult(
+    result: RunResult,
+    fallbackAction: string,
+  ): ComputerActionResult {
+    if (result.error || result.stderr) {
+      return {
+        ok: false,
+        action: fallbackAction,
+        durationMs: result.durationMs,
+        error: result.error ?? result.stderr,
+      };
+    }
+    try {
+      const parsed = JSON.parse(result.stdout) as ComputerActionResult;
+      return {
+        ...parsed,
+        action: parsed.action ?? fallbackAction,
+        durationMs: parsed.durationMs ?? result.durationMs,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        action: fallbackAction,
+        durationMs: result.durationMs,
+        error: `invalid computer action result: ${String(e)}; ${result.stdout.slice(0, 500)}`,
+      };
+    }
+  }
+
+  private parseBrowserObservation(result: RunResult): BrowserObservation {
+    if (result.error || result.stderr) {
+      return {
+        ok: false,
+        windows: [],
+        elements: [],
+        error: result.error ?? result.stderr,
+      };
+    }
+    try {
+      const parsed = JSON.parse(result.stdout) as BrowserObservation;
+      return {
+        ...parsed,
+        windows: Array.isArray(parsed.windows) ? parsed.windows : [],
+        elements: Array.isArray(parsed.elements) ? parsed.elements : [],
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        windows: [],
+        elements: [],
+        error: `invalid browser observation: ${String(e)}; ${result.stdout.slice(0, 500)}`,
+      };
+    }
+  }
+
+  private parseBrowserActionResult(
+    result: RunResult,
+    fallbackAction: string,
+  ): BrowserActionResult {
+    if (result.error || result.stderr) {
+      return {
+        ok: false,
+        action: fallbackAction,
+        durationMs: result.durationMs,
+        error: result.error ?? result.stderr,
+      };
+    }
+    try {
+      const parsed = JSON.parse(result.stdout) as BrowserActionResult;
+      return {
+        ...parsed,
+        action: parsed.action ?? fallbackAction,
+        durationMs: parsed.durationMs ?? result.durationMs,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        action: fallbackAction,
+        durationMs: result.durationMs,
+        error: `invalid browser action result: ${String(e)}; ${result.stdout.slice(0, 500)}`,
+      };
+    }
   }
 
   private async ensureSession(conversationId: string): Promise<VmSession> {
@@ -244,6 +521,13 @@ export class MicroVMDriver implements SandboxDriver {
     });
     await this.writeJsonAtomic(path.win32.join(dir, ".run", "session.json"), {
       idleSeconds: Math.max(30, Math.floor(this.cfg.idleMs / 1000)),
+      computer: {
+        enabled: this.cfg.computer.enabled,
+        autoInstall: this.cfg.computer.autoInstall,
+        ocr: this.cfg.computer.ocr,
+        width: this.cfg.computer.width,
+        height: this.cfg.computer.height,
+      },
     });
     await fs.promises.rm(path.win32.join(dir, ".run", "daemon.json"), {
       force: true,
@@ -306,14 +590,50 @@ export class MicroVMDriver implements SandboxDriver {
 
   private killSession(conversationId: string): boolean {
     const key = safeConvId(conversationId);
+    // Stop ONLY this conversation's VM, surgically, via the bridge. We must NOT
+    // kill the wsl.exe relay (session.child) for VM lifecycle: it's just an I/O
+    // bridge into the single shared WSL2 instance, so killing wsl-side processes
+    // to "stop a VM" is both pointless (the Linux cloud-hypervisor keeps running)
+    // and dangerous. `llm-vm-run stop <key>` kills exactly this conversation's
+    // cloud-hypervisor (matched by its unique sys.img path) and frees its
+    // tap/virtiofsd/slot; the foreground bridge then returns and its relay exits
+    // on its own (firing the child 'close' handler that releases the VM slot).
+    // Keying off the conversation — not the in-memory session map — also lets us
+    // stop VMs orphaned by a Node restart.
+    this.stopVmInWsl(key);
     const session = sessions.get(key);
-    if (!session || session.exited) return false;
-    try {
-      session.child.kill("SIGKILL");
-    } catch {
-      /* already gone */
+    if (session) {
+      session.exited = true;
+      sessions.delete(key);
     }
-    return true;
+    return !!session;
+  }
+
+  /**
+   * Ask the privileged bridge to terminate this conversation's VM in WSL
+   * (`llm-vm-run stop <key>`): kills cloud-hypervisor + virtiofsd and frees the
+   * tap/IP slot. Synchronous and best-effort so deleteSandbox can safely remove
+   * the workspace dir afterwards.
+   */
+  private stopVmInWsl(key: string): void {
+    try {
+      spawnSync(
+        "wsl.exe",
+        [
+          "-d",
+          this.cfg.wslDistro,
+          "--",
+          "sudo",
+          "-n",
+          "/usr/local/sbin/llm-vm-run",
+          "stop",
+          key,
+        ],
+        { windowsHide: true, timeout: 20000 },
+      );
+    } catch {
+      /* best-effort */
+    }
   }
 
   private async daemonReady(conversationId: string): Promise<boolean> {

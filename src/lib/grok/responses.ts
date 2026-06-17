@@ -19,10 +19,17 @@ import { generateVideo } from "./video";
 import {
   runCode,
   cloneRepo,
+  computerObserve,
+  computerAction,
+  browserOpenUrl,
+  browserObserve,
+  browserAction,
   saveMediaToSandbox,
   mountSkill,
   type RunResult,
   type SandboxFile,
+  type ComputerAction,
+  type BrowserAction,
 } from "../sandbox/run";
 import { getSkill, installSkill } from "../skills";
 import {
@@ -145,6 +152,11 @@ const BG_START_FN = "start_background";
 const BG_LOG_FN = "read_background_log";
 const BG_LIST_FN = "list_background";
 const BG_KILL_FN = "kill_background";
+const COMPUTER_OBSERVE_FN = "computer_observe";
+const COMPUTER_ACTION_FN = "computer_action";
+const BROWSER_OPEN_URL_FN = "browser_open_url";
+const BROWSER_OBSERVE_FN = "browser_observe";
+const BROWSER_ACTION_FN = "browser_action";
 
 function looksLikeImageUrl(url: string): boolean {
   try {
@@ -422,6 +434,155 @@ const BG_KILL_TOOL = {
   },
 };
 
+const COMPUTER_OBSERVE_TOOL = {
+  type: "function",
+  name: COMPUTER_OBSERVE_FN,
+  description:
+    "Observe the isolated virtual screen inside this conversation's microVM. Returns screen size, open windows, and optionally a small screenshot data URL. Set ocr=true to also get on-screen text elements with bounding boxes and clickable center coordinates (PP-OCRv6) — do this when you need to locate where to click. Use before any computer_action and again after each action. The VM screen is isolated from the user's host computer.",
+  parameters: {
+    type: "object",
+    properties: {
+      include_screenshot: {
+        type: "boolean",
+        description:
+          "Include a downscaled screenshot data URL in the observation. Use when visual layout matters.",
+      },
+      ocr: {
+        type: "boolean",
+        description:
+          "Run PP-OCRv6 (medium) to detect on-screen text and return each piece with its bounding box and clickable center coordinates. Set true when you need to read the screen or find where to click for non-browser GUIs; adds ~1-2s. Defaults to false.",
+      },
+    },
+  },
+};
+
+const COMPUTER_ACTION_TOOL = {
+  type: "function",
+  name: COMPUTER_ACTION_FN,
+  description:
+    "Send one constrained mouse/keyboard action to the isolated virtual screen inside this conversation's microVM. Mouse movement is smooth and non-instant. Use only after computer_observe gives target coordinates. After every action, call computer_observe before deciding the next action.",
+  parameters: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: [
+          "move_mouse",
+          "left_click",
+          "right_click",
+          "type_text",
+          "key",
+          "scroll",
+          "wait",
+        ],
+      },
+      x: {
+        type: "number",
+        description: "Screen x coordinate for mouse actions.",
+      },
+      y: {
+        type: "number",
+        description: "Screen y coordinate for mouse actions.",
+      },
+      text: {
+        type: "string",
+        description: "Text to type for type_text.",
+      },
+      key: {
+        type: "string",
+        description:
+          "xdotool key name for key actions, e.g. Return, Escape, ctrl+l, ctrl+c.",
+      },
+      amount: {
+        type: "number",
+        description:
+          "Scroll wheel notches. Negative scrolls down, positive scrolls up.",
+      },
+      ms: {
+        type: "number",
+        description: "Milliseconds to wait for wait action.",
+      },
+    },
+    required: ["action"],
+  },
+};
+
+const BROWSER_OPEN_URL_TOOL = {
+  type: "function",
+  name: BROWSER_OPEN_URL_FN,
+  description:
+    "Open a URL in the isolated Chromium browser inside this conversation's microVM. Use this for browser computer-use tasks before browser_observe.",
+  parameters: {
+    type: "object",
+    properties: {
+      url: {
+        type: "string",
+        description: "URL to open, e.g. https://example.com or about:blank.",
+      },
+    },
+    required: ["url"],
+  },
+};
+
+const BROWSER_OBSERVE_TOOL = {
+  type: "function",
+  name: BROWSER_OBSERVE_FN,
+  description:
+    "Observe the isolated VM browser using DOM-derived elements. Returns current URL/title and visible elements with element IDs, text, roles, bounding boxes, and center coordinates. Prefer this over raw coordinate computer_observe for websites.",
+  parameters: {
+    type: "object",
+    properties: {
+      include_screenshot: {
+        type: "boolean",
+        description: "Include a downscaled screenshot data URL.",
+      },
+    },
+  },
+};
+
+const BROWSER_ACTION_TOOL = {
+  type: "function",
+  name: BROWSER_ACTION_FN,
+  description:
+    "Perform one browser action inside the isolated VM browser using element IDs from browser_observe. After each action, call browser_observe again before deciding the next action.",
+  parameters: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: [
+          "click_element",
+          "type_element",
+          "press",
+          "scroll",
+          "wait_for_text",
+        ],
+      },
+      element_id: {
+        type: "string",
+        description: "DOM element id from browser_observe, e.g. dom_3.",
+      },
+      text: {
+        type: "string",
+        description: "Text for type_element or wait_for_text.",
+      },
+      key: {
+        type: "string",
+        description: "Keyboard key for press, e.g. Enter, Escape, Control+L.",
+      },
+      amount: {
+        type: "number",
+        description: "Scroll delta in pixels. Positive scrolls down.",
+      },
+      timeout_ms: {
+        type: "number",
+        description: "Timeout for wait_for_text.",
+      },
+    },
+    required: ["action"],
+  },
+};
+
 /**
  * Tools sent to the Responses API. The sandbox-backed tools (run_code, clone_repo,
  * use_skill, install_skill, background-process tools) are only offered when the
@@ -429,7 +590,7 @@ const BG_KILL_TOOL = {
  */
 function toolset() {
   if (!config.sandbox.enabled) return BASE_TOOLS;
-  return [
+  const tools = [
     ...BASE_TOOLS,
     RUN_CODE_TOOL,
     CLONE_REPO_TOOL,
@@ -440,6 +601,14 @@ function toolset() {
     BG_LIST_TOOL,
     BG_KILL_TOOL,
   ];
+  if (
+    config.sandbox.driver === "microvm" &&
+    config.sandbox.microvm.computer.enabled
+  ) {
+    tools.push(COMPUTER_OBSERVE_TOOL, COMPUTER_ACTION_TOOL);
+    tools.push(BROWSER_OPEN_URL_TOOL, BROWSER_OBSERVE_TOOL, BROWSER_ACTION_TOOL);
+  }
+  return tools;
 }
 
 interface OutItem {
@@ -536,6 +705,73 @@ function extractSearchedImageRefs(output: unknown): ImageRef[] {
     }
   }
   return refs;
+}
+
+function parseComputerActionArgs(args: {
+  action?: string;
+  x?: number;
+  y?: number;
+  text?: string;
+  key?: string;
+  amount?: number;
+  ms?: number;
+}): ComputerAction | string {
+  const action = args.action;
+  if (action === "move_mouse" || action === "left_click" || action === "right_click") {
+    if (!Number.isFinite(args.x) || !Number.isFinite(args.y)) {
+      return `${action} requires finite x and y coordinates`;
+    }
+    return { action, x: Math.round(args.x ?? 0), y: Math.round(args.y ?? 0) };
+  }
+  if (action === "type_text") {
+    return { action, text: args.text ?? "" };
+  }
+  if (action === "key") {
+    if (!args.key) return "key action requires key";
+    return { action, key: args.key };
+  }
+  if (action === "scroll") {
+    return { action, x: args.x, y: args.y, amount: Math.trunc(args.amount ?? -3) };
+  }
+  if (action === "wait") {
+    return { action, ms: Math.trunc(args.ms ?? 1000) };
+  }
+  return `unknown computer action: ${action ?? ""}`;
+}
+
+function parseBrowserActionArgs(args: {
+  action?: string;
+  element_id?: string;
+  text?: string;
+  key?: string;
+  amount?: number;
+  timeout_ms?: number;
+}): BrowserAction | string {
+  const action = args.action;
+  if (action === "click_element") {
+    if (!args.element_id) return "click_element requires element_id";
+    return { action, elementId: args.element_id };
+  }
+  if (action === "type_element") {
+    if (!args.element_id) return "type_element requires element_id";
+    return { action, elementId: args.element_id, text: args.text ?? "" };
+  }
+  if (action === "press") {
+    if (!args.key) return "press requires key";
+    return { action, key: args.key };
+  }
+  if (action === "scroll") {
+    return { action, amount: Math.trunc(args.amount ?? 600) };
+  }
+  if (action === "wait_for_text") {
+    if (!args.text) return "wait_for_text requires text";
+    return {
+      action,
+      text: args.text,
+      timeoutMs: Math.trunc(args.timeout_ms ?? 10000),
+    };
+  }
+  return `unknown browser action: ${action ?? ""}`;
 }
 
 /** Append source URLs as citations, de-duplicating by URL (snippet holds URL). */
@@ -826,6 +1062,17 @@ export function streamGrokResponses(
               timeout_seconds?: number;
               id?: string;
               tail_chars?: number;
+              include_screenshot?: boolean;
+              ocr?: boolean;
+              action?: string;
+              x?: number;
+              y?: number;
+              text?: string;
+              key?: string;
+              amount?: number;
+              ms?: number;
+              element_id?: string;
+              timeout_ms?: number;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -996,6 +1243,55 @@ export function streamGrokResponses(
               out = ok
                 ? `Killed ${args.id}. (You'll still get the completion event.)`
                 : `No running background process ${args.id ?? ""} in this conversation.`;
+            } else if (c.name === COMPUTER_OBSERVE_FN) {
+              emitTool("computer_observe", {
+                include_screenshot: Boolean(args.include_screenshot),
+                ocr: args.ocr ?? false,
+              });
+              const obs = await computerObserve(conversationId, {
+                includeScreenshot: Boolean(args.include_screenshot),
+                ocr: args.ocr ?? false,
+              });
+              out = JSON.stringify(obs);
+            } else if (c.name === COMPUTER_ACTION_FN) {
+              const action = parseComputerActionArgs(args);
+              emitTool("computer_action", {
+                action: args.action ?? "",
+                x: args.x,
+                y: args.y,
+                key: args.key,
+              });
+              if (typeof action === "string") {
+                out = `computer_action failed: ${action}`;
+              } else {
+                const result = await computerAction(conversationId, action);
+                out = JSON.stringify(result);
+              }
+            } else if (c.name === BROWSER_OPEN_URL_FN) {
+              emitTool("browser_open_url", { url: args.url ?? "" });
+              const result = await browserOpenUrl(conversationId, args.url ?? "");
+              out = JSON.stringify(result);
+            } else if (c.name === BROWSER_OBSERVE_FN) {
+              emitTool("browser_observe", {
+                include_screenshot: Boolean(args.include_screenshot),
+              });
+              const obs = await browserObserve(conversationId, {
+                includeScreenshot: Boolean(args.include_screenshot),
+              });
+              out = JSON.stringify(obs);
+            } else if (c.name === BROWSER_ACTION_FN) {
+              const action = parseBrowserActionArgs(args);
+              emitTool("browser_action", {
+                action: args.action ?? "",
+                element_id: args.element_id,
+                key: args.key,
+              });
+              if (typeof action === "string") {
+                out = `browser_action failed: ${action}`;
+              } else {
+                const result = await browserAction(conversationId, action);
+                out = JSON.stringify(result);
+              }
             } else {
               out = `Unknown tool: ${c.name}`;
             }

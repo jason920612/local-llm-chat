@@ -122,7 +122,9 @@ function executionDirective(): string {
 
 # USING TOOLS — BE PROACTIVE (do it, don't just describe it)
 For ANY request that involves computation, files, data, code, repos, documents, or producing an artifact, ACTUALLY use the matching tool or skill THIS turn — don't explain what you would do, and don't ask permission first. Reach for tools/skills by default; only skip them for pure chat, general knowledge, or reasoning that needs none.
-${exec}`;
+${exec}
+
+When using computer-use tools, remember they control only this conversation's isolated VM screen, never the user's host computer. For websites, prefer browser_open_url, browser_observe, and browser_action because they return stable DOM element IDs. For non-browser GUI targets, call computer_observe first, choose coordinates from the returned element centers, perform one computer_action, then observe again before the next action.`;
 }
 
 const skillsDirective = (

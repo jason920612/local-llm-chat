@@ -7,13 +7,29 @@ import {
   type SandboxFile,
   type RunResult,
   type CloneResult,
+  type ComputerAction,
+  type ComputerActionResult,
+  type ComputerObservation,
+  type BrowserAction,
+  type BrowserActionResult,
+  type BrowserObservation,
 } from "./driver";
 import { LocalProcessDriver } from "./local";
 import { MicroVMDriver } from "./microvm";
 import { listFiles, pybootEnv } from "./fsutil";
 
 // Re-export the shared types so existing callers keep importing them from here.
-export type { SandboxFile, RunResult, CloneResult };
+export type {
+  SandboxFile,
+  RunResult,
+  CloneResult,
+  ComputerAction,
+  ComputerActionResult,
+  ComputerObservation,
+  BrowserAction,
+  BrowserActionResult,
+  BrowserObservation,
+};
 
 const fsp = fs.promises;
 const SKILLS_ROOT = path.join(process.cwd(), "skills");
@@ -82,6 +98,88 @@ export function sandboxWorkspacePath(conversationId: string): string {
 /** True when the active sandbox backend runs each job in its own microVM. */
 export function isMicrovmSandbox(): boolean {
   return getDriver().name === "microvm";
+}
+
+/** Observe the isolated virtual display for this conversation's microVM. */
+export function computerObserve(
+  conversationId: string,
+  opts?: { includeScreenshot?: boolean; ocr?: boolean },
+): Promise<ComputerObservation> {
+  const driver = getDriver();
+  if (!driver.computerObserve) {
+    return Promise.resolve({
+      ok: false,
+      windows: [],
+      elements: [],
+      error: "computer use requires the microVM sandbox driver",
+    });
+  }
+  return driver.computerObserve(conversationId, opts);
+}
+
+/** Send a constrained mouse/keyboard action into the isolated virtual display. */
+export function computerAction(
+  conversationId: string,
+  action: ComputerAction,
+): Promise<ComputerActionResult> {
+  const driver = getDriver();
+  if (!driver.computerAction) {
+    return Promise.resolve({
+      ok: false,
+      action: action.action,
+      durationMs: 0,
+      error: "computer use requires the microVM sandbox driver",
+    });
+  }
+  return driver.computerAction(conversationId, action);
+}
+
+export function browserOpenUrl(
+  conversationId: string,
+  url: string,
+): Promise<BrowserActionResult> {
+  const driver = getDriver();
+  if (!driver.browserOpenUrl) {
+    return Promise.resolve({
+      ok: false,
+      action: "browser_open_url",
+      durationMs: 0,
+      error: "browser computer use requires the microVM sandbox driver",
+    });
+  }
+  return driver.browserOpenUrl(conversationId, url);
+}
+
+export function browserObserve(
+  conversationId: string,
+  opts?: { includeScreenshot?: boolean },
+): Promise<BrowserObservation> {
+  const driver = getDriver();
+  if (!driver.browserObserve) {
+    return Promise.resolve({
+      ok: false,
+      windows: [],
+      elements: [],
+      error: "browser computer use requires the microVM sandbox driver",
+    });
+  }
+  return driver.browserObserve(conversationId, opts);
+}
+
+export function browserAction(
+  conversationId: string,
+  action: BrowserAction,
+): Promise<BrowserActionResult> {
+  const driver = getDriver();
+  if (!driver.browserAction) {
+    return Promise.resolve({
+      ok: false,
+      action: action.action,
+      durationMs: 0,
+      error: "browser computer use requires the microVM sandbox driver",
+    });
+  }
+  return driver.browserAction(conversationId, action);
 }
 
 /** Shallow-clone a git repo into the conversation sandbox; return its tree. */

@@ -119,9 +119,10 @@ On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`
 - **X + web search** run server-side automatically (no toggle needed), including
   image search / image understanding when enabled by env.
 - **Image generation** (`generate_image` → Grok Imagine, `/v1/images/generations`)
-  and **video generation** (`generate_video` → `grok-imagine-video-1.5-preview`,
+  and **video generation** (`generate_video` → `grok-imagine-video-1.5`,
   `/v1/videos/generations`, async) are client-side function tools — the model calls
-  them and the result is shown inline.
+  them and the result is shown inline. Video generation always uses the 1.5
+  image-to-video model; text-only requests first generate a base image.
 - **Voice**: TTS via `/v1/tts` (natural voices), REST STT via `/v1/stt`, and
   streaming STT via the local WebSocket proxy `/api/stt/stream` replace the
   browser engines when a key is present (falling back to browser TTS/Whisper otherwise).
@@ -149,7 +150,7 @@ On the Grok backend the app uses xAI's native **Responses API** (`/v1/responses`
 
 Set `SANDBOX_DRIVER=microvm` to run every conversation's `run_code` in its **own
 Cloud Hypervisor microVM** — a real, separate Linux kernel, not a container.
-Each VM is ephemeral (booted per run, ~2s, torn down after) and mounts that
+Each conversation gets one long-lived VM session and mounts that
 conversation's **persistent** workspace over virtio-fs at `/workspace`; pip
 installs persist there (`pip --user` → `/workspace/.local`) and the VM has NAT
 egress so `pip`/`git` work. The whole sandbox subsystem runs inside **WSL2**, so
@@ -166,6 +167,30 @@ conversation VM runs a guest daemon that can execute multiple `run_code` and
 `start_background` jobs concurrently. The model can tail each background job's
 live log under `.run/jobs/<id>/live.log` and is woken with the full output on
 completion.
+
+VM computer use is exposed to Grok through `computer_observe` and
+`computer_action`. It runs entirely inside the conversation VM on an isolated
+virtual display (`Xvfb` + a lightweight window manager + Chromium). The first
+computer-use call auto-installs the required VM packages by default
+(`SANDBOX_VM_COMPUTER_AUTOINSTALL=true`) and keeps them on the VM system disk.
+`computer_observe` returns the VM screen size, open windows, and optionally a
+downscaled screenshot data URL for Grok. OCR is opt-in: when Grok sets
+`ocr=true` it also gets on-screen text elements with bounding boxes and clickable
+center coordinates, via **PP-OCRv6 (medium)** (PaddleOCR) running CPU-only inside
+the VM (~1-2s/frame). Bake it into `base.img` with
+`sandbox-host/build/stage3f-ocr.sh` so OCR works offline and the first call is
+fast; otherwise it lazily pip-installs PaddleOCR and downloads weights at runtime.
+Actions send smooth mouse movement, clicks, keyboard input, scroll, or wait
+events only to the VM display; the host desktop, host clipboard, and host input
+devices are not touched.
+
+Browser-aware computer use is exposed through `browser_open_url`,
+`browser_observe`, and `browser_action`. These run Playwright Chromium inside
+the same VM display and return DOM-derived element ids, text, roles, bounding
+boxes, URL, and title. Prefer these browser tools for websites; keep raw
+coordinate `computer_action` for non-browser GUI/canvas/image-only targets.
+Run `sandbox-host/build/stage3e-browser.sh` during VM provisioning to bake the
+Playwright Chromium bundle into `base.img`.
 
 Inside the VM the model runs as **root** on a **writable** filesystem: a tmpfs
 overlay over the read-only base, with the upper layer + `/tmp` backed by a

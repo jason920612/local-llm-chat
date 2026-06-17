@@ -22,6 +22,34 @@ KERNEL="$LSB/kernel/vmlinuz"
 ROOTFS="$LSB/images/base.img"
 ROOT="${SANDBOX_WSL_ROOT:-/srv/llm-sandboxes}"
 
+# --- stop mode: "llm-vm-run stop <CONVID>" -----------------------------------
+# Tear down a conversation's VM. Killing the Windows-side wsl.exe relay does NOT
+# stop the Linux cloud-hypervisor it launched, so the Node driver calls this to
+# actually terminate the VM and free its tap/slot/virtiofsd. Identifies the
+# processes by this conversation's unique sys.img / workspace paths, so it never
+# touches another conversation's VM. Best-effort; always exits 0.
+if [ "${1:-}" = "stop" ]; then
+  CONVID=$(printf '%s' "${2:-}" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)
+  [ -z "$CONVID" ] && { echo "ERR bad convid"; exit 2; }
+  CONVDIR="$ROOT/$CONVID"; WS="$CONVDIR/ws"
+  case "$CONVDIR" in "$ROOT/"*) : ;; *) echo "ERR refuse $CONVDIR"; exit 2;; esac
+  # 1) kill cloud-hypervisor + its timeout wrapper (unique by this sys.img path).
+  #    When CH dies, any still-running llm-vm-run for this conv also runs its own
+  #    cleanup() trap (tap/slot/virtiofsd) — we then repeat that below to be safe.
+  pkill -9 -f "$CONVDIR/sys.img" 2>/dev/null || true
+  # 2) kill this conversation's virtiofsd (unique by its shared workspace dir).
+  pkill -9 -f -- "--shared-dir=$WS" 2>/dev/null || true
+  # 3) free the tap device + IP slot (derive the slot from the guest net config).
+  SLOT=$(sed -n 's#.*"ip":"[0-9.]*\.\([0-9]\{1,3\}\)/24".*#\1#p' "$WS/.run/net.json" 2>/dev/null | head -1)
+  if [ -n "$SLOT" ]; then
+    "$IP" link del "lt$SLOT" 2>/dev/null || true
+    rm -f "$LSB/run/slots/$SLOT" 2>/dev/null || true
+  fi
+  rm -f "$WS/.run/vfsd.sock" 2>/dev/null || true
+  echo "stopped $CONVID slot=${SLOT:-?}"
+  exit 0
+fi
+
 CONVID=$(printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)
 VCPUS="${2:-2}"; MEM="${3:-1024}"; TIMEOUT="${4:-30}"; SYSGB="${5:-100}"
 [ -z "$CONVID" ] && { echo "ERR bad convid"; exit 2; }

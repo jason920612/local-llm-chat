@@ -5,6 +5,10 @@ echo "[llm-init] boot kernel=$(uname -r) (writable overlay root)"
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sys /sys 2>/dev/null
 mount -t devtmpfs dev /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts -o gid=5,mode=0620,ptmxmode=0666 2>/dev/null
+ln -sf pts/ptmx /dev/ptmx 2>/dev/null
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null
 # /tmp is RAM (tmpfs) for fast scratch and to keep the persistent system disk
 # lean. Very large temp data should be written to /workspace instead.
 mount -t tmpfs tmpfs /tmp 2>/dev/null

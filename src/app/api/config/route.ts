@@ -12,6 +12,13 @@ export async function GET() {
     rag: config.rag,
     background: config.background,
     sop: config.sop,
+    sandbox: {
+      enabled: config.sandbox.enabled,
+      driver: config.sandbox.driver,
+      microvm: {
+        computer: config.sandbox.microvm.computer,
+      },
+    },
     grok: {
       enabled: config.grok.enabled,
       model: config.grok.model,

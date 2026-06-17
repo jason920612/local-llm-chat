@@ -20,8 +20,12 @@ if pgrep -af cloud-hypervisor >/dev/null 2>&1; then
 fi
 command -v debugfs >/dev/null || { echo "ERR: debugfs missing (apt install e2fsprogs)"; exit 1; }
 
-echo "=== copy updated runner -> ~/llm-sandbox/guest ==="
+echo "=== copy updated guest files -> ~/llm-sandbox/guest ==="
+REPO_GUEST_DIR="/mnt/c/Users/jason/Desktop/local-llm-chat/sandbox-host/guest"
 cp "$REPO_GUEST" "$LSB/guest/llm-runner.py"
+cp "$REPO_GUEST_DIR/llm-init" "$LSB/guest/llm-init"
+cp "$REPO_GUEST_DIR/llm-init-real" "$LSB/guest/llm-init-real"
+cp "$REPO_GUEST_DIR/ocr-worker.py" "$LSB/guest/ocr-worker.py"
 
 echo "=== inject into base.img ==="
 cd "$LSB"

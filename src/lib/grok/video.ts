@@ -1,7 +1,6 @@
 import { config } from "../config";
 import { generateImage } from "./image";
 
-const VIDEO_MODEL = "grok-imagine-video-1.5-preview";
 const POLL_INTERVAL_MS = 5000;
 const MAX_WAIT_MS = 180000; // 3 min — generation is async and slow
 
@@ -25,8 +24,8 @@ export async function generateVideo(
     throw new Error("XAI_API_KEY is not set — video generation is disabled.");
   }
 
-  // grok-imagine video is image-to-video only. If no source image is given,
-  // first generate one from the prompt, then animate it.
+  // Use grok-imagine-video-1.5 for all video generation. It expects an image
+  // input, so plain text video requests first create a still base image.
   const image = opts.imageUrl ?? (await generateImage(prompt));
 
   const start = await fetch(`${config.grok.baseURL}/videos/generations`, {
@@ -36,7 +35,7 @@ export async function generateVideo(
       Authorization: `Bearer ${config.grok.apiKey}`,
     },
     body: JSON.stringify({
-      model: VIDEO_MODEL,
+      model: config.grok.videoModel,
       prompt,
       image: { url: image }, // xAI expects an ImageUrl object, not a string
       duration: 6,

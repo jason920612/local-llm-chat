@@ -20,20 +20,23 @@ run_debugfs <<EOF
 rm /llm-init
 rm /llm-init-real
 rm /llm-runner.py
+rm /ocr-worker.py
 rm /usr/local/bin/python
 rm /usr/local/bin/pip
 write $G/llm-init /llm-init
 write $G/llm-init-real /llm-init-real
 write $G/llm-runner.py /llm-runner.py
+write $G/ocr-worker.py /ocr-worker.py
 sif /llm-init mode 0100755
 sif /llm-init-real mode 0100755
 sif /llm-runner.py mode 0100755
+sif /ocr-worker.py mode 0100755
 symlink /usr/local/bin/python /usr/bin/python3
 symlink /usr/local/bin/pip /usr/bin/pip3
 EOF
 
 echo "=== verify ==="
-for f in /llm-init /llm-init-real /llm-runner.py; do
+for f in /llm-init /llm-init-real /llm-runner.py /ocr-worker.py; do
   m=$(debugfs -R "stat $f" "$IMG" 2>/dev/null | sed -n 's/.*Mode: *\(0[0-7]*\).*/\1/p' | head -1)
   echo "$f mode=$m"
 done
