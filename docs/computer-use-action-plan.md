@@ -1,7 +1,17 @@
 # Plan: Flexible, precise GUI actions for computer use
 
-Status: **in progress** · Scope: `computer_action` + `browser_action` (microVM
-sandbox) · Author: design agreed with the project owner in chat.
+Status: **v1 shipped; v2 in progress** · Scope: `computer_action` +
+`browser_action` (microVM sandbox) · Author: design agreed with the project owner
+in chat.
+
+> **v2 (general capabilities for hard / visual / real-time GUI tasks)** — see §8.
+> The benchmark that motivated it is neal.fun's Password Game: the model reached
+> ~rule 7-8 but later rules need real vision (CAPTCHA, chess board, Street View,
+> emoji, sponsor logos), precise/real-time DOM control, and pre-planned handling
+> of dynamic events. v2 adds: (A) feed VM screenshots to the model as real images,
+> (B) a browser page-eval step, (C) pre-deployed reactive handlers via page-eval,
+> (D) a constraint-solving workflow. Goal is GENERAL capability, not game-specific
+> hacks. Grok (grok-build-0.1) is confirmed multimodal, so the vision path is live.
 
 ## 1. Problem
 
@@ -156,3 +166,52 @@ code execution). The VM remains the trust boundary.
 - drag, double_click, modifier-click, key combo execute.
 - Auto observation returned with fresh handles; screenshot only on request.
 - Backward compatibility: a single legacy action still works.
+
+## 8. v2 — vision + page-eval + reactive handlers (general capability)
+
+Motivation: the model can plan actions but is effectively blind to pixels (observe
+returns OCR/DOM text + a base64 screenshot it can't visually parse), can't
+manipulate awkward inputs (contenteditable) precisely, and can't keep up with
+real-time/animated rules via per-event round-trips. These are general gaps for
+hard GUI tasks; the Password Game just exposes them.
+
+### 8A. Vision feedback — the model SEES the screen
+- When the model sets `include_screenshot: true` on an observe/action call, the
+  screenshot is fed back as a REAL image, not base64-in-text: after the
+  `function_call_output` (text, with the dataUrl stripped to save tokens), the
+  dispatch injects a follow-up input message containing an `input_image` for the
+  next round. Grok is multimodal, so it can then read CAPTCHAs, chess boards,
+  Street View, emoji, logos, fire/chicken state, etc.
+- Downscaled by default; an optional element crop (by id/bbox) can be sent at
+  higher fidelity for fine detail (e.g. a CAPTCHA `<img>`).
+
+### 8B. Browser page-eval step
+- New `browser_action` verb `eval` with a `js` string → runs `page.evaluate(js)`
+  and returns the JSON-serializable result in that step's `result` field.
+- Uses: set a contenteditable's content directly (bypass flaky simulated typing),
+  read `<img>.src` / `canvas.toDataURL()` / attributes the DOM-text extraction
+  misses, query precise state. Runs inside the VM's isolated browser (same trust
+  boundary as run_code).
+
+### 8C. Pre-deployed reactive handlers
+- Using 8B, the model can install a long-lived page-side handler
+  (MutationObserver / setInterval) ONCE that auto-reacts to anticipated dynamic
+  events (e.g. delete a 🔥 emoji and its burnt char the moment it appears). It
+  runs continuously in the page with no per-event round-trips — the way to keep up
+  with real-time/adversarial rules. The model writes the rule; the page enforces it.
+
+### 8D. Constraint-solving workflow (prompt + 8B)
+- Guidance: read ALL current rules, use `run_code` to synthesize one password that
+  satisfies every constraint at once (digit sum, length, roman product, atomic
+  sums…), then apply it wholesale via page-eval — instead of incremental edits that
+  break earlier rules.
+
+### v2 files
+- `sandbox-host/guest/llm-runner.py` — `eval` browser verb + per-step `result`.
+- `src/lib/grok/responses.ts` — inject screenshot as `input_image` for vision;
+  strip the dataUrl from the text result.
+- `src/lib/prompts.ts` — document vision (include_screenshot), page-eval, reactive
+  handlers, and the solver workflow.
+
+### v2 prerequisite (confirmed)
+- grok-build-0.1 is multimodal (vision). Verified before building 8A.

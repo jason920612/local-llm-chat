@@ -1301,10 +1301,20 @@ def _exec_browser_step(page, step, _snap):
             page.keyboard.up(key)
     elif action == "scroll":
         page.mouse.wheel(0, int(step.get("amount") or 600))
+    elif action == "eval":
+        # Run model-authored JS in the page (page.evaluate). Used to set
+        # contenteditable content directly, read <img>.src / canvas data, or
+        # install a persistent reactive handler (MutationObserver/setInterval)
+        # that auto-handles dynamic events. Returns the JSON-serializable result.
+        js = str(step.get("js") or "")
+        if not js:
+            raise ValueError("eval requires js")
+        return page.evaluate(js)
     elif action == "wait":
         pass
     else:
         raise ValueError(f"unknown browser action: {action}")
+    return None
 
 
 def _wait_for(get_snap, cond, timeout_ms):
@@ -1348,7 +1358,9 @@ def _run_steps(ctx, steps):
         if not failed:
             try:
                 snap = ctx["snap"](bool(step.get("id") or step.get("text")))
-                ctx["exec"](step, snap)
+                ret = ctx["exec"](step, snap)
+                if ret is not None:
+                    r["result"] = ret
             except Exception as ex:  # noqa: BLE001
                 failed = True
                 err = str(ex)

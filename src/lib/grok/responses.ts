@@ -502,9 +502,10 @@ const ACTION_STEP_PROPERTIES = {
     enum: [
       "move", "left_click", "right_click", "middle_click", "double_click",
       "mouse_down", "mouse_up", "drag", "type_text", "key", "key_down",
-      "key_up", "scroll", "wait",
+      "key_up", "scroll", "wait", "eval",
     ],
   },
+  js: { type: "string", description: "Browser only — for action 'eval': JavaScript run in the page via page.evaluate. Returns its value in the step result. Use to set a contenteditable directly, read <img>.src / canvas data, or install a persistent reactive handler (MutationObserver/setInterval) that auto-handles dynamic events." },
   id: { type: "string", description: "Target element handle from the latest observation (e.g. el_3 / dom_5 / win_1)." },
   text: { type: "string", description: "Pointer actions: re-locate the target by visible text/role (robust to id churn). For type_text: the literal text to type." },
   x: { type: "number" },
@@ -528,7 +529,8 @@ const ACTION_PROGRAM_DESC =
   "TARGET a pointer step by `id` (handle from observe) OR `text` (re-locate by visible text/role — best when ids change) OR `x`,`y`. " +
   "VERBS: move, left_click, right_click, middle_click, double_click, mouse_down, mouse_up, drag (destination via to_id/to_text/to_x+to_y), type_text (types `text`), key/key_down/key_up (`key`, combos like ctrl+shift+t), scroll (`amount`), wait. `modifiers` holds keys during a click. " +
   "CONDITION GATES — `when` (skip step now if false) and `wait_for` (poll until true, else step fails): leaves { text } | { gone } | { id_present } | { id_gone } | { clickable } | { url_contains } | { ms }, each may add a `label`; combine with { all:[…] } AND, { any:[…] } OR, { not:… } NOT, { none:[…] } NOR, { nand:[…] } NAND — nestable to any depth. A finished wait reports WHY in wait_result (which labelled leaf matched, or which were unmet on timeout). " +
-  "ON FAILURE, `on_fail` may run a pre-planned recovery sub-sequence { do:[…steps…], then:'return'(default)|'continue' } — recursive, so plan B can carry plan C.";
+  "ON FAILURE, `on_fail` may run a pre-planned recovery sub-sequence { do:[…steps…], then:'return'(default)|'continue' } — recursive, so plan B can carry plan C. " +
+  "Set include_screenshot:true to SEE the result: the returned observation screenshot is fed back to you as a real image (you can read CAPTCHAs, charts, board/map images, emoji, etc.).";
 
 const COMPUTER_ACTION_TOOL = {
   type: "function",
@@ -1026,6 +1028,33 @@ export function streamGrokResponses(
           }
 
           const outputs: unknown[] = [];
+          // Vision feedback: screenshots from observe/action are fed back to the
+          // (multimodal) model as REAL images here, not base64-in-text. We strip
+          // the dataUrl from the JSON tool result and instead push an input_image
+          // message into next round's input so the model can actually SEE the VM.
+          const visionItems: unknown[] = [];
+          const pushVision = (dataUrl: string | undefined, label: string) => {
+            if (!dataUrl) return;
+            visionItems.push({
+              type: "message",
+              role: "user",
+              content: [
+                { type: "input_text", text: `${label} — current VM screen:` },
+                { type: "input_image", image_url: dataUrl },
+              ],
+            });
+          };
+          // Pull the screenshot out of an observation as a real image and strip
+          // its (huge) base64 from the text result.
+          const visionFromObservation = (observation: unknown, label: string) => {
+            const shot = (
+              observation as { screenshot?: { dataUrl?: string } } | null | undefined
+            )?.screenshot;
+            if (shot?.dataUrl) {
+              pushVision(shot.dataUrl, label);
+              shot.dataUrl = undefined;
+            }
+          };
           for (const c of calls) {
             let args: {
               prompt?: string;
@@ -1237,6 +1266,7 @@ export function streamGrokResponses(
                 includeScreenshot: Boolean(args.include_screenshot),
                 ocr: args.ocr ?? false,
               });
+              visionFromObservation(obs, "computer_observe");
               out = JSON.stringify(obs);
             } else if (c.name === COMPUTER_ACTION_FN) {
               const steps = Array.isArray(args.steps) ? args.steps : [];
@@ -1248,6 +1278,7 @@ export function streamGrokResponses(
                 steps: steps as Record<string, unknown>[],
                 includeScreenshot: Boolean(args.include_screenshot),
               });
+              visionFromObservation(result.observation, "computer_action");
               out = JSON.stringify(result);
             } else if (c.name === BROWSER_OPEN_URL_FN) {
               emitTool("browser_open_url", { url: args.url ?? "" });
@@ -1260,6 +1291,7 @@ export function streamGrokResponses(
               const obs = await browserObserve(conversationId, {
                 includeScreenshot: Boolean(args.include_screenshot),
               });
+              visionFromObservation(obs, "browser_observe");
               out = JSON.stringify(obs);
             } else if (c.name === BROWSER_ACTION_FN) {
               const steps = Array.isArray(args.steps) ? args.steps : [];
@@ -1271,6 +1303,7 @@ export function streamGrokResponses(
                 steps: steps as Record<string, unknown>[],
                 includeScreenshot: Boolean(args.include_screenshot),
               });
+              visionFromObservation(result.observation, "browser_action");
               out = JSON.stringify(result);
             } else if (c.name === SEND_SCREENSHOT_FN) {
               const target = args.target === "browser" ? "browser" : "screen";
@@ -1309,6 +1342,8 @@ export function streamGrokResponses(
               output: out,
             });
           }
+          // Append any screenshots as real images so the model sees the VM screen.
+          if (visionItems.length) outputs.push(...visionItems);
 
           body = {
             model: config.grok.model,

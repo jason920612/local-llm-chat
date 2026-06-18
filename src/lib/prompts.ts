@@ -132,7 +132,10 @@ computer_action and browser_action take an "action program" — a "steps" array 
 - Verbs include move, left_click, right_click, middle_click, double_click, drag (to_id/to_text/to_x,to_y), mouse_down/up, type_text, key/key_down/key_up (combos like ctrl+shift+t), scroll, wait; "modifiers" for shift/ctrl-click.
 - Gate steps with "when" (skip if false now) and "wait_for" (poll until true, else the step fails) using condition trees: leaves {text}/{gone}/{id_present}/{id_gone}/{clickable}/{url_contains}/{ms} with optional "label", combined by all(AND)/any(OR)/not/none(NOR)/nand. The result tells you WHY a wait ended (wait_result.by / unmet).
 - Handle failure inline with on_fail: "stop" | "continue" | { do:[recovery steps], then:"return"|"continue" } — pre-plan a plan B (recursively).
-Each call returns per-step results plus a fresh observation, so you usually don't need a separate observe afterwards. Verify outcomes with wait_for/results rather than assuming success.`;
+Each call returns per-step results plus a fresh observation, so you usually don't need a separate observe afterwards. Verify outcomes with wait_for/results rather than assuming success.
+- SEE the screen: set include_screenshot:true on observe/action and the screenshot is fed back to you as a real image — actually look at it to read CAPTCHAs, charts, board/map images, emoji, logos, colours, or anything OCR/DOM text misses.
+- browser_action supports an "eval" step (js): run JavaScript in the page (page.evaluate) — set a contenteditable's value directly, read <img>.src / canvas.toDataURL() / attributes, or INSTALL A PERSISTENT HANDLER (MutationObserver/setInterval) that auto-handles anticipated dynamic events (e.g. delete a 🔥 the instant it appears) without per-event round-trips. eval returns its value in that step's result.
+- For puzzles with many interacting constraints, read ALL current rules, then use run_code to compute one value that satisfies every constraint at once, and apply it wholesale (Ctrl+A then type, or an eval that sets the field) instead of incremental edits that break earlier rules.`;
 }
 
 const skillsDirective = (
