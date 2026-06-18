@@ -1142,18 +1142,28 @@ export function streamGrokResponses(
           }
 
           const outputs: unknown[] = [];
-          // Vision feedback: screenshots from observe/action are fed back to the
-          // (multimodal) model as REAL images here, not base64-in-text. We strip
-          // the dataUrl from the JSON tool result and instead push an input_image
-          // message into next round's input so the model can actually SEE the VM.
+          // Vision feedback: screenshots/video frames from tools are fed back to
+          // the multimodal model as REAL images here, not base64-in-text. Use a
+          // system message so the model treats them as tool observations rather
+          // than user-uploaded attachments.
           const visionItems: unknown[] = [];
-          const pushVision = (dataUrl: string | undefined, label: string) => {
+          const pushVision = (
+            dataUrl: string | undefined,
+            label: string,
+            source = "computer/browser tool screenshot",
+          ) => {
             if (!dataUrl) return;
             visionItems.push({
               type: "message",
-              role: "user",
+              role: "system",
               content: [
-                { type: "input_text", text: `${label} — current VM screen:` },
+                {
+                  type: "input_text",
+                  text:
+                    `TOOL-GENERATED VISUAL EVIDENCE: ${label}.\n` +
+                    `Source: ${source}.\n` +
+                    "This image was produced by a tool during this assistant turn. It is NOT a user-uploaded image or user attachment.",
+                },
                 { type: "input_image", image_url: dataUrl },
               ],
             });
@@ -1477,6 +1487,7 @@ export function streamGrokResponses(
                   pushVision(
                     f.dataUrl,
                     `watch_video frame @ ${f.tSec.toFixed(1)}s`,
+                    `watch_video extracted overview frame from video_id ${res.videoId ?? "unknown"}`,
                   );
                 }
                 // Transcribe the extracted audio chunks (host-side STT).
@@ -1509,7 +1520,7 @@ export function streamGrokResponses(
                   .filter(Boolean)
                   .join("\n");
                 out = [
-                  `Watched the video. ${res.frames.length} overview frames are attached as images (in timestamp order).`,
+                  `Watched the video. ${res.frames.length} overview frames are attached as tool-generated images (in timestamp order). These images are extracted video frames, not user uploads.`,
                   meta,
                   res.videoId
                     ? `Use inspect_video_moments with video_id "${res.videoId}" to inspect exact transcript timestamps visually. Choose moments from the timestamped transcript when you need more visual evidence.`
@@ -1573,6 +1584,7 @@ export function streamGrokResponses(
                   pushVision(
                     f.dataUrl,
                     `video ${res.videoId ?? videoId} inspected frame @ ${f.tSec.toFixed(2)}s${reason}`,
+                    `inspect_video_moments extracted frame from cached video_id ${res.videoId ?? videoId}`,
                   );
                 }
                 const frameLines = res.frames.map((f, i) => {
@@ -1582,7 +1594,7 @@ export function streamGrokResponses(
                   return `${i + 1}. ${f.tSec.toFixed(2)}s${moment}${reason}`;
                 });
                 out = [
-                  `Inspected ${res.frames.length} frames from video_id ${res.videoId ?? videoId}. The frames are attached as images.`,
+                  `Inspected ${res.frames.length} frames from video_id ${res.videoId ?? videoId}. The frames are attached as tool-generated images extracted from the cached video, not user uploads.`,
                   res.title ? `title: ${res.title}` : "",
                   res.durationSec != null
                     ? `duration: ${res.durationSec.toFixed(1)}s`
