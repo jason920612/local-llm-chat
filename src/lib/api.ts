@@ -486,6 +486,8 @@ export interface StreamMedia {
   files: SandboxFileMeta[];
   artifacts: ArtifactMeta[];
   xai: { costInUsdTicks: number };
+  /** The turn hit the per-turn step cap mid-task; auto-continue in a fresh turn. */
+  continue: boolean;
 }
 
 /** Split a streamed body into answer text and trailing media metadata. */
@@ -501,6 +503,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
       files: [],
       artifacts: [],
       xai: { costInUsdTicks: 0 },
+      continue: false,
     };
   const text = full.slice(0, idx).replace(/\s+$/, "");
   const media = decodeB64Json<{
@@ -511,6 +514,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
     files?: SandboxFileMeta[];
     artifacts?: ArtifactMeta[];
     xai?: { costInUsdTicks?: number };
+    continue?: boolean;
   }>(full.slice(idx + MEDIA_MARKER.length), {});
   return {
     text,
@@ -521,5 +525,6 @@ export function parseMediaSentinel(full: string): StreamMedia {
     files: media.files ?? [],
     artifacts: media.artifacts ?? [],
     xai: { costInUsdTicks: media.xai?.costInUsdTicks ?? 0 },
+    continue: media.continue ?? false,
   };
 }

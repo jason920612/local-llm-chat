@@ -215,3 +215,24 @@ hard GUI tasks; the Password Game just exposes them.
 
 ### v2 prerequisite (confirmed)
 - grok-build-0.1 is multimodal (vision). Verified before building 8A.
+
+## 9. Continue across turns (marathon agentic tasks)
+
+A single turn is capped at `grok.maxRounds` (48) tool rounds. Marathon GUI tasks
+(e.g. the Password Game's ~35 escalating rules) need far more observe→act cycles,
+and simply raising the cap makes one turn balloon (context + the model's reasoning
+grow, cost rises, quality drops).
+
+Instead, when a turn hits the cap **while still mid-task** (still calling tools,
+no final answer), `responses.ts` no longer forces a rushed final answer — it sets
+a `continue` flag in the media sentinel and ends the turn with a short note. The
+generation manager (`generations.ts`) sees the flag and **auto-starts a fresh
+continuation turn** (new assistant message, parent = the finished one) that
+rebuilds history and re-observes to keep going — bounded by `MAX_CONTINUATIONS`
+(8). Each turn stays light (history is rebuilt, not chained), so context is
+bounded while total progress is effectively ~8× the per-turn cap.
+
+Files: `src/lib/grok/responses.ts` (continue flag), `src/lib/api.ts`
+(`StreamMedia.continue`), `src/lib/live/generations.ts` (`maybeContinue`).
+Verified: with the cap lowered to 2, a 4-step task produced a 4-message
+continuation chain that finished correctly.

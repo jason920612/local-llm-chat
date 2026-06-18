@@ -914,6 +914,10 @@ export function streamGrokResponses(
       };
 
       let answered = false;
+      // Set when the round cap is hit while still mid-task (still calling tools,
+      // no final answer): signals the generation manager to auto-continue in a
+      // fresh turn instead of forcing a rushed final answer.
+      let needsContinue = false;
       try {
         for (let round = 0; round < config.grok.maxRounds; round++) {
           const res = await fetch(`${config.grok.baseURL}/responses`, {
@@ -1356,58 +1360,17 @@ export function streamGrokResponses(
           };
         }
 
-        // Hit the round cap while still calling tools → force one final answer
-        // (no tools) so the turn never ends with empty output.
+        // Hit the round cap while still mid-task (still calling tools, no final
+        // answer). Don't force a rushed final answer — signal the generation
+        // manager to auto-continue in a fresh, lighter turn (continue-across-turns).
         if (!answered && !contentStarted) {
-          body.tool_choice = "none";
-          try {
-            const res = await fetch(`${config.grok.baseURL}/responses`, {
-              method: "POST",
-              signal,
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${config.grok.apiKey}`,
-              },
-              body: JSON.stringify(body),
-            });
-            if (res.ok && res.body) {
-              for await (const ev of sseEvents(res.body)) {
-                const t = ev.type as string;
-                if (t === "response.output_text.delta") {
-                  if (thinkOpen && !contentStarted) enq("</think>\n\n");
-                  contentStarted = true;
-                  {
-                    const d = (ev.delta as string) ?? "";
-                    answerText += d;
-                    enq(d);
-                  }
-                } else if (
-                  t === "response.reasoning_text.delta" ||
-                  t === "response.reasoning_summary_text.delta"
-                ) {
-                  if (!thinkOpen) {
-                    enq("<think>");
-                    thinkOpen = true;
-                  }
-                  enq((ev.delta as string) ?? "");
-                } else if (t === "response.completed") {
-                  const r = ev.response as
-                    | { citations?: unknown[]; output?: unknown; usage?: unknown }
-                    | undefined;
-                  costInUsdTicks += costTicksFromUsage(r?.usage);
-                  citations = mergeCitationUrls(
-                    citations,
-                    extractCitationUrls(r?.output),
-                  );
-                  for (const ref of extractSearchedImageRefs(r?.output)) {
-                    pushUniqueImageRef(searchedImageRefs, ref);
-                  }
-                }
-              }
-            }
-          } catch {
-            /* leave whatever we have */
+          needsContinue = true;
+          if (thinkOpen) {
+            enq("</think>\n\n");
+            thinkOpen = false;
           }
+          enq("⏳ 已達單回合步數上限，任務尚未完成——自動接續中…");
+          contentStarted = true;
         }
         if (
           !contentStarted &&
@@ -1433,13 +1396,15 @@ export function streamGrokResponses(
           videos.length ||
           files.length ||
           artifacts.length ||
-          costInUsdTicks > 0
+          costInUsdTicks > 0 ||
+          needsContinue
         ) {
           // Resolve real page titles for search-source citations (best-effort).
           if (citations.length) await enrichCitationTitles(citations);
           const meta = Buffer.from(
             JSON.stringify({
               citations,
+              continue: needsContinue,
               images: [
                 ...images,
                 ...searchedImageRefs.map((ref) => ref.url),

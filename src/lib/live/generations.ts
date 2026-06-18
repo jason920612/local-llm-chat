@@ -1,3 +1,4 @@
+import { nanoid } from "nanoid";
 import type { ChatRequestBody, UIMessage } from "../types";
 import { runControlledChat } from "../sop/pipeline";
 import {
@@ -12,6 +13,7 @@ import {
   updateMessageContent,
   setMessageStatus,
   getConversationMeta,
+  historyThrough,
 } from "../repo";
 import { publishConv, publishGlobal, type GenStatus } from "./bus";
 
@@ -33,7 +35,13 @@ interface ActiveGen {
   startedAt: number;
   cancelled: boolean;
   controller: AbortController; // aborts the upstream model request on cancel
+  continueDepth: number; // how many auto-continuations precede this turn
 }
+
+// Cap on auto-continuations of one task across turns (each ~maxRounds tool
+// rounds). Bounds a runaway loop while letting long agentic GUI/browsing tasks
+// keep going far past a single turn's step limit.
+const MAX_CONTINUATIONS = 8;
 
 const globalForGen = globalThis as unknown as {
   __llmGens?: Map<string, ActiveGen>;
@@ -81,6 +89,8 @@ export interface StartGenerationArgs {
   assistantMessageId: string;
   parentId: string | null;
   body: ChatRequestBody;
+  /** Auto-continuation depth (0 for a user-initiated turn). */
+  continueDepth?: number;
 }
 
 /**
@@ -89,6 +99,7 @@ export interface StartGenerationArgs {
  */
 export function startGeneration(args: StartGenerationArgs): void {
   const { conversationId, assistantMessageId, parentId, body } = args;
+  const continueDepth = args.continueDepth ?? 0;
 
   // 1. Persist an empty streaming placeholder and broadcast it so every device
   //    shows the assistant bubble right away.
@@ -111,6 +122,7 @@ export function startGeneration(args: StartGenerationArgs): void {
     startedAt: Date.now(),
     cancelled: false,
     controller: new AbortController(),
+    continueDepth,
   };
   active.set(assistantMessageId, gen);
 
@@ -167,6 +179,7 @@ async function run(gen: ActiveGen, body: ChatRequestBody): Promise<void> {
       publishConv(conversationId, { type: "token", messageId, chunk: text });
     }
     finalize(gen, headerCitations, headerImages, headerVideos);
+    maybeContinue(gen, body);
   } catch (err) {
     if (gen.cancelled) {
       // User stopped it — keep whatever streamed so far as the final answer.
@@ -182,6 +195,39 @@ async function run(gen: ActiveGen, body: ChatRequestBody): Promise<void> {
     });
     finalize(gen, headerCitations, headerImages, headerVideos, "error");
   }
+}
+
+/**
+ * If the just-finished turn hit the per-turn step cap mid-task (continue flag in
+ * the media sentinel), automatically start a fresh continuation turn that
+ * re-observes and keeps going — bounded by MAX_CONTINUATIONS. This lets long
+ * agentic GUI/browsing tasks run far past one turn's step limit while keeping
+ * each turn light (history is rebuilt, not chained, so context stays bounded).
+ */
+function maybeContinue(gen: ActiveGen, body: ChatRequestBody): void {
+  if (gen.cancelled || gen.continueDepth >= MAX_CONTINUATIONS) return;
+  const media = parseMediaSentinel(gen.raw);
+  if (!media.continue) return;
+  const history = historyThrough(gen.conversationId, gen.messageId);
+  if (!history.length) return;
+  const messages = history.map((m) => ({
+    role: m.role,
+    content: m.content,
+    images: m.images,
+  }));
+  messages.push({
+    role: "system",
+    content:
+      "[auto-continue] 你在上一個回合達到單回合步數上限，但任務尚未完成。請重新 observe 目前的 VM/瀏覽器狀態，接續完成原始任務（不要從頭重來）；全部完成後再給最終回覆。",
+    images: undefined,
+  });
+  startGeneration({
+    conversationId: gen.conversationId,
+    assistantMessageId: nanoid(),
+    parentId: gen.messageId,
+    body: { ...body, messages },
+    continueDepth: gen.continueDepth + 1,
+  });
 }
 
 function finalize(
