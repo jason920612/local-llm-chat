@@ -47,9 +47,10 @@ One coherent **action program** sent in a single call and executed server-side
     fails.
 - **Logic gates**: `all` (AND), `any` (OR), `not` (NOT), `none` (NOR),
   `nand` (NAND); arbitrarily nestable; leaves may carry a `label`.
-- **Wait reason reporting**: when a wait ends, the step result says *why* —
-  `wait_result.outcome` = `matched` (with `by`: which labelled leaf/leaves) or
-  `timeout` (with `unmet`: which leaves were still false).
+- **Condition reason reporting**: when a `wait_for` ends or a `when` gate skips,
+  the step result says *why*. `by`/`unmet` are compact labels, and `condition`
+  is a recursive explanation tree, including negative gates such as
+  `not`/`none`/`nand`.
 - **Failure branches**: `on_fail` = `"stop"` | `"continue"` |
   `{ do: Step[], then?: "return" | "continue" }`. The `do` branch is a recovery
   sub-sequence the model pre-planned (recursive — it can have its own
@@ -117,17 +118,32 @@ Result = {
 }
 StepResult = {
   i, action, ok, skipped?, error?, waitedMs?,
-  wait_result?: { outcome: "matched"|"timeout", by?: string[], unmet?: string[], waited_ms },
+  when_result?: ConditionResult,
+  wait_result?: ConditionResult & { waited_ms },
   fallback?: { then: "return"|"continue", steps: StepResult[] },
+}
+ConditionResult = {
+  outcome: "matched"|"timeout"|"skipped",
+  by?: string[],            // compact explanation labels when true
+  unmet?: string[],         // compact blockers when false
+  condition: {
+    ok: boolean,
+    op: "leaf"|"all"|"any"|"not"|"none"|"nand"|"always",
+    label: string,
+    matched: string[],
+    unmet: string[],
+    children?: ConditionResult["condition"][],
+  },
 }
 ```
 
 ## 4. Execution semantics (server-side, in the guest)
 
 For each step, in order:
-1. `when` present and false → mark `skipped`, continue.
+1. `when` present and false → mark `skipped`, record `when_result`, continue.
 2. `wait_for` present → poll a fresh snapshot until the condition tree is true or
-   `timeout_ms`. Record `wait_result`. Timeout → step fails.
+   `timeout_ms`. Record `wait_result` with a recursive condition explanation.
+   Timeout → step fails.
 3. Resolve the target (id → handle center; text → fresh re-locate; x,y → raw),
    perform the verb. Action error → step fails.
 4. `delay_ms` → pause.
@@ -162,7 +178,10 @@ code execution). The VM remains the trust boundary.
 
 - Multi-step sequence: type → click → `wait_for` text → assert per-step results.
 - `any` with labels → `wait_result.by` reports which branch fired.
-- `wait_for` timeout → `outcome:"timeout"`, `unmet` lists missing leaves.
+- `not`/`none`/`nand` → `by`/`unmet` explain the negative gate, not just raw
+  leaf truth.
+- `wait_for` timeout → `outcome:"timeout"`, `unmet` lists missing branches and
+  `condition.children` shows the full tree.
 - `on_fail.do` recovery (then=return and then=continue) → `handled` reflects it.
 - drag, double_click, modifier-click, key combo execute.
 - Auto observation returned with fresh handles; screenshot only on request.

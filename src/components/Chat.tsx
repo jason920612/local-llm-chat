@@ -108,6 +108,7 @@ export function Chat({
   // partial tokens) and the id currently generating (for stop()).
   const rawBuffers = useRef<Map<string, string>>(new Map());
   const streamingIdRef = useRef<string | null>(null);
+  const lastLiveEventAt = useRef(Date.now());
   // The conversation currently loaded into `messages`. Used to avoid reloading
   // (and clobbering an in-progress stream) when we create a conversation locally.
   const loadedId = useRef<string | null>(null);
@@ -234,6 +235,7 @@ export function Chat({
   // Apply a live event from the conversation's SSE stream.
   const applyConvEvent = useCallback(
     (e: ConvEvent, cid: string) => {
+      lastLiveEventAt.current = Date.now();
       switch (e.type) {
         case "snapshot": {
           rawBuffers.current.set(e.messageId, e.raw);
@@ -356,6 +358,38 @@ export function Chat({
     };
     return () => es.close();
   }, [conversationId, applyConvEvent, resyncTick]);
+
+  // Missed final SSE events should not leave controls stuck on Stop. Reconcile
+  // from the server after a quiet period, but avoid touching normal live streams.
+  useEffect(() => {
+    const cid = conversationId;
+    if (!cid || !streaming) return;
+    let cancelled = false;
+
+    const reconcile = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastLiveEventAt.current < 12_000) return;
+      fetchConversation(cid)
+        .then((d) => {
+          if (cancelled) return;
+          const serverInflight = computePath(d.messages, d.rootChildId).find(
+            (m) => m.status === "streaming",
+          );
+          if (serverInflight?.id === streamingIdRef.current) return;
+          setAllMessages(d.messages);
+          setRootChildId(d.rootChildId);
+          reflectStreamingFromPath(d.messages, d.rootChildId);
+        })
+        .catch(() => {});
+    };
+
+    const timer = window.setInterval(reconcile, 8_000);
+    reconcile();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [conversationId, reflectStreamingFromPath, streaming]);
 
   // Background → foreground resync. On mobile (and backgrounded desktop tabs)
   // the SSE stream is frozen while the app is in the background, so the final

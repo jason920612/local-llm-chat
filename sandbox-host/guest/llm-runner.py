@@ -1077,6 +1077,100 @@ def _leaf_true(snap, leaf, t0):
     return False
 
 
+def _leaf_label(leaf):
+    if not isinstance(leaf, dict):
+        return "invalid"
+    for kind in _LEAF_KINDS:
+        if kind in leaf:
+            return str(leaf.get("label") or f"{kind}:{leaf[kind]}")
+    return str(leaf.get("label") or "unknown")
+
+
+def _cond_name(cond):
+    if not isinstance(cond, dict):
+        return "always"
+    if cond.get("label"):
+        return str(cond["label"])
+    for gate in ("all", "any", "none", "nand"):
+        if isinstance(cond.get(gate), list):
+            return gate
+    if isinstance(cond.get("not"), dict):
+        return "not"
+    return _leaf_label(cond)
+
+
+def _dedupe_labels(items):
+    out = []
+    seen = set()
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def _cond_report(snap, cond, t0):
+    """Evaluate a condition and explain the branch that matched or blocked it."""
+    name = _cond_name(cond)
+    if not isinstance(cond, dict):
+        return {"ok": True, "op": "always", "label": name, "matched": [name], "unmet": []}
+
+    for gate in ("all", "any", "none", "nand"):
+        children = cond.get(gate)
+        if not isinstance(children, list):
+            continue
+        reports = [_cond_report(snap, c, t0) for c in children]
+        oks = [bool(r.get("ok")) for r in reports]
+        if gate == "all":
+            ok = all(oks)
+            matched = [m for r in reports for m in r.get("matched", [])]
+            unmet = [u for r in reports if not r.get("ok") for u in r.get("unmet", [])]
+        elif gate == "any":
+            ok = any(oks)
+            matched = [m for r in reports if r.get("ok") for m in r.get("matched", [])]
+            unmet = [] if ok else [u for r in reports for u in r.get("unmet", [])]
+        elif gate == "none":
+            ok = not any(oks)
+            matched = [name] if ok else []
+            unmet = [] if ok else [f"none blocked by {m}" for r in reports if r.get("ok") for m in r.get("matched", [])]
+        else:  # nand
+            ok = not all(oks)
+            matched = [name] if ok else []
+            unmet = [] if ok else [f"nand blocked by {m}" for r in reports for m in r.get("matched", [])]
+        return {
+            "ok": ok,
+            "op": gate,
+            "label": name,
+            "matched": _dedupe_labels(matched),
+            "unmet": _dedupe_labels(unmet),
+            "children": reports,
+        }
+
+    if isinstance(cond.get("not"), dict):
+        child = _cond_report(snap, cond["not"], t0)
+        ok = not bool(child.get("ok"))
+        matched = [name] if ok else []
+        unmet = [] if ok else [f"not blocked by {m}" for m in child.get("matched", [])]
+        return {
+            "ok": ok,
+            "op": "not",
+            "label": name,
+            "matched": matched,
+            "unmet": _dedupe_labels(unmet),
+            "children": [child],
+        }
+
+    ok = _leaf_true(snap, cond, t0)
+    label = _leaf_label(cond)
+    return {
+        "ok": ok,
+        "op": "leaf",
+        "label": label,
+        "matched": [label] if ok else [],
+        "unmet": [] if ok else [label],
+    }
+
+
 def _eval_cond(snap, cond, t0):
     if not isinstance(cond, dict):
         return True
@@ -1376,12 +1470,23 @@ def _wait_for(get_snap, cond, timeout_ms):
     need_text = _cond_needs_text(cond)
     snap = get_snap(need_text)
     while True:
-        if _eval_cond(snap, cond, t0):
-            by = [lbl for lbl, leaf in _cond_leaves(cond) if _leaf_true(snap, leaf, t0)]
-            return True, {"outcome": "matched", "by": by, "waited_ms": int((time.time() - t0) * 1000)}, snap
+        report = _cond_report(snap, cond, t0)
+        if report["ok"]:
+            by = report.get("matched") or [report.get("label")]
+            return True, {
+                "outcome": "matched",
+                "by": by,
+                "condition": report,
+                "waited_ms": int((time.time() - t0) * 1000),
+            }, snap
         if time.time() >= deadline:
-            unmet = [lbl for lbl, leaf in _cond_leaves(cond) if not _leaf_true(snap, leaf, t0)]
-            return False, {"outcome": "timeout", "unmet": unmet, "waited_ms": int((time.time() - t0) * 1000)}, snap
+            unmet = report.get("unmet") or [report.get("label")]
+            return False, {
+                "outcome": "timeout",
+                "unmet": unmet,
+                "condition": report,
+                "waited_ms": int((time.time() - t0) * 1000),
+            }, snap
         time.sleep(_SEQ_POLL_SEC)
         snap = get_snap(need_text)
 
@@ -1394,11 +1499,22 @@ def _run_steps(ctx, steps):
         r = {"i": i, "action": step.get("action")}
         if isinstance(step.get("when"), dict):
             snap = ctx["snap"](_cond_needs_text(step["when"]))
-            if not _eval_cond(snap, step["when"], time.time()):
+            when_report = _cond_report(snap, step["when"], time.time())
+            if not when_report["ok"]:
                 r["skipped"] = True
                 r["ok"] = True
+                r["when_result"] = {
+                    "outcome": "skipped",
+                    "unmet": when_report.get("unmet") or [when_report.get("label")],
+                    "condition": when_report,
+                }
                 results.append(r)
                 continue
+            r["when_result"] = {
+                "outcome": "matched",
+                "by": when_report.get("matched") or [when_report.get("label")],
+                "condition": when_report,
+            }
         failed = False
         err = None
         if isinstance(step.get("wait_for"), dict):
