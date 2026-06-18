@@ -150,6 +150,7 @@ export async function runControlledChat(
         body.conversationId,
         summary,
         signal,
+        body.priorResponseId,
       );
 
       recordSopEvent(body, {

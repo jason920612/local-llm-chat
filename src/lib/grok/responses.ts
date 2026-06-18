@@ -865,6 +865,7 @@ export function streamGrokResponses(
   conversationId = "default",
   contextSummary = "",
   signal?: AbortSignal,
+  priorResponseId?: string,
 ): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
   const fullInstructions = contextSummary
@@ -903,15 +904,30 @@ export function streamGrokResponses(
       // (system prompt + history) across turns — cheaper and lower latency.
       const cacheKey = `conv:${conversationId}`;
 
-      let body: Record<string, unknown> = {
-        model: config.grok.model,
-        instructions: fullInstructions,
-        input: toInput(messages),
-        tools: toolset(),
-        stream: true,
-        prompt_cache_key: cacheKey,
-        ...maybeServiceTier(),
-      };
+      // Final xAI response id of this turn — carried to an auto-continuation so it
+      // can chain on the same context (full reasoning + tool history preserved).
+      let lastResponseId: string | undefined;
+      let body: Record<string, unknown> = priorResponseId
+        ? {
+            // Continuation: chain on the prior turn's context instead of resending
+            // the transcript/instructions; `messages` is just the continue nudge.
+            model: config.grok.model,
+            input: toInput(messages),
+            previous_response_id: priorResponseId,
+            tools: toolset(),
+            stream: true,
+            prompt_cache_key: cacheKey,
+            ...maybeServiceTier(),
+          }
+        : {
+            model: config.grok.model,
+            instructions: fullInstructions,
+            input: toInput(messages),
+            tools: toolset(),
+            stream: true,
+            prompt_cache_key: cacheKey,
+            ...maybeServiceTier(),
+          };
 
       let answered = false;
       // Set when the round cap is hit while still mid-task (still calling tools,
@@ -987,6 +1003,7 @@ export function streamGrokResponses(
                   }
                 | undefined;
               respId = r?.id;
+              if (respId) lastResponseId = respId;
               costInUsdTicks += costTicksFromUsage(r?.usage);
               // Sources come from url_citation annotations on the message
               // output (xAI has no top-level `citations` field). Keep the old
@@ -1405,6 +1422,7 @@ export function streamGrokResponses(
             JSON.stringify({
               citations,
               continue: needsContinue,
+              responseId: needsContinue ? lastResponseId : undefined,
               images: [
                 ...images,
                 ...searchedImageRefs.map((ref) => ref.url),

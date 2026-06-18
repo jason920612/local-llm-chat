@@ -225,14 +225,40 @@ grow, cost rises, quality drops).
 
 Instead, when a turn hits the cap **while still mid-task** (still calling tools,
 no final answer), `responses.ts` no longer forces a rushed final answer — it sets
-a `continue` flag in the media sentinel and ends the turn with a short note. The
-generation manager (`generations.ts`) sees the flag and **auto-starts a fresh
-continuation turn** (new assistant message, parent = the finished one) that
-rebuilds history and re-observes to keep going — bounded by `MAX_CONTINUATIONS`
-(8). Each turn stays light (history is rebuilt, not chained), so context is
-bounded while total progress is effectively ~8× the per-turn cap.
+a `continue` flag in the media sentinel (plus the turn's final xAI `responseId`)
+and ends the turn with a short note. The generation manager (`generations.ts`)
+sees the flag and **auto-starts a fresh continuation turn** (new assistant
+message, parent = the finished one) that keeps going — bounded by
+`MAX_CONTINUATIONS` (8).
 
-Files: `src/lib/grok/responses.ts` (continue flag), `src/lib/api.ts`
-(`StreamMedia.continue`), `src/lib/live/generations.ts` (`maybeContinue`).
-Verified: with the cap lowered to 2, a 4-step task produced a 4-message
-continuation chain that finished correctly.
+**Hybrid continuation (chain, with rebuild fallback).** An earlier version
+rebuilt the visible transcript for each continuation turn. That kept context
+light but threw away the model's prior *reasoning* — the continuation could only
+see persisted message text, not the chain of thought / tool observations that led
+there, so a long marathon "forgot how it got here". The hybrid fixes this:
+
+- **Chain (preferred):** if the prior turn returned a `responseId`, the
+  continuation sends `previous_response_id = responseId` and `input` carries only
+  the continue **nudge** — no rebuilt transcript. xAI replays the full prior
+  reasoning + tool history server-side, so the continuation has complete memory of
+  what it already tried. (`maybeContinue` sets
+  `nextBody = { ...body, messages: [nudge], priorResponseId: media.responseId }`.)
+- **Rebuild (fallback):** if there is no `responseId` to chain on (e.g. a
+  non-Grok path or a dropped id), fall back to rebuilding the visible history via
+  `historyThrough` + nudge so the task still continues, with memory limited to
+  persisted content.
+
+`streamGrokResponses(..., priorResponseId?)` switches its initial request body
+accordingly: with a prior id it sends `{ previous_response_id, input: [nudge],
+… }`; otherwise the normal `{ instructions, input: <transcript>, … }`.
+
+Files: `src/lib/types.ts` (`ChatRequestBody.priorResponseId`),
+`src/lib/grok/responses.ts` (continue flag + `responseId` in the sentinel,
+`priorResponseId` request chaining), `src/lib/api.ts` (`StreamMedia.continue` +
+`responseId`), `src/lib/sop/pipeline.ts` (forwards `priorResponseId`),
+`src/lib/live/generations.ts` (`maybeContinue` hybrid: chain vs rebuild).
+Verified: with the cap lowered to 2, a sequential dependent counting task (print
+previous+1 up to 6, one `run_code` per round) produced a 4-message continuation
+chain; the server log showed three `mode=chain(…)` lines and the final answer was
+the correct full sequence `1 2 3 4 5 6` — confirming the continuation chained on
+`previous_response_id` with prior reasoning preserved.

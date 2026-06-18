@@ -208,24 +208,42 @@ function maybeContinue(gen: ActiveGen, body: ChatRequestBody): void {
   if (gen.cancelled || gen.continueDepth >= MAX_CONTINUATIONS) return;
   const media = parseMediaSentinel(gen.raw);
   if (!media.continue) return;
-  const history = historyThrough(gen.conversationId, gen.messageId);
-  if (!history.length) return;
-  const messages = history.map((m) => ({
-    role: m.role,
-    content: m.content,
-    images: m.images,
-  }));
-  messages.push({
-    role: "system",
+  const nudge = {
+    role: "system" as const,
     content:
-      "[auto-continue] 你在上一個回合達到單回合步數上限，但任務尚未完成。請重新 observe 目前的 VM/瀏覽器狀態，接續完成原始任務（不要從頭重來）；全部完成後再給最終回覆。",
+      "[auto-continue] 你在上一個回合達到單回合步數上限，但任務尚未完成。接續完成原始任務（不要從頭重來）；若不確定當前狀態先 observe 一次確認。全部完成後再給最終回覆。",
     images: undefined,
-  });
+  };
+
+  let nextBody: ChatRequestBody;
+  if (media.responseId) {
+    // Hybrid (preferred): chain on the prior xAI response so the continuation
+    // keeps the FULL prior reasoning + tool history. messages is just the nudge.
+    nextBody = { ...body, messages: [nudge], priorResponseId: media.responseId };
+  } else {
+    // Fallback: no response id to chain on — rebuild the visible history + nudge
+    // (memory limited to persisted content, but the task continues).
+    const history = historyThrough(gen.conversationId, gen.messageId);
+    if (!history.length) return;
+    const messages = history.map((m) => ({
+      role: m.role,
+      content: m.content,
+      images: m.images,
+    }));
+    messages.push(nudge);
+    nextBody = { ...body, messages, priorResponseId: undefined };
+  }
+
+  console.log(
+    `[auto-continue] conv=${gen.conversationId} depth=${gen.continueDepth + 1} mode=${
+      media.responseId ? `chain(${media.responseId.slice(0, 12)}…)` : "rebuild"
+    }`,
+  );
   startGeneration({
     conversationId: gen.conversationId,
     assistantMessageId: nanoid(),
     parentId: gen.messageId,
-    body: { ...body, messages },
+    body: nextBody,
     continueDepth: gen.continueDepth + 1,
   });
 }

@@ -488,6 +488,8 @@ export interface StreamMedia {
   xai: { costInUsdTicks: number };
   /** The turn hit the per-turn step cap mid-task; auto-continue in a fresh turn. */
   continue: boolean;
+  /** Final xAI response id — lets a continuation chain on the same context. */
+  responseId?: string;
 }
 
 /** Split a streamed body into answer text and trailing media metadata. */
@@ -504,6 +506,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
       artifacts: [],
       xai: { costInUsdTicks: 0 },
       continue: false,
+      responseId: undefined,
     };
   const text = full.slice(0, idx).replace(/\s+$/, "");
   const media = decodeB64Json<{
@@ -515,6 +518,7 @@ export function parseMediaSentinel(full: string): StreamMedia {
     artifacts?: ArtifactMeta[];
     xai?: { costInUsdTicks?: number };
     continue?: boolean;
+    responseId?: string;
   }>(full.slice(idx + MEDIA_MARKER.length), {});
   return {
     text,
@@ -526,5 +530,6 @@ export function parseMediaSentinel(full: string): StreamMedia {
     artifacts: media.artifacts ?? [],
     xai: { costInUsdTicks: media.xai?.costInUsdTicks ?? 0 },
     continue: media.continue ?? false,
+    responseId: media.responseId,
   };
 }

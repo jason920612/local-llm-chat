@@ -97,4 +97,10 @@ export interface ChatRequestBody {
   useRag?: boolean;
   /** Whether to expose the Grok X/web search tool to the model. */
   useGrok?: boolean;
+  /**
+   * Auto-continuation: the prior turn's final xAI response id. When set, the
+   * continuation chains on it (full reasoning + tool history preserved) and
+   * `messages` carries only the continue nudge instead of the rebuilt transcript.
+   */
+  priorResponseId?: string;
 }
