@@ -517,6 +517,7 @@ const ACTION_STEP_PROPERTIES = {
   modifiers: { type: "array", items: { type: "string", enum: ["ctrl", "shift", "alt", "meta"] }, description: "Modifier keys held during a click." },
   key: { type: "string", description: "For key/key_down/key_up; combos allowed, e.g. Return, Escape, ctrl+shift+t." },
   amount: { type: "number", description: "Scroll notches: positive scrolls down, negative up." },
+  ms: { type: "number", description: "For action 'wait': milliseconds to pause (default 1000, max 10000)." },
   when: { type: "object", description: "Instant gate: skip this step if the condition is currently false." },
   wait_for: { type: "object", description: "Poll until this condition is true before acting; else the step fails." },
   timeout_ms: { type: "number", description: "Timeout for wait_for (default 8000)." },
@@ -527,7 +528,7 @@ const ACTION_STEP_PROPERTIES = {
 const ACTION_PROGRAM_DESC =
   "Run an ACTION PROGRAM: an ordered `steps` array executed server-side in ONE round-trip, fail-fast. Returns per-step results plus a fresh execution-time observation (new element handles), so you don't need a separate observe after. " +
   "TARGET a pointer step by `id` (handle from observe) OR `text` (re-locate by visible text/role — best when ids change) OR `x`,`y`. " +
-  "VERBS: move, left_click, right_click, middle_click, double_click, mouse_down, mouse_up, drag (destination via to_id/to_text/to_x+to_y), type_text (types `text`), key/key_down/key_up (`key`, combos like ctrl+shift+t), scroll (`amount`), wait. `modifiers` holds keys during a click. " +
+  "VERBS: move, left_click, right_click, middle_click, double_click, mouse_down, mouse_up, drag (destination via to_id/to_text/to_x+to_y), type_text (types `text`), key/key_down/key_up (`key`, combos like ctrl+shift+t), scroll (`amount`), wait (`ms`). `modifiers` holds keys during a click. " +
   "CONDITION GATES — `when` (skip step now if false) and `wait_for` (poll until true, else step fails): leaves { text } | { gone } | { id_present } | { id_gone } | { clickable } | { url_contains } | { ms }, each may add a `label`; combine with { all:[…] } AND, { any:[…] } OR, { not:… } NOT, { none:[…] } NOR, { nand:[…] } NAND — nestable to any depth. A finished wait reports WHY in wait_result (which labelled leaf matched, or which were unmet on timeout). " +
   "ON FAILURE, `on_fail` may run a pre-planned recovery sub-sequence { do:[…steps…], then:'return'(default)|'continue' } — recursive, so plan B can carry plan C. " +
   "Set include_screenshot:true to SEE the result: the returned observation screenshot is fed back to you as a real image (you can read CAPTCHAs, charts, board/map images, emoji, etc.).";

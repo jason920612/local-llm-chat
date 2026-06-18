@@ -94,6 +94,7 @@ Step = {
   modifiers?: ("ctrl"|"shift"|"alt"|"meta")[],  // held during a click
   key?: string,           // for key / key_down / key_up (e.g. "Return", "ctrl+shift+t")
   amount?: number,        // for scroll (wheel notches; +down / -up)
+  ms?: number,            // for wait action (default 1000, max 10000)
   when?: Condition,       // instant gate: skip the step if false
   wait_for?: Condition,   // poll until true before acting
   timeout_ms?: number,    // for wait_for (default 8000)

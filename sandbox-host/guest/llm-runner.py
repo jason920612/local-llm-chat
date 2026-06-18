@@ -1217,14 +1217,45 @@ def _exec_computer_step(step, snap):
         for _ in range(min(30, abs(amount) or 3)):
             run_cmd(["xdotool", "click", button], timeout=2, env=env)
     elif action == "wait":
-        pass
+        ms = max(0, min(10000, int(step.get("ms") or 1000)))
+        time.sleep(ms / 1000.0)
     else:
         raise ValueError(f"unknown action: {action}")
 
 
 def _exec_browser_step(page, step, _snap):
     action = step.get("action")
-    mods = [m.capitalize() for m in (step.get("modifiers") or [])]  # Control/Shift/Alt/Meta
+
+    def browser_modifier(v):
+        key = str(v).lower()
+        return {
+            "ctrl": "Control",
+            "control": "Control",
+            "shift": "Shift",
+            "alt": "Alt",
+            "meta": "Meta",
+            "cmd": "Meta",
+            "command": "Meta",
+        }.get(key, str(v))
+
+    def browser_key(v):
+        parts = [p for p in str(v or "").replace("-", "+").split("+") if p]
+        if not parts:
+            return ""
+        mapped = []
+        for p in parts:
+            lp = p.lower()
+            if lp in {"ctrl", "control", "shift", "alt", "meta", "cmd", "command"}:
+                mapped.append(browser_modifier(lp))
+            elif lp == "return":
+                mapped.append("Enter")
+            elif len(p) == 1:
+                mapped.append(p.upper())
+            else:
+                mapped.append(p)
+        return "+".join(mapped)
+
+    mods = [browser_modifier(m) for m in (step.get("modifiers") or [])]
 
     def locator():
         if step.get("id"):
@@ -1292,7 +1323,7 @@ def _exec_browser_step(page, step, _snap):
         else:
             page.keyboard.type(text)
     elif action in ("key", "key_down", "key_up"):
-        key = str(step.get("key") or "")
+        key = browser_key(step.get("key") or "")
         if action == "key":
             page.keyboard.press(key)
         elif action == "key_down":
@@ -1332,7 +1363,8 @@ def _exec_browser_step(page, step, _snap):
                 return page.evaluate(js)
             raise
     elif action == "wait":
-        pass
+        ms = max(0, min(10000, int(step.get("ms") or 1000)))
+        time.sleep(ms / 1000.0)
     else:
         raise ValueError(f"unknown browser action: {action}")
     return None
@@ -1396,15 +1428,16 @@ def _run_steps(ctx, steps):
         r["error"] = err
         onf = step.get("on_fail", "stop")
         if isinstance(onf, dict) and isinstance(onf.get("do"), list):
-            fb_results, fb_stopped, _fb_handled = _run_steps(ctx, onf["do"])
+            fb_results, fb_stopped, fb_handled = _run_steps(ctx, onf["do"])
             then = onf.get("then", "return")
             r["fallback"] = {"then": then, "steps": fb_results}
             results.append(r)
             recovered = not fb_stopped
-            if recovered:
-                handled = True
+            handled = handled or fb_handled or recovered
             if then == "continue" and recovered:
                 continue
+            if recovered:
+                return results, False, handled
             stopped = True
             break
         if onf == "continue":

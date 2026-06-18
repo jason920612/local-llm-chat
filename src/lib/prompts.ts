@@ -129,7 +129,7 @@ When using computer-use tools, remember they control only this conversation's is
 
 computer_action and browser_action take an "action program" — a "steps" array run in ONE call, so do a whole coherent gesture/flow at once instead of one click per round-trip:
 - Target each step by element handle "id", by visible "text" (re-located fresh — prefer this when ids change on dynamic pages), or by "x","y".
-- Verbs include move, left_click, right_click, middle_click, double_click, drag (to_id/to_text/to_x,to_y), mouse_down/up, type_text, key/key_down/key_up (combos like ctrl+shift+t), scroll, wait; "modifiers" for shift/ctrl-click.
+- Verbs include move, left_click, right_click, middle_click, double_click, drag (to_id/to_text/to_x,to_y), mouse_down/up, type_text, key/key_down/key_up (combos like ctrl+shift+t), scroll, wait (ms); "modifiers" for shift/ctrl-click.
 - Gate steps with "when" (skip if false now) and "wait_for" (poll until true, else the step fails) using condition trees: leaves {text}/{gone}/{id_present}/{id_gone}/{clickable}/{url_contains}/{ms} with optional "label", combined by all(AND)/any(OR)/not/none(NOR)/nand. The result tells you WHY a wait ended (wait_result.by / unmet).
 - Handle failure inline with on_fail: "stop" | "continue" | { do:[recovery steps], then:"return"|"continue" } — pre-plan a plan B (recursively).
 Each call returns per-step results plus a fresh observation, so you usually don't need a separate observe afterwards. Verify outcomes with wait_for/results rather than assuming success.
