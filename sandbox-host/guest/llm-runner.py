@@ -101,6 +101,9 @@ def computer_env():
     env["DISPLAY"] = DISPLAY
     env["PLAYWRIGHT_BROWSERS_PATH"] = playwright_browsers_path()
     env["PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"] = "ubuntu24.04-x64"
+    # PulseAudio's native socket must live on a real fs (not the virtiofs share),
+    # so the X-session audio (browser playback capture) uses a tmpfs runtime dir.
+    env["XDG_RUNTIME_DIR"] = "/tmp/llm-xdg"
     return env
 
 
@@ -332,6 +335,11 @@ def start_computer(width=1280, height=720, auto_install=True, ocr=True):
             env=env,
         )
         time.sleep(0.5)
+    # Start PulseAudio (with a null sink) BEFORE Chromium so browser audio has a
+    # sink to play into and watch_video can record it. Best-effort: if it fails
+    # (e.g. not installed), the browser still works and video falls back to
+    # frames-only capture.
+    start_pulseaudio(env, log_path)
     if not proc_running("remote-debugging-port=9222"):
         chrome = (
             shutil.which("chromium")
@@ -368,6 +376,48 @@ def start_computer(width=1280, height=720, auto_install=True, ocr=True):
             )
             time.sleep(0.5)
     return []
+
+
+def start_pulseaudio(env, log_path):
+    """Start a user-mode PulseAudio with a null sink so the browser's audio has
+    somewhere to play and watch_video can record the sink monitor as the VM's
+    system audio. Idempotent and best-effort (audio is optional)."""
+    if not command_exists("pulseaudio"):
+        return
+    try:
+        rt = env.get("XDG_RUNTIME_DIR", "/tmp/llm-xdg")
+        os.makedirs(rt, exist_ok=True)
+        os.chmod(rt, 0o700)
+    except Exception:  # noqa: BLE001
+        pass
+    if not proc_running("pulseaudio"):
+        log = open(log_path, "ab", buffering=0)
+        # As root, user-mode PulseAudio needs --system=false with the root guard
+        # disabled; it prints a warning but runs, which is fine for this VM.
+        subprocess.Popen(
+            ["pulseaudio", "--start", "--exit-idle-time=-1"],
+            stdout=log,
+            stderr=log,
+            env={**env, "PULSE_RUNTIME_PATH": os.path.join(env.get("XDG_RUNTIME_DIR", "/tmp/llm-xdg"), "pulse")},
+        )
+        time.sleep(1.2)
+    # Create the null sink + route defaults to it (idempotent — module-null-sink
+    # with the same name just adds another; guard by checking existing sinks).
+    rc, out, _ = run_cmd(["pactl", "list", "short", "sinks"], timeout=8, env=env)
+    if "vmaudio" not in (out or ""):
+        run_cmd(
+            [
+                "pactl",
+                "load-module",
+                "module-null-sink",
+                "sink_name=vmaudio",
+                "sink_properties=device.description=vmaudio",
+            ],
+            timeout=8,
+            env=env,
+        )
+        run_cmd(["pactl", "set-default-sink", "vmaudio"], timeout=8, env=env)
+        run_cmd(["pactl", "set-default-source", "vmaudio.monitor"], timeout=8, env=env)
 
 
 def screenshot_data_url(path, max_width=640, quality=55):
@@ -1638,6 +1688,444 @@ def action_sequence(req, mode):
     }
 
 
+# ---------------------------------------------------------------------------
+# watch_video: let the model "watch" a video file or a web video.
+#
+# xAI has no native video input, so we sample frames (scene-change detection +
+# a duration-scaled budget) and split the audio track into chunks; frames are
+# returned as JPEG files (host inlines them as images) and audio chunks as mp3
+# files (host transcribes via STT). See docs/watch-video-plan.md.
+# ---------------------------------------------------------------------------
+
+
+def _ffprobe_duration(path):
+    rc, out, _ = run_cmd(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nokey=1:noprint_wrappers=1",
+            str(path),
+        ],
+        timeout=60,
+    )
+    try:
+        return float((out or "").strip())
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _ffprobe_has_audio(path):
+    rc, out, _ = run_cmd(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        timeout=60,
+    )
+    return bool((out or "").strip())
+
+
+def _scene_candidates(path, threshold, out_txt):
+    """Return [(t_sec, score), ...] for frames whose scene-change score exceeds
+    `threshold`, via ffmpeg's select+metadata filter."""
+    import re
+
+    run_cmd(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-vf",
+            "select='gt(scene,%g)',metadata=print:file=%s" % (threshold, str(out_txt)),
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ],
+        timeout=20 * 60,
+    )
+    cands = []
+    try:
+        text = Path(out_txt).read_text()
+    except Exception:  # noqa: BLE001
+        return cands
+    cur_t = None
+    for line in text.splitlines():
+        m = re.search(r"pts_time:([0-9.]+)", line)
+        if m:
+            cur_t = float(m.group(1))
+            continue
+        m = re.search(r"lavfi\.scene_score=([0-9.]+)", line)
+        if m and cur_t is not None:
+            cands.append((cur_t, float(m.group(1))))
+            cur_t = None
+    return cands
+
+
+def _pick_frame_times(duration, cands, budget):
+    """Choose frame timestamps: scene candidates first (highest-magnitude when
+    over budget), evenly-spaced fill when under budget, always include t=0."""
+    ceiling_hit = len(cands) > budget
+    if len(cands) > budget:
+        chosen = sorted(cands, key=lambda c: c[1], reverse=True)[:budget]
+    else:
+        chosen = list(cands)
+    times = {round(t, 2): score for (t, score) in chosen}
+    times.setdefault(0.0, None)  # always the first frame
+    # Fill evenly if we're under budget and have a known duration.
+    if duration and len(times) < budget:
+        need = budget - len(times)
+        slots = need + 1
+        for i in range(1, slots + 1):
+            t = round(duration * i / (slots + 1), 2)
+            if all(abs(t - e) > 0.5 for e in times):
+                times.setdefault(t, None)
+            if len(times) >= budget:
+                break
+    ordered = sorted(times.items(), key=lambda kv: kv[0])
+    return ordered[:budget], ceiling_hit
+
+
+def _extract_frames(path, frame_times, long_edge, out_dir):
+    scale = (
+        "scale='if(gte(iw,ih),min(%d,iw),-2)':'if(gte(iw,ih),-2,min(%d,ih))'"
+        % (long_edge, long_edge)
+    )
+    frames = []
+    for i, (t, score) in enumerate(frame_times):
+        name = "frame_%03d.jpg" % i
+        outp = out_dir / name
+        rc, _o, _e = run_cmd(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                "%.3f" % float(t),
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-vf",
+                scale,
+                "-q:v",
+                "3",
+                str(outp),
+            ],
+            timeout=120,
+        )
+        if rc == 0 and outp.exists():
+            entry = {"file": ".run/jobs/%s" % str(outp.relative_to(JOBS)), "tSec": t}
+            if score is not None:
+                entry["score"] = round(score, 3)
+            frames.append(entry)
+    return frames
+
+
+def _extract_audio_chunks(path, chunk_sec, out_dir):
+    """Split the audio track into mp3 chunks of `chunk_sec` seconds each."""
+    pattern = str(out_dir / "audio_%03d.mp3")
+    rc, _o, err = run_cmd(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "segment",
+            "-segment_time",
+            str(int(chunk_sec)),
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "5",
+            pattern,
+        ],
+        timeout=20 * 60,
+    )
+    chunks = []
+    for f in sorted(out_dir.glob("audio_*.mp3")):
+        m = f.stem.split("_")[-1]
+        try:
+            idx = int(m)
+        except Exception:  # noqa: BLE001
+            idx = len(chunks)
+        chunks.append(
+            {"file": ".run/jobs/%s" % str(f.relative_to(JOBS)), "startSec": idx * int(chunk_sec)}
+        )
+    return chunks
+
+
+def _ytdlp_download(url, out_dir, max_height):
+    """Download a web video with yt-dlp, capped at max_height. Returns (path, title) or (None, None)."""
+    if not command_exists("yt-dlp"):
+        return None, None
+    fmt = (
+        "bestvideo[height<=%d]+bestaudio/best[height<=%d]/best"
+        % (int(max_height), int(max_height))
+    )
+    rc, _o, _e = run_cmd(
+        [
+            "yt-dlp",
+            "--no-playlist",
+            "--no-warnings",
+            "-f",
+            fmt,
+            "--merge-output-format",
+            "mp4",
+            "--write-info-json",
+            "-o",
+            str(out_dir / "dl.%(ext)s"),
+            url,
+        ],
+        timeout=20 * 60,
+        env=build_env(),
+    )
+    files = [
+        p
+        for p in out_dir.glob("dl.*")
+        if p.suffix.lower() in (".mp4", ".mkv", ".webm", ".mov", ".m4v")
+    ]
+    if not files:
+        return None, None
+    title = None
+    info = out_dir / "dl.info.json"
+    if info.exists():
+        meta = read_json(info, {})
+        if isinstance(meta, dict):
+            title = meta.get("title")
+    return str(files[0]), title
+
+
+def _direct_download(url, out_dir):
+    """Plain HTTP download for a direct media-file URL (when yt-dlp declines it)."""
+    out = out_dir / "dl.mp4"
+    rc, _o, _e = run_cmd(
+        ["curl", "-fsSL", "--max-time", "1200", "-o", str(out), url],
+        timeout=20 * 60,
+        env=build_env(),
+    )
+    if rc == 0 and out.exists() and out.stat().st_size > 0:
+        return str(out)
+    return None
+
+
+def _browser_capture(url, out_dir, width, height, playback_rate, cap_sec, auto_install):
+    """Fallback: play the web video in the VM browser and screen-record it (with
+    PulseAudio system audio) to an mp4, which is then fed through the normal
+    frame/audio pipeline. Returns (path, note) or (None, error)."""
+    handle, err = ensure_browser(auto_install=auto_install, width=width, height=height)
+    if not handle:
+        return None, ("browser fallback unavailable: %s" % err)
+    page = handle["page"]
+    note = None
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        # Start the first <video>: unmute, set rate, and WAIT for metadata so we
+        # learn the real duration before sizing the recording (a direct-MP4 page
+        # often has duration=NaN for the first moment). play() always starts.
+        try:
+            dur = page.evaluate(
+                """(rate) => new Promise((resolve) => {
+                  const v = document.querySelector('video');
+                  if (!v) return resolve(0);
+                  v.muted = false; v.volume = 1.0;
+                  try { v.playbackRate = rate; } catch (e) {}
+                  let done = false;
+                  const finish = () => {
+                    if (done) return; done = true;
+                    try { v.currentTime = 0; } catch (e) {}
+                    const p = v.play(); if (p && p.catch) p.catch(()=>{});
+                    resolve(isFinite(v.duration) ? v.duration : 0);
+                  };
+                  if (v.readyState >= 1 && isFinite(v.duration)) return finish();
+                  v.addEventListener('loadedmetadata', finish, { once: true });
+                  setTimeout(finish, 8000);
+                })""",
+                playback_rate,
+            )
+        except Exception:  # noqa: BLE001
+            dur = 0
+        # Recording length in real (captured) time = video_seconds / rate, capped.
+        if dur and dur > 0:
+            rec_sec = min(dur / max(0.1, playback_rate), cap_sec)
+            if dur / max(0.1, playback_rate) > cap_sec:
+                note = "capture capped at %ds (%dx playback); tail not recorded" % (
+                    int(cap_sec),
+                    int(playback_rate),
+                )
+        else:
+            # Duration unknown — probe briefly instead of recording the full cap
+            # (a no-<video> page or unreadable metadata must not block 15 min).
+            rec_sec = min(60.0, cap_sec)
+            note = "video duration unknown; recorded up to %ds at %dx" % (
+                int(rec_sec),
+                int(playback_rate),
+            )
+        rec_path = out_dir / "recording.mp4"
+        env = computer_env()
+        # x11grab the virtual display + PulseAudio monitor (system audio). If the
+        # pulse input fails, retry video-only so we still get frames.
+        base = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "x11grab",
+            "-framerate",
+            "10",
+            "-video_size",
+            "%dx%d" % (int(width), int(height)),
+            "-i",
+            DISPLAY,
+        ]
+        with_audio = base + [
+            "-f",
+            "pulse",
+            "-i",
+            "default",
+            "-t",
+            "%.1f" % rec_sec,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(rec_path),
+        ]
+        rc, _o, _e = run_cmd(with_audio, timeout=int(rec_sec) + 120, env=env)
+        if rc != 0 or not rec_path.exists():
+            video_only = base + [
+                "-t",
+                "%.1f" % rec_sec,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                str(rec_path),
+            ]
+            rc, _o, _e = run_cmd(video_only, timeout=int(rec_sec) + 120, env=env)
+            if rc == 0 and rec_path.exists():
+                note = (note + "; " if note else "") + "no system audio captured"
+        # Pause playback.
+        try:
+            page.evaluate("() => { const v=document.querySelector('video'); if (v) v.pause(); }")
+        except Exception:  # noqa: BLE001
+            pass
+        if not rec_path.exists():
+            return None, "screen recording failed"
+        return str(rec_path), note
+    except Exception as ex:  # noqa: BLE001
+        return None, ("browser capture error: %s" % ex)
+    finally:
+        close_browser_handle(handle)
+
+
+def watch_video(req):
+    job_id = req.get("id") or "vid"
+    source = (req.get("source") or "").strip()
+    want_audio = bool(req.get("audio", True))
+    frames_per_min = float(req.get("framesPerMin", 6))
+    frame_floor = int(req.get("frameFloor", 8))
+    frame_ceiling = int(req.get("frameCeiling", 120))
+    scene_threshold = float(req.get("sceneThreshold", 0.3))
+    long_edge = int(req.get("frameLongEdge", 768))
+    stt_chunk_sec = int(req.get("sttChunkSec", 60))
+    max_quality = int(req.get("maxQualityHeight", 720))
+    allow_browser = bool(req.get("allowBrowserFallback", True))
+    playback_rate = float(req.get("browserPlaybackRate", 2))
+    capture_cap = int(req.get("browserCaptureCapSec", 900))
+    width = int(req.get("width", 1280))
+    height = int(req.get("height", 720))
+    auto_install = bool(req.get("autoInstall", True))
+
+    if not source:
+        return {"ok": False, "frames": [], "error": "source is required"}
+    if not command_exists("ffmpeg") or not command_exists("ffprobe"):
+        return {"ok": False, "frames": [], "error": "ffmpeg/ffprobe not installed in the sandbox"}
+
+    out_dir = JOBS / job_id / "video"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    via = None
+    title = None
+    note = None
+    file_path = None
+
+    is_url = source.lower().startswith(("http://", "https://"))
+    if not is_url:
+        cand = source if source.startswith("/") else os.path.join(WS, source)
+        if not os.path.exists(cand):
+            return {"ok": False, "frames": [], "error": "file not found in workspace: %s" % source}
+        file_path = cand
+        via = "file"
+    else:
+        import re as _re
+
+        file_path, title = _ytdlp_download(source, out_dir, max_quality)
+        if file_path:
+            via = "yt-dlp"
+        elif _re.search(r"\.(mp4|webm|mkv|mov|m4v)(\?|#|$)", source, _re.I) and _direct_download(source, out_dir):
+            # A direct media-file URL yt-dlp declined — fetch it straight.
+            file_path = str(out_dir / "dl.mp4")
+            via = "file"
+        elif allow_browser:
+            file_path, br = _browser_capture(
+                source, out_dir, width, height, playback_rate, capture_cap, auto_install
+            )
+            if not file_path:
+                return {"ok": False, "frames": [], "error": br or "could not obtain video"}
+            via = "browser"
+            note = br
+        else:
+            return {"ok": False, "frames": [], "error": "yt-dlp could not download and browser fallback is disabled"}
+
+    duration = _ffprobe_duration(file_path)
+    minutes = (duration or 0) / 60.0
+    budget = int(max(frame_floor, min(frame_ceiling, math.ceil(minutes * frames_per_min) or frame_floor)))
+
+    cands = _scene_candidates(file_path, scene_threshold, out_dir / "scenes.txt")
+    frame_times, ceiling_hit = _pick_frame_times(duration, cands, budget)
+    frames = _extract_frames(file_path, frame_times, long_edge, out_dir)
+
+    audio_chunks = []
+    if want_audio and _ffprobe_has_audio(file_path):
+        audio_chunks = _extract_audio_chunks(file_path, stt_chunk_sec, out_dir)
+
+    return {
+        "ok": True,
+        "via": via,
+        "title": title,
+        "durationSec": round(duration, 2) if duration else None,
+        "frames": frames,
+        "frameCeilingHit": bool(ceiling_hit),
+        "audioChunks": audio_chunks,
+        "note": note,
+    }
+
+
 def append(fp, chunk):
     fp.write(chunk)
     fp.flush()
@@ -1681,6 +2169,7 @@ def run_job(job_dir, req):
         "browser_observe",
         "browser_open_url",
         "browser_action",
+        "watch_video",
     }:
         try:
             if req_type == "computer_observe":
@@ -1695,6 +2184,8 @@ def run_job(job_dir, req):
                 data = observe_browser(req)
             elif req_type == "browser_open_url":
                 data = browser_open_url(req)
+            elif req_type == "watch_video":
+                data = watch_video(req)
             else:
                 data = (
                     action_sequence(req, "browser")

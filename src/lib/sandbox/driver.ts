@@ -141,6 +141,55 @@ export interface ActionSequenceResult {
   error?: string;
 }
 
+/**
+ * `watch_video`: sample frames + (optionally) the audio track of a video so the
+ * model can "watch" it. xAI has no native video input, so the guest extracts
+ * frames (scene-change detection + a duration-scaled budget) and the audio
+ * track; frames are fed back through the image-vision path and the audio is
+ * transcribed host-side via batch STT. See docs/watch-video-plan.md.
+ */
+export interface WatchVideoOptions {
+  /** Sandbox filename/path under the workspace, OR a URL (video file/page). */
+  source: string;
+  /** Whether to extract the audio track for host-side transcription. */
+  audio?: boolean;
+}
+export interface WatchVideoFrame {
+  /** Base64 data URL of the (downscaled) JPEG frame. */
+  dataUrl: string;
+  /** Frame position in the video, seconds. */
+  tSec: number;
+  /** ffmpeg scene-change score (0-1) when this was a scene cut; absent for fills. */
+  score?: number;
+}
+/** One contiguous slice of the audio track, for chunked STT with coarse timestamps. */
+export interface WatchVideoAudioChunk {
+  /** Encoded audio bytes (e.g. mp3) ready to POST to STT. */
+  bytes: Uint8Array;
+  /** Start time of this chunk within the video, seconds. */
+  startSec: number;
+  filename: string;
+}
+export interface WatchVideoResult {
+  ok: boolean;
+  /** How the source was obtained: a local/uploaded file, a yt-dlp download, or browser playback. */
+  via?: "file" | "yt-dlp" | "browser";
+  title?: string;
+  durationSec?: number;
+  frames: WatchVideoFrame[];
+  /** Whether any frames were truncated by the frame ceiling. */
+  frameCeilingHit?: boolean;
+  /**
+   * Audio split into contiguous chunks (the guest extracts + splits with ffmpeg;
+   * the host reads them off the virtiofs share and transcribes each via STT).
+   * Empty when audio was off/unavailable.
+   */
+  audioChunks?: WatchVideoAudioChunk[];
+  /** Note about caps hit (e.g. browser capture cap), surfaced to the model. */
+  note?: string;
+  error?: string;
+}
+
 export interface SandboxDriver {
   readonly name: "local" | "microvm";
 
@@ -205,6 +254,12 @@ export interface SandboxDriver {
     conversationId: string,
     seq: ActionSequence,
   ): Promise<ActionSequenceResult>;
+
+  /** Sample frames + audio from a video file/URL so the model can watch it. */
+  watchVideo?(
+    conversationId: string,
+    opts: WatchVideoOptions,
+  ): Promise<WatchVideoResult>;
 
   /** Remove a conversation's workspace (on conversation delete). */
   deleteSandbox(conversationId: string): void;

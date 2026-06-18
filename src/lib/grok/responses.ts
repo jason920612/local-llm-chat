@@ -24,12 +24,14 @@ import {
   browserOpenUrl,
   browserObserve,
   browserAction,
+  watchVideo,
   saveMediaToSandbox,
   mountSkill,
   listSandboxFiles,
   type RunResult,
   type SandboxFile,
 } from "../sandbox/run";
+import { transcribeChunks } from "./stt";
 import { getSkill, installSkill } from "../skills";
 import {
   startBackground,
@@ -194,6 +196,7 @@ const BROWSER_OPEN_URL_FN = "browser_open_url";
 const BROWSER_OBSERVE_FN = "browser_observe";
 const BROWSER_ACTION_FN = "browser_action";
 const SEND_SCREENSHOT_FN = "send_screenshot";
+const WATCH_VIDEO_FN = "watch_video";
 
 function looksLikeImageUrl(url: string): boolean {
   try {
@@ -629,6 +632,34 @@ const SEND_SCREENSHOT_TOOL = {
   },
 };
 
+const WATCH_VIDEO_TOOL = {
+  type: "function",
+  name: WATCH_VIDEO_FN,
+  description:
+    "WATCH a video so you can answer questions about its visual content and speech. You cannot natively see video — this tool samples representative frames (by scene change, more for longer videos) and feeds them to you as images, plus a timestamped transcript of the audio. Use it for: a video file the user uploaded to the sandbox, a direct video URL, or a web video (YouTube or a page with a player). After calling it, the frames appear as images in the next step; describe/answer from them and the transcript.",
+  parameters: {
+    type: "object",
+    properties: {
+      source: {
+        type: "string",
+        description:
+          "The video to watch: a sandbox filename/path the user uploaded or that exists in the workspace, OR a URL (a direct video file, a YouTube link, or a web page that contains a video player).",
+      },
+      prompt: {
+        type: "string",
+        description:
+          "Optional: what to focus on while watching (e.g. 'summarize the key steps', 'what happens after the goal?').",
+      },
+      audio: {
+        type: "boolean",
+        description:
+          "Whether to also transcribe the audio track (default true). Set false for silent/visual-only videos to save time.",
+      },
+    },
+    required: ["source"],
+  },
+};
+
 /**
  * Tools sent to the Responses API. The sandbox-backed tools (run_code, clone_repo,
  * use_skill, install_skill, background-process tools) are only offered when the
@@ -654,6 +685,12 @@ function toolset() {
     tools.push(COMPUTER_OBSERVE_TOOL, COMPUTER_ACTION_TOOL);
     tools.push(BROWSER_OPEN_URL_TOOL, BROWSER_OBSERVE_TOOL, BROWSER_ACTION_TOOL);
     tools.push(SEND_SCREENSHOT_TOOL);
+  }
+  if (
+    config.sandbox.driver === "microvm" &&
+    config.sandbox.microvm.video.enabled
+  ) {
+    tools.push(WATCH_VIDEO_TOOL);
   }
   return tools;
 }
@@ -1111,6 +1148,7 @@ export function streamGrokResponses(
               target?: string;
               caption?: string;
               steps?: unknown[];
+              audio?: boolean;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -1354,6 +1392,63 @@ export function streamGrokResponses(
                 out = `send_screenshot failed: ${
                   obs.error ?? "no screenshot captured"
                 }`;
+              }
+            } else if (c.name === WATCH_VIDEO_FN) {
+              const source = typeof args.source === "string" ? args.source : "";
+              emitTool("watch_video", { source });
+              const res = await watchVideo(conversationId, {
+                source,
+                audio: args.audio,
+              });
+              if (!res.ok) {
+                out = `watch_video failed: ${res.error ?? "unknown error"}`;
+              } else {
+                // Feed the sampled frames to the model as REAL images (vision
+                // path), labeled with their timestamp so it can reason over the
+                // timeline. Frames carry no dataUrl in the text result.
+                for (const f of res.frames) {
+                  pushVision(
+                    f.dataUrl,
+                    `watch_video frame @ ${f.tSec.toFixed(1)}s`,
+                  );
+                }
+                // Transcribe the extracted audio chunks (host-side STT).
+                let transcript = "";
+                if (res.audioChunks && res.audioChunks.length) {
+                  try {
+                    transcript = await transcribeChunks(
+                      res.audioChunks.map((a) => ({
+                        bytes: a.bytes,
+                        startSec: a.startSec,
+                        filename: a.filename,
+                      })),
+                    );
+                  } catch {
+                    transcript = "";
+                  }
+                }
+                const meta = [
+                  res.title ? `title: ${res.title}` : "",
+                  res.durationSec != null
+                    ? `duration: ${res.durationSec.toFixed(1)}s`
+                    : "",
+                  res.via ? `obtained via: ${res.via}` : "",
+                  `frames sampled: ${res.frames.length}${
+                    res.frameCeilingHit ? " (frame ceiling hit)" : ""
+                  }`,
+                  res.note ? `note: ${res.note}` : "",
+                ]
+                  .filter(Boolean)
+                  .join("\n");
+                out = [
+                  `Watched the video. ${res.frames.length} frames are attached as images (in timestamp order).`,
+                  meta,
+                  transcript
+                    ? `Audio transcript (coarse timestamps):\n${transcript}`
+                    : "Audio transcript: (none — no/empty audio track or audio disabled).",
+                ]
+                  .filter(Boolean)
+                  .join("\n\n");
               }
             } else {
               out = `Unknown tool: ${c.name}`;

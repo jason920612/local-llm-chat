@@ -36,12 +36,14 @@ bash build/stage3c.sh       # add iproute2/curl + net-test init
 bash build/stage3d-computer.sh # (optional) bake the GUI stack: Xvfb/openbox/Chromium/xdotool/scrot/wmctrl/xterm
 bash build/stage3e-browser.sh  # (optional) bake Playwright Chromium for the browser_* tools
 bash build/stage3f-ocr.sh      # (optional) bake standalone CPython 3.12 + PaddleOCR PP-OCRv6 for OCR
+bash build/stage3g-video.sh    # (optional) bake ffmpeg + yt-dlp + pulseaudio for the watch_video tool
 bash build/stage4-inject.sh # inject guest files into base.img via debugfs
 bash install-sudoers.sh     # scoped passwordless sudo for the per-session bridge
 ```
 
-The `stage3d/3e/3f` bakes are optional but required for computer-use, browser
-tools, and OCR respectively. `base.img` needs headroom for them — grow it first
+The `stage3d/3e/3f/3g` bakes are optional but required for computer-use, browser
+tools, OCR, and the `watch_video` tool respectively. `base.img` needs headroom
+for them — grow it first
 if tight (`truncate -s 6G images/base.img && e2fsck -fy images/base.img && resize2fs images/base.img`).
 
 Artifacts produced (git-ignored, not committed): `bin/cloud-hypervisor`,

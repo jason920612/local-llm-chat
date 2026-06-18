@@ -12,6 +12,9 @@ import {
   type ComputerObservation,
   type BrowserActionResult,
   type BrowserObservation,
+  type WatchVideoOptions,
+  type WatchVideoResult,
+  type WatchVideoFrame,
   safeConvId,
   normalizeRepoUrl,
   repoDirName,
@@ -340,6 +343,131 @@ export class MicroVMDriver implements SandboxDriver {
       2_000_000,
     );
     return this.parseSequenceResult(result);
+  }
+
+  async watchVideo(
+    conversationId: string,
+    opts: WatchVideoOptions,
+  ): Promise<WatchVideoResult> {
+    const vcfg = this.cfg.video;
+    if (!vcfg.enabled) {
+      return { ok: false, frames: [], error: "watch_video is disabled" };
+    }
+    const source = (opts.source ?? "").trim();
+    if (!source) {
+      return { ok: false, frames: [], error: "source is required" };
+    }
+    const wantAudio = opts.audio ?? vcfg.audio;
+    const jobId = this.safeJobId(`vid_${nanoid(8)}`);
+    const result = await this.runVmRequest(
+      conversationId,
+      jobId,
+      {
+        id: jobId,
+        type: "watch_video",
+        timeoutMs: vcfg.maxJobMs,
+        maxOutputChars: 4_000_000,
+        source,
+        audio: wantAudio,
+        // Frame sampling knobs (scene-detection + duration-scaled budget).
+        framesPerMin: vcfg.framesPerMin,
+        frameFloor: vcfg.frameFloor,
+        frameCeiling: vcfg.frameCeiling,
+        sceneThreshold: vcfg.sceneThreshold,
+        frameLongEdge: vcfg.frameLongEdge,
+        sttChunkSec: vcfg.sttChunkSec,
+        maxQualityHeight: vcfg.maxQualityHeight,
+        // Browser-playback fallback (only usable when computer use is enabled).
+        allowBrowserFallback: this.cfg.computer.enabled,
+        browserPlaybackRate: vcfg.browserPlaybackRate,
+        browserCaptureCapSec: vcfg.browserCaptureCapSec,
+        autoInstall: this.cfg.computer.autoInstall,
+        width: this.cfg.computer.width,
+        height: this.cfg.computer.height,
+      },
+      vcfg.maxJobMs,
+      4_000_000,
+    );
+    return this.parseWatchVideoResult(conversationId, result);
+  }
+
+  /**
+   * The guest writes frame JPEGs into the workspace and returns their
+   * workspace-relative paths (keeping result.json small). Here we read each
+   * frame file over the virtiofs share and inline it as a base64 data URL for
+   * the image-vision path.
+   */
+  private parseWatchVideoResult(
+    conversationId: string,
+    result: RunResult,
+  ): WatchVideoResult {
+    if (result.error || result.stderr) {
+      return { ok: false, frames: [], error: result.error ?? result.stderr };
+    }
+    let raw: {
+      ok?: boolean;
+      via?: "file" | "yt-dlp" | "browser";
+      title?: string;
+      durationSec?: number;
+      frames?: { file?: string; tSec?: number; score?: number }[];
+      frameCeilingHit?: boolean;
+      audioChunks?: { file?: string; startSec?: number }[];
+      note?: string;
+      error?: string;
+    };
+    try {
+      raw = JSON.parse(result.stdout);
+    } catch (e) {
+      return {
+        ok: false,
+        frames: [],
+        error: `invalid watch_video result: ${String(e)}; ${result.stdout.slice(0, 500)}`,
+      };
+    }
+    if (raw.error || raw.ok === false) {
+      return { ok: false, frames: [], error: raw.error ?? "watch_video failed" };
+    }
+    const wsRoot = this.workspaceHostPath(conversationId);
+    const readWs = (rel: string): Buffer | null => {
+      const r = rel.replace(/^[/\\]+/, "").replace(/\//g, "\\");
+      try {
+        return fs.readFileSync(path.win32.join(wsRoot, r));
+      } catch {
+        return null;
+      }
+    };
+    const frames: WatchVideoFrame[] = [];
+    for (const f of raw.frames ?? []) {
+      if (!f.file) continue;
+      const buf = readWs(f.file);
+      if (!buf) continue;
+      frames.push({
+        dataUrl: `data:image/jpeg;base64,${buf.toString("base64")}`,
+        tSec: f.tSec ?? 0,
+        score: f.score,
+      });
+    }
+    const audioChunks = [];
+    for (const a of raw.audioChunks ?? []) {
+      if (!a.file) continue;
+      const buf = readWs(a.file);
+      if (!buf) continue;
+      audioChunks.push({
+        bytes: new Uint8Array(buf),
+        startSec: a.startSec ?? 0,
+        filename: a.file.split(/[/\\]/).pop() || "chunk.mp3",
+      });
+    }
+    return {
+      ok: true,
+      via: raw.via,
+      title: raw.title,
+      durationSec: raw.durationSec,
+      frames,
+      frameCeilingHit: raw.frameCeilingHit,
+      audioChunks,
+      note: raw.note,
+    };
   }
 
   private parseSequenceResult(result: RunResult): ActionSequenceResult {

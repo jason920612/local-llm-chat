@@ -12,6 +12,8 @@ import {
   type ComputerObservation,
   type BrowserActionResult,
   type BrowserObservation,
+  type WatchVideoOptions,
+  type WatchVideoResult,
 } from "./driver";
 import { LocalProcessDriver } from "./local";
 import { MicroVMDriver } from "./microvm";
@@ -27,6 +29,8 @@ export type {
   ComputerObservation,
   BrowserActionResult,
   BrowserObservation,
+  WatchVideoOptions,
+  WatchVideoResult,
 };
 
 const fsp = fs.promises;
@@ -161,6 +165,21 @@ export function browserObserve(
     });
   }
   return driver.browserObserve(conversationId, opts);
+}
+
+export function watchVideo(
+  conversationId: string,
+  opts: WatchVideoOptions,
+): Promise<WatchVideoResult> {
+  const driver = getDriver();
+  if (!driver.watchVideo) {
+    return Promise.resolve({
+      ok: false,
+      frames: [],
+      error: "watch_video requires the microVM sandbox driver",
+    });
+  }
+  return driver.watchVideo(conversationId, opts);
 }
 
 export function browserAction(

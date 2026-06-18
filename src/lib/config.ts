@@ -118,6 +118,44 @@ export const config = {
         autoInstall: envBool("SANDBOX_VM_COMPUTER_AUTOINSTALL", true),
         ocr: envBool("SANDBOX_VM_COMPUTER_OCR", true),
       },
+      /**
+       * `watch_video`: sample frames (scene-change detection + duration-scaled
+       * budget) and transcribe audio so the model can "watch" a video file or a
+       * web video. See docs/watch-video-plan.md. xAI has no native video input,
+       * so frames go through the image-vision path and audio through batch STT.
+       */
+      video: {
+        enabled: envBool("SANDBOX_VM_WATCH_VIDEO", true),
+        // Frame budget = clamp(ceil(minutes * framesPerMin), frameFloor, frameCeiling).
+        framesPerMin: Number(process.env.SANDBOX_VM_VIDEO_FRAMES_PER_MIN ?? 6),
+        frameFloor: Number(process.env.SANDBOX_VM_VIDEO_FRAME_FLOOR ?? 8),
+        frameCeiling: Number(process.env.SANDBOX_VM_VIDEO_FRAME_CEILING ?? 120),
+        // ffmpeg scene score (0-1) above which a frame is treated as a change.
+        sceneThreshold: Number(
+          process.env.SANDBOX_VM_VIDEO_SCENE_THRESHOLD ?? 0.3,
+        ),
+        // Downscale frames to this long edge before sending (well under 20MiB).
+        frameLongEdge: Number(process.env.SANDBOX_VM_VIDEO_FRAME_EDGE ?? 768),
+        // Transcribe the audio track by default.
+        audio: envBool("SANDBOX_VM_VIDEO_AUDIO", true),
+        // yt-dlp max download height (px) for web videos.
+        maxQualityHeight: Number(
+          process.env.SANDBOX_VM_VIDEO_MAX_QUALITY ?? 720,
+        ),
+        // Browser-playback fallback: playback rate and capture cap (seconds).
+        browserPlaybackRate: Number(
+          process.env.SANDBOX_VM_VIDEO_PLAYBACK_RATE ?? 2,
+        ),
+        browserCaptureCapSec: Number(
+          process.env.SANDBOX_VM_VIDEO_CAPTURE_CAP_SEC ?? 15 * 60,
+        ),
+        // Audio split size (seconds) per STT chunk, for coarse timestamps.
+        sttChunkSec: Number(process.env.SANDBOX_VM_VIDEO_STT_CHUNK_SEC ?? 60),
+        // Hard ceiling for one watch_video VM job.
+        maxJobMs: Number(
+          process.env.SANDBOX_VM_VIDEO_MAX_JOB_MS ?? 30 * 60 * 1000,
+        ),
+      },
     },
   },
   /**
