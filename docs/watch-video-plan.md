@@ -40,6 +40,22 @@ with **metadata** (duration, frames sampled, per-frame timestamps) and the
 **audio transcript** (coarse timestamps). The huge base64 frame data is stripped
 from the text result (same pattern as observe/action vision feedback).
 
+Follow-up visual inspection is handled by `inspect_video_moments`, using the
+`video_id` returned by `watch_video`:
+
+```
+inspect_video_moments({
+  video_id: string,
+  moments: [{ timeSec: number, reason?: string }],
+  windowSec?: number,
+  framesPerMoment?: number,
+})
+```
+
+This lets the model read the full timestamped transcript first, choose which
+moments need visual evidence, and then extract frames around only those moments
+without downloading the same video again.
+
 Gating: offered when `sandbox.driver === "microvm"`. The browser-fallback
 acquisition path additionally requires `microvm.computer.enabled`; without it,
 only the file / yt-dlp paths are used.
@@ -80,9 +96,12 @@ aren't under-sampled, and a hard ceiling for cost.
 
 - ffmpeg extracts the audio track to a file in `/workspace`.
 - Host reads it (virtiofs share) and transcribes via xAI **batch STT**
-  (`/v1/stt`, auto language). `/stt` returns whole text only, so for **coarse
-  timestamps** the audio is split into ~60s chunks, each transcribed and
-  prefixed with its start time. Transcript is aligned to the frame timeline.
+  (`/v1/stt`, auto language). The audio is split into ~60s chunks so long
+  videos can be transcribed in parallel. When xAI returns word-level timestamps,
+  the host shifts each word by its chunk start time and groups words into
+  sentence-level ranges like `[03:12.40-03:18.92] ...`, so the model can answer
+  when a spoken line appeared in the video. If word timestamps are unavailable,
+  the host falls back to chunk-level timestamps.
 
 ## 4. Browser-playback fallback with system-audio capture (§ owner-approved)
 

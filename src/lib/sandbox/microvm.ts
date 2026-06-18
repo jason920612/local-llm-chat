@@ -15,6 +15,8 @@ import {
   type WatchVideoOptions,
   type WatchVideoResult,
   type WatchVideoFrame,
+  type InspectVideoMomentsOptions,
+  type InspectVideoMomentsResult,
   safeConvId,
   normalizeRepoUrl,
   repoDirName,
@@ -372,7 +374,7 @@ export class MicroVMDriver implements SandboxDriver {
         // Frame sampling knobs (scene-detection + duration-scaled budget).
         framesPerMin: vcfg.framesPerMin,
         frameFloor: vcfg.frameFloor,
-        frameCeiling: vcfg.frameCeiling,
+        frameCeiling: opts.frameCeiling ?? vcfg.frameCeiling,
         sceneThreshold: vcfg.sceneThreshold,
         frameLongEdge: vcfg.frameLongEdge,
         sttChunkSec: vcfg.sttChunkSec,
@@ -388,7 +390,62 @@ export class MicroVMDriver implements SandboxDriver {
       vcfg.maxJobMs,
       4_000_000,
     );
-    return this.parseWatchVideoResult(conversationId, result);
+    return this.parseWatchVideoResult(conversationId, result, jobId);
+  }
+
+  async inspectVideoMoments(
+    conversationId: string,
+    opts: InspectVideoMomentsOptions,
+  ): Promise<InspectVideoMomentsResult> {
+    const vcfg = this.cfg.video;
+    if (!vcfg.enabled) {
+      return {
+        ok: false,
+        frames: [],
+        error: "inspect_video_moments is disabled",
+      };
+    }
+    const rawVideoId = (opts.videoId ?? "").trim();
+    if (!rawVideoId) {
+      return { ok: false, frames: [], error: "video_id is required" };
+    }
+    const videoId = this.safeJobId(rawVideoId);
+    if (videoId !== rawVideoId) {
+      return { ok: false, frames: [], error: "invalid video_id" };
+    }
+    const moments = (opts.moments ?? [])
+      .map((m) => ({
+        timeSec: Number(m.timeSec),
+        reason: typeof m.reason === "string" ? m.reason.slice(0, 200) : "",
+      }))
+      .filter((m) => Number.isFinite(m.timeSec) && m.timeSec >= 0)
+      .slice(0, 24);
+    if (!moments.length) {
+      return {
+        ok: false,
+        frames: [],
+        error: "at least one valid moment is required",
+      };
+    }
+    const jobId = this.safeJobId(`vid_inspect_${nanoid(8)}`);
+    const result = await this.runVmRequest(
+      conversationId,
+      jobId,
+      {
+        id: jobId,
+        type: "inspect_video_moments",
+        timeoutMs: vcfg.maxJobMs,
+        maxOutputChars: 2_000_000,
+        videoId,
+        moments,
+        windowSec: opts.windowSec ?? 8,
+        framesPerMoment: opts.framesPerMoment ?? 3,
+        frameLongEdge: vcfg.frameLongEdge,
+      },
+      vcfg.maxJobMs,
+      2_000_000,
+    );
+    return this.parseInspectVideoMomentsResult(conversationId, result);
   }
 
   /**
@@ -400,12 +457,14 @@ export class MicroVMDriver implements SandboxDriver {
   private parseWatchVideoResult(
     conversationId: string,
     result: RunResult,
+    fallbackVideoId: string,
   ): WatchVideoResult {
     if (result.error || result.stderr) {
       return { ok: false, frames: [], error: result.error ?? result.stderr };
     }
     let raw: {
       ok?: boolean;
+      videoId?: string;
       via?: "file" | "yt-dlp" | "browser";
       title?: string;
       durationSec?: number;
@@ -427,19 +486,10 @@ export class MicroVMDriver implements SandboxDriver {
     if (raw.error || raw.ok === false) {
       return { ok: false, frames: [], error: raw.error ?? "watch_video failed" };
     }
-    const wsRoot = this.workspaceHostPath(conversationId);
-    const readWs = (rel: string): Buffer | null => {
-      const r = rel.replace(/^[/\\]+/, "").replace(/\//g, "\\");
-      try {
-        return fs.readFileSync(path.win32.join(wsRoot, r));
-      } catch {
-        return null;
-      }
-    };
     const frames: WatchVideoFrame[] = [];
     for (const f of raw.frames ?? []) {
       if (!f.file) continue;
-      const buf = readWs(f.file);
+      const buf = this.readWorkspaceFile(conversationId, f.file);
       if (!buf) continue;
       frames.push({
         dataUrl: `data:image/jpeg;base64,${buf.toString("base64")}`,
@@ -450,7 +500,7 @@ export class MicroVMDriver implements SandboxDriver {
     const audioChunks = [];
     for (const a of raw.audioChunks ?? []) {
       if (!a.file) continue;
-      const buf = readWs(a.file);
+      const buf = this.readWorkspaceFile(conversationId, a.file);
       if (!buf) continue;
       audioChunks.push({
         bytes: new Uint8Array(buf),
@@ -460,6 +510,7 @@ export class MicroVMDriver implements SandboxDriver {
     }
     return {
       ok: true,
+      videoId: raw.videoId ?? fallbackVideoId,
       via: raw.via,
       title: raw.title,
       durationSec: raw.durationSec,
@@ -468,6 +519,83 @@ export class MicroVMDriver implements SandboxDriver {
       audioChunks,
       note: raw.note,
     };
+  }
+
+  private parseInspectVideoMomentsResult(
+    conversationId: string,
+    result: RunResult,
+  ): InspectVideoMomentsResult {
+    if (result.error || result.stderr) {
+      return { ok: false, frames: [], error: result.error ?? result.stderr };
+    }
+    let raw: {
+      ok?: boolean;
+      videoId?: string;
+      title?: string;
+      durationSec?: number;
+      frames?: {
+        file?: string;
+        tSec?: number;
+        score?: number;
+        momentIndex?: number;
+        reason?: string;
+      }[];
+      error?: string;
+    };
+    try {
+      raw = JSON.parse(result.stdout);
+    } catch (e) {
+      return {
+        ok: false,
+        frames: [],
+        error: `invalid inspect_video_moments result: ${String(e)}; ${result.stdout.slice(0, 500)}`,
+      };
+    }
+    if (raw.error || raw.ok === false) {
+      return {
+        ok: false,
+        frames: [],
+        error: raw.error ?? "inspect_video_moments failed",
+      };
+    }
+    const frames: WatchVideoFrame[] = [];
+    for (const f of raw.frames ?? []) {
+      if (!f.file) continue;
+      const buf = this.readWorkspaceFile(conversationId, f.file);
+      if (!buf) continue;
+      frames.push({
+        dataUrl: `data:image/jpeg;base64,${buf.toString("base64")}`,
+        tSec: f.tSec ?? 0,
+        score: f.score,
+        momentIndex: f.momentIndex,
+        reason: f.reason,
+      });
+    }
+    return {
+      ok: true,
+      videoId: raw.videoId,
+      title: raw.title,
+      durationSec: raw.durationSec,
+      frames,
+    };
+  }
+
+  private readWorkspaceFile(conversationId: string, rel: string): Buffer | null {
+    if (path.win32.isAbsolute(rel) || rel.split(/[\\/]+/).includes("..")) {
+      return null;
+    }
+    const wsRoot = this.workspaceHostPath(conversationId);
+    const r = rel.replace(/^[/\\]+/, "").replace(/\//g, "\\");
+    try {
+      const root = path.win32.resolve(wsRoot);
+      const target = path.win32.resolve(path.win32.join(root, r));
+      if (target !== root && !target.startsWith(root + path.win32.sep)) {
+        return null;
+      }
+      return fs.readFileSync(target);
+    } catch {
+      return null;
+    }
   }
 
   private parseSequenceResult(result: RunResult): ActionSequenceResult {

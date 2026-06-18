@@ -1835,6 +1835,63 @@ def _extract_frames(path, frame_times, long_edge, out_dir):
     return frames
 
 
+def _extract_moment_frames(path, moments, window_sec, frames_per_moment, long_edge, out_dir, duration):
+    scale = (
+        "scale='if(gte(iw,ih),min(%d,iw),-2)':'if(gte(iw,ih),-2,min(%d,ih))'"
+        % (long_edge, long_edge)
+    )
+    frames = []
+    for mi, moment in enumerate(moments):
+        try:
+            center = float(moment.get("timeSec", 0))
+        except Exception:  # noqa: BLE001
+            continue
+        reason = str(moment.get("reason") or "")[:200]
+        count = max(1, int(frames_per_moment))
+        half = max(0.0, float(window_sec) / 2.0)
+        if count == 1:
+            times = [center]
+        else:
+            start = center - half
+            step = (half * 2.0) / float(count - 1)
+            times = [start + step * i for i in range(count)]
+        for ti, t in enumerate(times):
+            if duration:
+                t = min(max(0.0, t), max(0.0, float(duration) - 0.05))
+            else:
+                t = max(0.0, t)
+            name = "moment_%02d_%02d.jpg" % (mi, ti)
+            outp = out_dir / name
+            rc, _o, _e = run_cmd(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    "%.3f" % float(t),
+                    "-i",
+                    str(path),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    scale,
+                    "-q:v",
+                    "3",
+                    str(outp),
+                ],
+                timeout=120,
+            )
+            if rc == 0 and outp.exists():
+                frames.append(
+                    {
+                        "file": ".run/jobs/%s" % str(outp.relative_to(JOBS)),
+                        "tSec": round(t, 3),
+                        "momentIndex": mi,
+                        "reason": reason,
+                    }
+                )
+    return frames
+
+
 def _extract_audio_chunks(path, chunk_sec, out_dir):
     """Split the audio track into mp3 chunks of `chunk_sec` seconds each."""
     pattern = str(out_dir / "audio_%03d.mp3")
@@ -2076,7 +2133,12 @@ def watch_video(req):
 
     is_url = source.lower().startswith(("http://", "https://"))
     if not is_url:
-        cand = source if source.startswith("/") else os.path.join(WS, source)
+        if source.startswith("/"):
+            return {"ok": False, "frames": [], "error": "source must be a workspace-relative file path"}
+        ws_root = os.path.realpath(WS)
+        cand = os.path.realpath(os.path.join(WS, source))
+        if cand != ws_root and not cand.startswith(ws_root + os.sep):
+            return {"ok": False, "frames": [], "error": "source escapes workspace"}
         if not os.path.exists(cand):
             return {"ok": False, "frames": [], "error": "file not found in workspace: %s" % source}
         file_path = cand
@@ -2114,8 +2176,19 @@ def watch_video(req):
     if want_audio and _ffprobe_has_audio(file_path):
         audio_chunks = _extract_audio_chunks(file_path, stt_chunk_sec, out_dir)
 
+    manifest = {
+        "videoId": job_id,
+        "source": source,
+        "filePath": file_path,
+        "via": via,
+        "title": title,
+        "durationSec": round(duration, 2) if duration else None,
+    }
+    write_json(out_dir / "manifest.json", manifest)
+
     return {
         "ok": True,
+        "videoId": job_id,
         "via": via,
         "title": title,
         "durationSec": round(duration, 2) if duration else None,
@@ -2123,6 +2196,65 @@ def watch_video(req):
         "frameCeilingHit": bool(ceiling_hit),
         "audioChunks": audio_chunks,
         "note": note,
+    }
+
+
+def inspect_video_moments(req):
+    import re as _re
+
+    job_id = req.get("id") or "vid_inspect"
+    video_id = (req.get("videoId") or req.get("video_id") or "").strip()
+    if not _re.match(r"^[A-Za-z0-9_-]{1,80}$", video_id):
+        return {"ok": False, "frames": [], "error": "valid video_id is required"}
+    manifest_path = JOBS / video_id / "video" / "manifest.json"
+    if not manifest_path.exists():
+        return {"ok": False, "frames": [], "error": "video_id not found; call watch_video first"}
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except Exception as ex:  # noqa: BLE001
+        return {"ok": False, "frames": [], "error": "could not read video manifest: %s" % ex}
+    file_path = manifest.get("filePath")
+    if not file_path or not os.path.exists(file_path):
+        return {"ok": False, "frames": [], "error": "cached video file is missing"}
+
+    raw_moments = req.get("moments")
+    if not isinstance(raw_moments, list):
+        raw_moments = []
+    moments = []
+    for m in raw_moments[:24]:
+        if not isinstance(m, dict):
+            continue
+        try:
+            t = float(m.get("timeSec"))
+        except Exception:  # noqa: BLE001
+            continue
+        if t < 0:
+            continue
+        moments.append({"timeSec": t, "reason": str(m.get("reason") or "")[:200]})
+    if not moments:
+        return {"ok": False, "frames": [], "error": "at least one valid moment is required"}
+
+    window_sec = max(0.0, min(60.0, float(req.get("windowSec", 8))))
+    frames_per_moment = max(1, min(8, int(req.get("framesPerMoment", 3))))
+    long_edge = int(req.get("frameLongEdge", 768))
+    duration = float(manifest.get("durationSec") or _ffprobe_duration(file_path) or 0)
+    out_dir = JOBS / job_id / "video"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frames = _extract_moment_frames(
+        file_path,
+        moments,
+        window_sec,
+        frames_per_moment,
+        long_edge,
+        out_dir,
+        duration,
+    )
+    return {
+        "ok": True,
+        "videoId": video_id,
+        "title": manifest.get("title"),
+        "durationSec": round(duration, 2) if duration else None,
+        "frames": frames,
     }
 
 
@@ -2170,6 +2302,7 @@ def run_job(job_dir, req):
         "browser_open_url",
         "browser_action",
         "watch_video",
+        "inspect_video_moments",
     }:
         try:
             if req_type == "computer_observe":
@@ -2186,6 +2319,8 @@ def run_job(job_dir, req):
                 data = browser_open_url(req)
             elif req_type == "watch_video":
                 data = watch_video(req)
+            elif req_type == "inspect_video_moments":
+                data = inspect_video_moments(req)
             else:
                 data = (
                     action_sequence(req, "browser")

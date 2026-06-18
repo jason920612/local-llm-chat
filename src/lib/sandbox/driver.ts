@@ -153,6 +153,8 @@ export interface WatchVideoOptions {
   source: string;
   /** Whether to extract the audio track for host-side transcription. */
   audio?: boolean;
+  /** Optional cap for first-pass overview frames. */
+  frameCeiling?: number;
 }
 export interface WatchVideoFrame {
   /** Base64 data URL of the (downscaled) JPEG frame. */
@@ -161,6 +163,10 @@ export interface WatchVideoFrame {
   tSec: number;
   /** ffmpeg scene-change score (0-1) when this was a scene cut; absent for fills. */
   score?: number;
+  /** Index of the requested moment when this frame came from inspect_video_moments. */
+  momentIndex?: number;
+  /** Model-supplied reason for inspecting that moment. */
+  reason?: string;
 }
 /** One contiguous slice of the audio track, for chunked STT with coarse timestamps. */
 export interface WatchVideoAudioChunk {
@@ -172,6 +178,8 @@ export interface WatchVideoAudioChunk {
 }
 export interface WatchVideoResult {
   ok: boolean;
+  /** Stable id for re-inspecting this already-acquired video without downloading it again. */
+  videoId?: string;
   /** How the source was obtained: a local/uploaded file, a yt-dlp download, or browser playback. */
   via?: "file" | "yt-dlp" | "browser";
   title?: string;
@@ -187,6 +195,27 @@ export interface WatchVideoResult {
   audioChunks?: WatchVideoAudioChunk[];
   /** Note about caps hit (e.g. browser capture cap), surfaced to the model. */
   note?: string;
+  error?: string;
+}
+
+export interface InspectVideoMoment {
+  timeSec: number;
+  reason?: string;
+}
+
+export interface InspectVideoMomentsOptions {
+  videoId: string;
+  moments: InspectVideoMoment[];
+  windowSec?: number;
+  framesPerMoment?: number;
+}
+
+export interface InspectVideoMomentsResult {
+  ok: boolean;
+  videoId?: string;
+  title?: string;
+  durationSec?: number;
+  frames: WatchVideoFrame[];
   error?: string;
 }
 
@@ -260,6 +289,12 @@ export interface SandboxDriver {
     conversationId: string,
     opts: WatchVideoOptions,
   ): Promise<WatchVideoResult>;
+
+  /** Extract frames around model-selected transcript timestamps from a cached video. */
+  inspectVideoMoments?(
+    conversationId: string,
+    opts: InspectVideoMomentsOptions,
+  ): Promise<InspectVideoMomentsResult>;
 
   /** Remove a conversation's workspace (on conversation delete). */
   deleteSandbox(conversationId: string): void;

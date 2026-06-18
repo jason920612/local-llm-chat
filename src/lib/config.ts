@@ -60,6 +60,7 @@ export const config = {
     },
     stt: {
       streaming: envBool("XAI_STT_STREAMING", true),
+      maxConcurrent: Number(process.env.XAI_STT_MAX_CONCURRENT ?? 4),
       smartTurn: Number(process.env.XAI_STT_SMART_TURN ?? 0.7),
       smartTurnTimeoutMs: Number(
         process.env.XAI_STT_SMART_TURN_TIMEOUT_MS ?? 3000,

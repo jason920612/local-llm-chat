@@ -25,6 +25,7 @@ import {
   browserObserve,
   browserAction,
   watchVideo,
+  inspectVideoMoments,
   saveMediaToSandbox,
   mountSkill,
   listSandboxFiles,
@@ -197,6 +198,7 @@ const BROWSER_OBSERVE_FN = "browser_observe";
 const BROWSER_ACTION_FN = "browser_action";
 const SEND_SCREENSHOT_FN = "send_screenshot";
 const WATCH_VIDEO_FN = "watch_video";
+const INSPECT_VIDEO_MOMENTS_FN = "inspect_video_moments";
 
 function looksLikeImageUrl(url: string): boolean {
   try {
@@ -636,7 +638,7 @@ const WATCH_VIDEO_TOOL = {
   type: "function",
   name: WATCH_VIDEO_FN,
   description:
-    "WATCH a video so you can answer questions about its visual content and speech. You cannot natively see video — this tool samples representative frames (by scene change, more for longer videos) and feeds them to you as images, plus a timestamped transcript of the audio. Use it for: a video file the user uploaded to the sandbox, a direct video URL, or a web video (YouTube or a page with a player). After calling it, the frames appear as images in the next step; describe/answer from them and the transcript.",
+    "WATCH a video so you can answer questions about its visual content and speech. You cannot natively see video — this tool gets the full audio transcript with sentence-level timestamps when available, plus a small set of overview frames. It returns a video_id. When the timestamped transcript shows moments you need to see visually, call inspect_video_moments with that video_id and the exact times you want to inspect. Use it for: a video file the user uploaded to the sandbox, a direct video URL, or a web video (YouTube or a page with a player).",
   parameters: {
     type: "object",
     properties: {
@@ -655,8 +657,61 @@ const WATCH_VIDEO_TOOL = {
         description:
           "Whether to also transcribe the audio track (default true). Set false for silent/visual-only videos to save time.",
       },
+      overview_frames: {
+        type: "number",
+        description:
+          "How many first-pass overview frames to sample before selecting exact moments. Default 12. Use inspect_video_moments for detailed visual checks.",
+      },
     },
     required: ["source"],
+  },
+};
+
+const INSPECT_VIDEO_MOMENTS_TOOL = {
+  type: "function",
+  name: INSPECT_VIDEO_MOMENTS_FN,
+  description:
+    "Inspect exact moments from a video previously watched with watch_video. Use this after reading the timestamped transcript to see what was on screen around specific spoken lines or events. This reuses the cached video_id and does not download the video again. The selected frames are fed to you as images.",
+  parameters: {
+    type: "object",
+    properties: {
+      video_id: {
+        type: "string",
+        description:
+          "The video_id returned by watch_video for the already-acquired video.",
+      },
+      moments: {
+        type: "array",
+        description:
+          "Timestamped moments to inspect visually, chosen from the transcript or from the user's question.",
+        items: {
+          type: "object",
+          properties: {
+            timeSec: {
+              type: "number",
+              description: "Center timestamp in seconds from the start of the video.",
+            },
+            reason: {
+              type: "string",
+              description:
+                "Why this moment needs visual inspection, e.g. the spoken line or event being checked.",
+            },
+          },
+          required: ["timeSec"],
+        },
+      },
+      windowSec: {
+        type: "number",
+        description:
+          "Seconds around each selected time to sample. Default 8, max 60.",
+      },
+      framesPerMoment: {
+        type: "number",
+        description:
+          "Number of frames to extract per selected moment. Default 3, max 8.",
+      },
+    },
+    required: ["video_id", "moments"],
   },
 };
 
@@ -690,7 +745,7 @@ function toolset() {
     config.sandbox.driver === "microvm" &&
     config.sandbox.microvm.video.enabled
   ) {
-    tools.push(WATCH_VIDEO_TOOL);
+    tools.push(WATCH_VIDEO_TOOL, INSPECT_VIDEO_MOMENTS_TOOL);
   }
   return tools;
 }
@@ -1149,6 +1204,12 @@ export function streamGrokResponses(
               caption?: string;
               steps?: unknown[];
               audio?: boolean;
+              overview_frames?: number;
+              video_id?: string;
+              videoId?: string;
+              moments?: unknown[];
+              windowSec?: number;
+              framesPerMoment?: number;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -1395,10 +1456,16 @@ export function streamGrokResponses(
               }
             } else if (c.name === WATCH_VIDEO_FN) {
               const source = typeof args.source === "string" ? args.source : "";
+              const overviewFrames =
+                typeof args.overview_frames === "number" &&
+                Number.isFinite(args.overview_frames)
+                  ? Math.max(0, Math.min(60, Math.floor(args.overview_frames)))
+                  : 12;
               emitTool("watch_video", { source });
               const res = await watchVideo(conversationId, {
                 source,
                 audio: args.audio,
+                frameCeiling: overviewFrames,
               });
               if (!res.ok) {
                 out = `watch_video failed: ${res.error ?? "unknown error"}`;
@@ -1428,6 +1495,7 @@ export function streamGrokResponses(
                   }
                 }
                 const meta = [
+                  res.videoId ? `video_id: ${res.videoId}` : "",
                   res.title ? `title: ${res.title}` : "",
                   res.durationSec != null
                     ? `duration: ${res.durationSec.toFixed(1)}s`
@@ -1441,11 +1509,87 @@ export function streamGrokResponses(
                   .filter(Boolean)
                   .join("\n");
                 out = [
-                  `Watched the video. ${res.frames.length} frames are attached as images (in timestamp order).`,
+                  `Watched the video. ${res.frames.length} overview frames are attached as images (in timestamp order).`,
                   meta,
+                  res.videoId
+                    ? `Use inspect_video_moments with video_id "${res.videoId}" to inspect exact transcript timestamps visually. Choose moments from the timestamped transcript when you need more visual evidence.`
+                    : "",
                   transcript
-                    ? `Audio transcript (coarse timestamps):\n${transcript}`
+                    ? `Audio transcript (sentence-level timestamps when available):\n${transcript}`
                     : "Audio transcript: (none — no/empty audio track or audio disabled).",
+                ]
+                  .filter(Boolean)
+                  .join("\n\n");
+              }
+            } else if (c.name === INSPECT_VIDEO_MOMENTS_FN) {
+              const videoId =
+                typeof args.video_id === "string"
+                  ? args.video_id
+                  : typeof args.videoId === "string"
+                    ? args.videoId
+                    : "";
+              const rawMoments = Array.isArray(args.moments)
+                ? args.moments
+                : [];
+              const moments = rawMoments
+                .map((m) => {
+                  if (!m || typeof m !== "object") return null;
+                  const rec = m as Record<string, unknown>;
+                  const timeSec = Number(rec.timeSec);
+                  if (!Number.isFinite(timeSec) || timeSec < 0) return null;
+                  return {
+                    timeSec,
+                    reason:
+                      typeof rec.reason === "string"
+                        ? rec.reason.slice(0, 200)
+                        : "",
+                  };
+                })
+                .filter((m): m is { timeSec: number; reason: string } =>
+                  Boolean(m),
+                )
+                .slice(0, 24);
+              emitTool("inspect_video_moments", {
+                video_id: videoId,
+                moments: moments.length,
+              });
+              const res = await inspectVideoMoments(conversationId, {
+                videoId,
+                moments,
+                windowSec:
+                  typeof args.windowSec === "number"
+                    ? args.windowSec
+                    : undefined,
+                framesPerMoment:
+                  typeof args.framesPerMoment === "number"
+                    ? args.framesPerMoment
+                    : undefined,
+              });
+              if (!res.ok) {
+                out = `inspect_video_moments failed: ${res.error ?? "unknown error"}`;
+              } else {
+                for (const f of res.frames) {
+                  const reason = f.reason ? ` (${f.reason})` : "";
+                  pushVision(
+                    f.dataUrl,
+                    `video ${res.videoId ?? videoId} inspected frame @ ${f.tSec.toFixed(2)}s${reason}`,
+                  );
+                }
+                const frameLines = res.frames.map((f, i) => {
+                  const reason = f.reason ? ` reason: ${f.reason}` : "";
+                  const moment =
+                    f.momentIndex != null ? ` moment ${f.momentIndex}` : "";
+                  return `${i + 1}. ${f.tSec.toFixed(2)}s${moment}${reason}`;
+                });
+                out = [
+                  `Inspected ${res.frames.length} frames from video_id ${res.videoId ?? videoId}. The frames are attached as images.`,
+                  res.title ? `title: ${res.title}` : "",
+                  res.durationSec != null
+                    ? `duration: ${res.durationSec.toFixed(1)}s`
+                    : "",
+                  frameLines.length
+                    ? `Inspected frames:\n${frameLines.join("\n")}`
+                    : "",
                 ]
                   .filter(Boolean)
                   .join("\n\n");
