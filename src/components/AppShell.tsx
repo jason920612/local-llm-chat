@@ -44,6 +44,10 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
+  // Bumped to force the global /api/events EventSource to reconnect after the
+  // app returns from the background (mobile WebViews freeze the connection, so
+  // conversations created/renamed/deleted meanwhile are otherwise missed).
+  const [resyncTick, setResyncTick] = useState(0);
   const isMobile = useIsMobile();
 
   // Select a conversation AND reflect it in the URL (so it's bookmarkable /
@@ -104,7 +108,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
       /* auto-reconnects */
     };
     return () => es.close();
-  }, [navigateTo]);
+  }, [navigateTo, resyncTick]);
 
   const refresh = useCallback(async () => {
     try {
@@ -121,6 +125,30 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
       /* ignore */
     }
   }, []);
+
+  // Background → foreground resync for the conversation LIST. On mobile (and
+  // backgrounded desktop tabs) the global /api/events stream is frozen while in
+  // the background, so a new/renamed/deleted conversation that happened
+  // meanwhile is missed and the sidebar looks stale until a full app restart.
+  // When we become visible again, re-fetch the list AND bump resyncTick to
+  // reopen the stream. (Chat.tsx does the same for the active conversation.)
+  useEffect(() => {
+    const onForeground = () => {
+      if (document.visibilityState === "hidden") return;
+      refresh();
+      setResyncTick((t) => t + 1);
+    };
+    document.addEventListener("visibilitychange", onForeground);
+    window.addEventListener("coderyo-resume", onForeground);
+    window.addEventListener("pageshow", onForeground);
+    window.addEventListener("focus", onForeground);
+    return () => {
+      document.removeEventListener("visibilitychange", onForeground);
+      window.removeEventListener("coderyo-resume", onForeground);
+      window.removeEventListener("pageshow", onForeground);
+      window.removeEventListener("focus", onForeground);
+    };
+  }, [refresh]);
 
   useEffect(() => {
     refresh();
