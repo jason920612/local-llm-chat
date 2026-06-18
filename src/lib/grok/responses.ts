@@ -1,4 +1,5 @@
 ﻿import { config } from "../config";
+import { nanoid } from "nanoid";
 import type {
   Citation,
   UIMessage,
@@ -39,7 +40,147 @@ import {
   readBackgroundLog,
   listBackground,
   killBackground,
+  wakeConversation,
 } from "../live/background";
+
+type ToolBgStatus = "running" | "done" | "error";
+type ToolBgKind = "computer_action" | "browser_action" | "watch_video";
+interface ToolBgVisual {
+  dataUrl: string;
+  label: string;
+  source: string;
+}
+interface ToolBgResult {
+  output: string;
+  visuals?: ToolBgVisual[];
+}
+interface ToolBgJob {
+  id: string;
+  conversationId: string;
+  kind: ToolBgKind;
+  summary: string;
+  status: ToolBgStatus;
+  startedAt: number;
+  endedAt?: number;
+  result?: ToolBgResult;
+  error?: string;
+  consumed?: boolean;
+}
+
+const toolBgGlobal = globalThis as unknown as {
+  __grokToolBg?: Map<string, ToolBgJob>;
+};
+const toolBgJobs =
+  toolBgGlobal.__grokToolBg ?? (toolBgGlobal.__grokToolBg = new Map());
+const TOOL_BG_WAKE_RETRY_MS = 1500;
+const TOOL_BG_WAKE_MAX_RETRIES = 600;
+
+function startToolBackground(
+  conversationId: string,
+  kind: ToolBgKind,
+  summary: string,
+  run: () => Promise<ToolBgResult>,
+): ToolBgJob {
+  const id = `tbg_${nanoid(8)}`;
+  const job: ToolBgJob = {
+    id,
+    conversationId,
+    kind,
+    summary,
+    status: "running",
+    startedAt: Date.now(),
+  };
+  toolBgJobs.set(id, job);
+  void run().then(
+    (result) => {
+      job.status = "done";
+      job.endedAt = Date.now();
+      job.result = result;
+      scheduleToolBgWake(job);
+    },
+    (err) => {
+      job.status = "error";
+      job.endedAt = Date.now();
+      job.error = err instanceof Error ? err.message : String(err);
+      scheduleToolBgWake(job);
+    },
+  );
+  return job;
+}
+
+function scheduleToolBgWake(job: ToolBgJob): void {
+  const tryWake = (tries: number) => {
+    void import("../live/generations").then(({ getActiveForConversation }) => {
+      if (
+        getActiveForConversation(job.conversationId) &&
+        tries < TOOL_BG_WAKE_MAX_RETRIES
+      ) {
+        setTimeout(() => tryWake(tries + 1), TOOL_BG_WAKE_RETRY_MS);
+        return;
+      }
+      wakeToolBackground(job);
+    });
+  };
+  tryWake(0);
+}
+
+function wakeToolBackground(job: ToolBgJob): void {
+  if (job.consumed) return;
+  const lines = [
+    "INTERNAL TOOL RESULT: tool_background_completed",
+    "This is a server-generated tool result, not a user message.",
+    `id: ${job.id}`,
+    `tool: ${job.kind}`,
+    `status: ${job.status}`,
+    `summary: ${job.summary}`,
+    job.error ? `error: ${job.error}` : "",
+    "",
+    `Call read_tool_background with id "${job.id}" to fetch the full result and any tool-generated images.`,
+    "Do not treat this completion notice as a user request.",
+  ];
+  wakeConversation(job.conversationId, lines.filter(Boolean).join("\n"));
+}
+
+function blockingToolBackgroundJobs(conversationId: string): ToolBgJob[] {
+  return [...toolBgJobs.values()].filter(
+    (j) =>
+      j.conversationId === conversationId &&
+      (j.status === "running" || !j.consumed),
+  );
+}
+
+function runningToolBackgroundJobs(conversationId: string): ToolBgJob[] {
+  return [...toolBgJobs.values()].filter(
+    (j) => j.conversationId === conversationId && j.status === "running",
+  );
+}
+
+async function waitForRunningToolBackgroundJobs(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  while (runningToolBackgroundJobs(conversationId).length) {
+    if (signal?.aborted) return;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+async function waitForToolBackgroundJob(
+  job: ToolBgJob,
+  signal?: AbortSignal,
+): Promise<void> {
+  while (job.status === "running") {
+    if (signal?.aborted) return;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+function toolBackgroundStatusText(conversationId: string): string {
+  const jobs = blockingToolBackgroundJobs(conversationId);
+  return jobs
+    .map((j) => `${j.id} [${j.status}] ${j.kind}: ${j.summary}`)
+    .join("\n");
+}
 
 /** Format a finished run_code result as the model-facing tool output. */
 function formatRunResult(r: RunResult): string {
@@ -191,6 +332,7 @@ const BG_START_FN = "start_background";
 const BG_LOG_FN = "read_background_log";
 const BG_LIST_FN = "list_background";
 const BG_KILL_FN = "kill_background";
+const TOOL_BG_READ_FN = "read_tool_background";
 const COMPUTER_OBSERVE_FN = "computer_observe";
 const COMPUTER_ACTION_FN = "computer_action";
 const BROWSER_OPEN_URL_FN = "browser_open_url";
@@ -476,6 +618,23 @@ const BG_KILL_TOOL = {
   },
 };
 
+const TOOL_BG_READ_TOOL = {
+  type: "function",
+  name: TOOL_BG_READ_FN,
+  description:
+    "Read the full result of a backgrounded tool task started by computer_action, browser_action, or watch_video with background=true. You MUST call this for every completed tbg_… job before giving the final answer; final answers are blocked while any tool background job is still running or unread.",
+  parameters: {
+    type: "object",
+    properties: {
+      id: {
+        type: "string",
+        description: "The tool background id (tbg_…) returned by the backgrounded tool call.",
+      },
+    },
+    required: ["id"],
+  },
+};
+
 const COMPUTER_OBSERVE_TOOL = {
   type: "function",
   name: COMPUTER_OBSERVE_FN,
@@ -553,6 +712,11 @@ const COMPUTER_ACTION_TOOL = {
         description: "Ordered action steps to run.",
       },
       include_screenshot: { type: "boolean", description: "Include a screenshot in the returned observation." },
+      background: {
+        type: "boolean",
+        description:
+          "Run this action program in the background and return immediately with a tbg_ id. Use when the action may take time or can run while you do other work. You must later call read_tool_background before the final answer.",
+      },
     },
     required: ["steps"],
   },
@@ -606,6 +770,11 @@ const BROWSER_ACTION_TOOL = {
         description: "Ordered action steps to run.",
       },
       include_screenshot: { type: "boolean", description: "Include a screenshot in the returned observation." },
+      background: {
+        type: "boolean",
+        description:
+          "Run this browser action program in the background and return immediately with a tbg_ id. Use when it may take time or can run while you do other work. You must later call read_tool_background before the final answer.",
+      },
     },
     required: ["steps"],
   },
@@ -661,6 +830,11 @@ const WATCH_VIDEO_TOOL = {
         type: "number",
         description:
           "How many first-pass overview frames to sample before selecting exact moments. Default 12. Use inspect_video_moments for detailed visual checks.",
+      },
+      background: {
+        type: "boolean",
+        description:
+          "Run video acquisition/frame extraction/transcription in the background and return immediately with a tbg_ id. Use for long videos. You must later call read_tool_background before the final answer.",
       },
     },
     required: ["source"],
@@ -732,6 +906,7 @@ function toolset() {
     BG_LOG_TOOL,
     BG_LIST_TOOL,
     BG_KILL_TOOL,
+    TOOL_BG_READ_TOOL,
   ];
   if (
     config.sandbox.driver === "microvm" &&
@@ -1023,6 +1198,7 @@ export function streamGrokResponses(
           };
 
       let answered = false;
+      let blockedFinalText = "";
       // Set when the round cap is hit while still mid-task (still calling tools,
       // no final answer): signals the generation manager to auto-continue in a
       // fresh turn instead of forcing a rushed final answer.
@@ -1049,12 +1225,19 @@ export function streamGrokResponses(
           for await (const ev of sseEvents(res.body)) {
             const type = ev.type as string;
             if (type === "response.output_text.delta") {
-              if (thinkOpen && !contentStarted) enq("</think>\n\n");
-              contentStarted = true;
+              if (thinkOpen && !contentStarted) {
+                enq("</think>\n\n");
+                thinkOpen = false;
+              }
               {
                 const d = (ev.delta as string) ?? "";
-                answerText += d;
-                enq(d);
+                if (blockingToolBackgroundJobs(conversationId).length) {
+                  blockedFinalText += d;
+                } else {
+                  contentStarted = true;
+                  answerText += d;
+                  enq(d);
+                }
               }
             } else if (
               type === "response.reasoning_text.delta" ||
@@ -1137,6 +1320,32 @@ export function streamGrokResponses(
 
           const calls = Object.values(fns);
           if (calls.length === 0) {
+            const blockers = blockingToolBackgroundJobs(conversationId);
+            if (blockers.length) {
+              blockedFinalText = "";
+              await waitForRunningToolBackgroundJobs(conversationId, signal);
+              const pending = toolBackgroundStatusText(conversationId);
+              body = {
+                model: config.grok.model,
+                tools: toolset(),
+                input: [
+                  {
+                    type: "message",
+                    role: "system",
+                    content:
+                      "Tool background jobs are still part of this assistant turn. " +
+                      "Do not give the final answer yet. Call read_tool_background for every completed tbg_ job, then continue. " +
+                      "The final answer is allowed only after all backgrounded tool jobs are complete and read.\n\n" +
+                      `Pending/unread tool background jobs:\n${pending}`,
+                  },
+                ],
+                previous_response_id: respId,
+                stream: true,
+                prompt_cache_key: cacheKey,
+                ...maybeServiceTier(),
+              };
+              continue;
+            }
             answered = true;
             break;
           }
@@ -1179,6 +1388,79 @@ export function streamGrokResponses(
               shot.dataUrl = undefined;
             }
           };
+          const visualResultFromObservation = (
+            observation: unknown,
+            label: string,
+            source = "computer/browser tool screenshot",
+          ): ToolBgVisual[] => {
+            const shot = (
+              observation as { screenshot?: { dataUrl?: string } } | null | undefined
+            )?.screenshot;
+            if (!shot?.dataUrl) return [];
+            const dataUrl = shot.dataUrl;
+            shot.dataUrl = undefined;
+            return [{ dataUrl, label, source }];
+          };
+          const pushToolBgVisuals = (visuals: ToolBgVisual[] | undefined) => {
+            for (const v of visuals ?? []) {
+              pushVision(v.dataUrl, v.label, v.source);
+            }
+          };
+          const formatWatchVideoToolResult = async (
+            res: Awaited<ReturnType<typeof watchVideo>>,
+          ): Promise<ToolBgResult> => {
+            if (!res.ok) {
+              return { output: `watch_video failed: ${res.error ?? "unknown error"}` };
+            }
+            const visuals: ToolBgVisual[] = res.frames.map((f) => ({
+              dataUrl: f.dataUrl,
+              label: `watch_video frame @ ${f.tSec.toFixed(1)}s`,
+              source: `watch_video extracted overview frame from video_id ${res.videoId ?? "unknown"}`,
+            }));
+            let transcript = "";
+            if (res.audioChunks && res.audioChunks.length) {
+              try {
+                transcript = await transcribeChunks(
+                  res.audioChunks.map((a) => ({
+                    bytes: a.bytes,
+                    startSec: a.startSec,
+                    filename: a.filename,
+                  })),
+                );
+              } catch {
+                transcript = "";
+              }
+            }
+            const meta = [
+              res.videoId ? `video_id: ${res.videoId}` : "",
+              res.title ? `title: ${res.title}` : "",
+              res.durationSec != null
+                ? `duration: ${res.durationSec.toFixed(1)}s`
+                : "",
+              res.via ? `obtained via: ${res.via}` : "",
+              `frames sampled: ${res.frames.length}${
+                res.frameCeilingHit ? " (frame ceiling hit)" : ""
+              }`,
+              res.note ? `note: ${res.note}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n");
+            return {
+              visuals,
+              output: [
+                `Watched the video. ${res.frames.length} overview frames are attached as tool-generated images (in timestamp order). These images are extracted video frames, not user uploads.`,
+                meta,
+                res.videoId
+                  ? `Use inspect_video_moments with video_id "${res.videoId}" to inspect exact transcript timestamps visually. Choose moments from the timestamped transcript when you need more visual evidence.`
+                  : "",
+                transcript
+                  ? `Audio transcript (sentence-level timestamps when available):\n${transcript}`
+                  : "Audio transcript: (none — no/empty audio track or audio disabled).",
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            };
+          };
           for (const c of calls) {
             let args: {
               prompt?: string;
@@ -1215,6 +1497,7 @@ export function streamGrokResponses(
               steps?: unknown[];
               audio?: boolean;
               overview_frames?: number;
+              background?: boolean;
               video_id?: string;
               videoId?: string;
               moments?: unknown[];
@@ -1226,7 +1509,7 @@ export function streamGrokResponses(
             } catch {
               /* ignore */
             }
-            let out: string;
+            let out = "";
             if (c.name === IMAGE_FN) {
               emitTool("generate_image", { prompt: args.prompt ?? "" });
               try {
@@ -1388,6 +1671,33 @@ export function streamGrokResponses(
               out = ok
                 ? `Killed ${args.id}. (You'll still get the completion event.)`
                 : `No running background process ${args.id ?? ""} in this conversation.`;
+            } else if (c.name === TOOL_BG_READ_FN) {
+              const id = args.id ?? "";
+              emitTool("read_tool_background", { id });
+              const job = toolBgJobs.get(id);
+              if (!job || job.conversationId !== conversationId) {
+                out = `No tool background job ${id} in this conversation.`;
+              } else if (job.status === "running") {
+                await waitForToolBackgroundJob(job, signal);
+              }
+              if (job && job.conversationId === conversationId && job.status !== "running") {
+                job.consumed = true;
+                if (job.status === "error") {
+                  out = `Tool background job ${job.id} failed: ${job.error ?? "unknown error"}`;
+                } else {
+                  pushToolBgVisuals(job.result?.visuals);
+                  out =
+                    job.result?.output ??
+                    `Tool background job ${job.id} finished with no output.`;
+                }
+              } else if (job && job.conversationId === conversationId) {
+                out = [
+                  `Tool background job ${job.id} is still running.`,
+                  `tool: ${job.kind}`,
+                  `summary: ${job.summary}`,
+                  "Do not give the final answer until this job finishes and read_tool_background returns its result.",
+                ].join("\n");
+              }
             } else if (c.name === COMPUTER_OBSERVE_FN) {
               emitTool("computer_observe", {
                 include_screenshot: Boolean(args.include_screenshot),
@@ -1404,13 +1714,38 @@ export function streamGrokResponses(
               emitTool("computer_action", {
                 steps: steps.length,
                 first: (steps[0] as { action?: string })?.action ?? "",
+                background: Boolean(args.background),
               });
-              const result = await computerAction(conversationId, {
-                steps: steps as Record<string, unknown>[],
-                includeScreenshot: Boolean(args.include_screenshot),
-              });
-              visionFromObservation(result.observation, "computer_action");
-              out = JSON.stringify(result);
+              const runAction = async (): Promise<ToolBgResult> => {
+                const result = await computerAction(conversationId, {
+                  steps: steps as Record<string, unknown>[],
+                  includeScreenshot: Boolean(args.include_screenshot),
+                });
+                return {
+                  output: JSON.stringify(result),
+                  visuals: visualResultFromObservation(
+                    result.observation,
+                    "computer_action",
+                  ),
+                };
+              };
+              if (args.background) {
+                const job = startToolBackground(
+                  conversationId,
+                  "computer_action",
+                  `${steps.length} step(s), first ${(steps[0] as { action?: string })?.action ?? ""}`,
+                  runAction,
+                );
+                out = [
+                  `Started background tool job ${job.id} for computer_action.`,
+                  "You may continue with other tool calls while it runs.",
+                  `Before the final answer, wait for completion and call read_tool_background with id "${job.id}".`,
+                ].join("\n");
+              } else {
+                const result = await runAction();
+                pushToolBgVisuals(result.visuals);
+                out = result.output;
+              }
             } else if (c.name === BROWSER_OPEN_URL_FN) {
               emitTool("browser_open_url", { url: args.url ?? "" });
               const result = await browserOpenUrl(conversationId, args.url ?? "");
@@ -1429,13 +1764,38 @@ export function streamGrokResponses(
               emitTool("browser_action", {
                 steps: steps.length,
                 first: (steps[0] as { action?: string })?.action ?? "",
+                background: Boolean(args.background),
               });
-              const result = await browserAction(conversationId, {
-                steps: steps as Record<string, unknown>[],
-                includeScreenshot: Boolean(args.include_screenshot),
-              });
-              visionFromObservation(result.observation, "browser_action");
-              out = JSON.stringify(result);
+              const runAction = async (): Promise<ToolBgResult> => {
+                const result = await browserAction(conversationId, {
+                  steps: steps as Record<string, unknown>[],
+                  includeScreenshot: Boolean(args.include_screenshot),
+                });
+                return {
+                  output: JSON.stringify(result),
+                  visuals: visualResultFromObservation(
+                    result.observation,
+                    "browser_action",
+                  ),
+                };
+              };
+              if (args.background) {
+                const job = startToolBackground(
+                  conversationId,
+                  "browser_action",
+                  `${steps.length} step(s), first ${(steps[0] as { action?: string })?.action ?? ""}`,
+                  runAction,
+                );
+                out = [
+                  `Started background tool job ${job.id} for browser_action.`,
+                  "You may continue with other tool calls while it runs.",
+                  `Before the final answer, wait for completion and call read_tool_background with id "${job.id}".`,
+                ].join("\n");
+              } else {
+                const result = await runAction();
+                pushToolBgVisuals(result.visuals);
+                out = result.output;
+              }
             } else if (c.name === SEND_SCREENSHOT_FN) {
               const target = args.target === "browser" ? "browser" : "screen";
               const caption =
@@ -1471,66 +1831,34 @@ export function streamGrokResponses(
                 Number.isFinite(args.overview_frames)
                   ? Math.max(0, Math.min(60, Math.floor(args.overview_frames)))
                   : 12;
-              emitTool("watch_video", { source });
-              const res = await watchVideo(conversationId, {
+              emitTool("watch_video", {
                 source,
-                audio: args.audio,
-                frameCeiling: overviewFrames,
+                background: Boolean(args.background),
               });
-              if (!res.ok) {
-                out = `watch_video failed: ${res.error ?? "unknown error"}`;
-              } else {
-                // Feed the sampled frames to the model as REAL images (vision
-                // path), labeled with their timestamp so it can reason over the
-                // timeline. Frames carry no dataUrl in the text result.
-                for (const f of res.frames) {
-                  pushVision(
-                    f.dataUrl,
-                    `watch_video frame @ ${f.tSec.toFixed(1)}s`,
-                    `watch_video extracted overview frame from video_id ${res.videoId ?? "unknown"}`,
-                  );
-                }
-                // Transcribe the extracted audio chunks (host-side STT).
-                let transcript = "";
-                if (res.audioChunks && res.audioChunks.length) {
-                  try {
-                    transcript = await transcribeChunks(
-                      res.audioChunks.map((a) => ({
-                        bytes: a.bytes,
-                        startSec: a.startSec,
-                        filename: a.filename,
-                      })),
-                    );
-                  } catch {
-                    transcript = "";
-                  }
-                }
-                const meta = [
-                  res.videoId ? `video_id: ${res.videoId}` : "",
-                  res.title ? `title: ${res.title}` : "",
-                  res.durationSec != null
-                    ? `duration: ${res.durationSec.toFixed(1)}s`
-                    : "",
-                  res.via ? `obtained via: ${res.via}` : "",
-                  `frames sampled: ${res.frames.length}${
-                    res.frameCeilingHit ? " (frame ceiling hit)" : ""
-                  }`,
-                  res.note ? `note: ${res.note}` : "",
-                ]
-                  .filter(Boolean)
-                  .join("\n");
+              const runWatchVideo = async (): Promise<ToolBgResult> => {
+                const res = await watchVideo(conversationId, {
+                  source,
+                  audio: args.audio,
+                  frameCeiling: overviewFrames,
+                });
+                return formatWatchVideoToolResult(res);
+              };
+              if (args.background) {
+                const job = startToolBackground(
+                  conversationId,
+                  "watch_video",
+                  source,
+                  runWatchVideo,
+                );
                 out = [
-                  `Watched the video. ${res.frames.length} overview frames are attached as tool-generated images (in timestamp order). These images are extracted video frames, not user uploads.`,
-                  meta,
-                  res.videoId
-                    ? `Use inspect_video_moments with video_id "${res.videoId}" to inspect exact transcript timestamps visually. Choose moments from the timestamped transcript when you need more visual evidence.`
-                    : "",
-                  transcript
-                    ? `Audio transcript (sentence-level timestamps when available):\n${transcript}`
-                    : "Audio transcript: (none — no/empty audio track or audio disabled).",
-                ]
-                  .filter(Boolean)
-                  .join("\n\n");
+                  `Started background tool job ${job.id} for watch_video.`,
+                  "You may continue with other tool calls while the video is acquired, sampled, and transcribed.",
+                  `Before the final answer, wait for completion and call read_tool_background with id "${job.id}".`,
+                ].join("\n");
+              } else {
+                const result = await runWatchVideo();
+                pushToolBgVisuals(result.visuals);
+                out = result.output;
               }
             } else if (c.name === INSPECT_VIDEO_MOMENTS_FN) {
               const videoId =
