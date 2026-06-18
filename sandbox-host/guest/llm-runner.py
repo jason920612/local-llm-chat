@@ -1309,7 +1309,28 @@ def _exec_browser_step(page, step, _snap):
         js = str(step.get("js") or "")
         if not js:
             raise ValueError("eval requires js")
-        return page.evaluate(js)
+        # Playwright treats a bare string as an EXPRESSION, so model-authored JS
+        # with a top-level `return` (the natural way to write a multi-statement
+        # snippet) fails with "Illegal return statement". Try as-is first
+        # (handles plain expressions and `() => {...}` functions), then on a
+        # syntax/return error retry wrapped in an arrow-function body so `return`
+        # is valid. A second context-destroyed failure (page navigated mid-eval)
+        # is retried once after the page settles.
+        try:
+            return page.evaluate(js)
+        except Exception as ex:  # noqa: BLE001
+            msg = str(ex)
+            if "Illegal return" in msg or "SyntaxError" in msg:
+                return page.evaluate("() => { " + js + " }")
+            if "context was destroyed" in msg or "Execution context" in msg:
+                # Page navigated/reloaded mid-eval — let it settle and retry the
+                # original (syntactically valid) snippet so its result survives.
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=5000)
+                except Exception:  # noqa: BLE001
+                    pass
+                return page.evaluate(js)
+            raise
     elif action == "wait":
         pass
     else:
