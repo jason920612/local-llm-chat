@@ -539,7 +539,7 @@ export function MessageBubble({
   }
 
   return (
-    <div className="group flex gap-3 px-4 py-4">
+    <div className="group flex max-w-full gap-3 overflow-x-hidden px-4 py-4">
       <div
         className={`mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
           isUser ? "bg-accent-strong" : "bg-surface-2"
@@ -548,13 +548,13 @@ export function MessageBubble({
         {isUser ? <User size={15} /> : <Bot size={15} />}
       </div>
 
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 flex items-center gap-2">
-          <span className="text-xs font-medium text-muted">
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2">
+          <span className="shrink-0 text-xs font-medium text-muted">
             {isUser ? "You" : "Assistant"}
           </span>
           {versionCount && versionCount > 1 && (
-            <span className="flex items-center gap-0.5 text-[11px] text-muted">
+            <span className="flex shrink-0 items-center gap-0.5 text-[11px] text-muted">
               <button
                 type="button"
                 onClick={onPrevVersion}
@@ -601,7 +601,7 @@ export function MessageBubble({
           )}
           {canEdit && !editing && (
             <span
-              className={`flex items-center gap-2 transition ${
+              className={`flex shrink-0 items-center gap-2 transition ${
                 isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
               }`}
             >
@@ -659,7 +659,7 @@ export function MessageBubble({
                 src={src}
                 alt={`attachment ${i + 1}`}
                 onClick={() => setLightbox(src)}
-                className="max-h-64 cursor-zoom-in rounded-lg border border-border object-contain transition hover:opacity-90"
+                className="max-h-64 max-w-full cursor-zoom-in rounded-lg border border-border object-contain transition hover:opacity-90"
               />
             ))}
           </div>
@@ -706,7 +706,9 @@ export function MessageBubble({
             </div>
           </div>
         ) : isUser ? (
-          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+            {message.content}
+          </p>
         ) : (
           <>
             <Thinking
@@ -750,7 +752,7 @@ export function MessageBubble({
                   <span className="shrink-0 font-semibold text-accent">
                     [{c.index}]
                   </span>
-                  <span className="min-w-0">
+                  <span className="min-w-0 break-words [overflow-wrap:anywhere]">
                     <span className="text-foreground">{c.documentName}</span>
                     {c.snippet ? ` — ${c.snippet}` : ""}
                   </span>

@@ -37,7 +37,7 @@ export function RunnablePython({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="group/code relative my-2">
+    <div className="group/code relative my-2 min-w-0 max-w-full overflow-hidden">
       <div className="absolute right-2 top-2 z-10 flex gap-1">
         <button
           onClick={run}
@@ -52,7 +52,9 @@ export function RunnablePython({ children }: { children: React.ReactNode }) {
           {running ? "執行中…" : "執行"}
         </button>
       </div>
-      <pre ref={refCb}>{children}</pre>
+      <pre ref={refCb} className="max-w-full overflow-x-auto">
+        {children}
+      </pre>
 
       {result && (
         <div className="mt-1 overflow-hidden rounded-lg border border-border bg-[#0d0f15] text-xs">

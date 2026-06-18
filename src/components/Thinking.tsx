@@ -15,7 +15,7 @@ export function Thinking({
   if (!content.trim()) return null;
 
   return (
-    <div className="mb-2 overflow-hidden rounded-lg border border-border/70 bg-surface-2/50">
+    <div className="mb-2 max-w-full overflow-hidden rounded-lg border border-border/70 bg-surface-2/50">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-muted hover:text-foreground"
@@ -29,7 +29,7 @@ export function Thinking({
         {!open && <span className="text-muted/60">（點擊展開）</span>}
       </button>
       {open && (
-        <div className="border-t border-border/70 px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap text-muted">
+        <div className="whitespace-pre-wrap break-words border-t border-border/70 px-3 py-2 text-xs leading-relaxed text-muted [overflow-wrap:anywhere]">
           {content}
         </div>
       )}

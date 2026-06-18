@@ -25,6 +25,8 @@
 html,
 body {
   height: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -36,6 +38,7 @@ body {
 }
 
 * {
+  box-sizing: border-box;
   border-color: var(--border);
 }
 
@@ -54,13 +57,17 @@ body {
 
 /* Markdown rendering inside chat bubbles */
 .markdown-body {
+  max-width: 100%;
+  min-width: 0;
   line-height: 1.65;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 .markdown-body p {
   margin: 0.4rem 0;
 }
 .markdown-body pre {
+  max-width: 100%;
   background: #0d0f15;
   border: 1px solid var(--border);
   border-radius: 0.6rem;
@@ -71,6 +78,13 @@ body {
 .markdown-body code {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.875em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.markdown-body pre code {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .markdown-body :not(pre) > code {
   background: var(--surface-2);
@@ -93,8 +107,18 @@ body {
   text-decoration: underline;
 }
 .markdown-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
   margin: 0.6rem 0;
+}
+.markdown-body img,
+.markdown-body video,
+.markdown-body canvas,
+.markdown-body svg,
+.markdown-body iframe {
+  max-width: 100%;
 }
 .markdown-body th,
 .markdown-body td {

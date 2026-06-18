@@ -178,8 +178,8 @@ export function Composer({
   }
 
   return (
-    <div className="border-t border-border bg-surface/60 px-3 py-3 backdrop-blur sm:px-4 [padding-bottom:calc(0.75rem+env(safe-area-inset-bottom))]">
-      <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-surface-2 px-3 py-2 focus-within:border-accent">
+    <div className="w-full max-w-full overflow-x-hidden border-t border-border bg-surface/60 px-3 py-3 backdrop-blur sm:px-4 [padding-bottom:calc(0.75rem+env(safe-area-inset-bottom))]">
+      <div className="mx-auto w-full max-w-3xl min-w-0 rounded-2xl border border-border bg-surface-2 px-3 py-2 focus-within:border-accent">
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {attachments.map((src, i) => (
@@ -207,10 +207,10 @@ export function Composer({
             {sandboxFiles.map((f) => (
               <span
                 key={f.name}
-                className="flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-xs"
+                className="flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-xs"
               >
                 <FileUp size={12} className="text-accent" />
-                <span className="max-w-[160px] truncate font-mono">
+                <span className="min-w-0 max-w-[160px] truncate font-mono">
                   {f.name}
                 </span>
                 <button
@@ -225,7 +225,7 @@ export function Composer({
           </div>
         )}
 
-        <div className="flex items-end gap-2">
+        <div className="flex min-w-0 items-end gap-2">
           <button
             onClick={() => fileRef.current?.click()}
             disabled={disabled || streaming}
@@ -284,7 +284,7 @@ export function Composer({
                 ? "Send a message or attach an image..."
                 : "Send a message or attach an image...  (Enter to send)"
             }
-            className="max-h-[200px] flex-1 resize-none bg-transparent py-1.5 text-base outline-none placeholder:text-muted disabled:opacity-50 sm:text-sm"
+            className="max-h-[200px] min-w-0 flex-1 resize-none bg-transparent py-1.5 text-base outline-none placeholder:text-muted disabled:opacity-50 sm:text-sm"
             // Browser extensions (writing assistants, etc.) inject attributes
             // into inputs after SSR; suppress the resulting benign hydration diff.
             suppressHydrationWarning

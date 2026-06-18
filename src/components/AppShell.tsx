@@ -213,7 +213,7 @@ export function AppShell({ initialId = null }: { initialId?: string | null }) {
   if (isMobile === null) return <div className="h-dvh bg-background" />;
 
   return (
-    <div className="flex h-dvh overflow-hidden">
+    <div className="flex h-dvh w-full max-w-full overflow-hidden">
       <Sidebar
         conversations={conversations}
         activeId={activeId}

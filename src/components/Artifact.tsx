@@ -247,9 +247,9 @@ export function Artifact({ kind, code }: { kind: ArtifactKind; code: string }) {
   const [expanded, setExpanded] = useState(false);
 
   const header = (inModal: boolean) => (
-    <div className="flex items-center gap-2 border-b border-border bg-surface-2/60 px-3 py-1.5 text-xs">
+    <div className="flex min-w-0 items-center gap-2 border-b border-border bg-surface-2/60 px-3 py-1.5 text-xs">
       <span className="font-medium text-muted">{LABELS[kind]}</span>
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex shrink-0 items-center gap-1">
         <button
           onClick={() => setMode(mode === "preview" ? "source" : "preview")}
           className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted hover:text-foreground"
@@ -280,14 +280,14 @@ export function Artifact({ kind, code }: { kind: ArtifactKind; code: string }) {
   );
 
   const source = (
-    <pre className="max-h-[360px] overflow-auto bg-[#0d0f15] p-3 text-xs">
+    <pre className="max-h-[360px] max-w-full overflow-auto bg-[#0d0f15] p-3 text-xs">
       <code>{code}</code>
     </pre>
   );
 
   return (
     <>
-      <div className="my-2 overflow-hidden rounded-lg border border-border">
+      <div className="my-2 max-w-full overflow-hidden rounded-lg border border-border">
         {header(false)}
         {mode === "preview" ? <View kind={kind} code={code} /> : source}
       </div>

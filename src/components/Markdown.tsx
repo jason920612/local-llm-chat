@@ -77,7 +77,7 @@ function PlainCodeBlock({ children }: { children?: React.ReactNode }) {
   };
 
   return (
-    <div className="group/code relative">
+    <div className="group/code relative min-w-0 max-w-full overflow-hidden">
       <button
         onClick={copy}
         className="absolute right-2 top-2 z-10 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px] text-muted opacity-0 transition hover:text-foreground group-hover/code:opacity-100"
@@ -87,7 +87,9 @@ function PlainCodeBlock({ children }: { children?: React.ReactNode }) {
       <pre
         ref={ref}
         className={
-          collapsed && overflows ? "max-h-[380px] overflow-hidden" : ""
+          collapsed && overflows
+            ? "max-h-[380px] max-w-full overflow-x-auto overflow-y-hidden"
+            : "max-w-full"
         }
       >
         {children}
@@ -113,7 +115,7 @@ export function Markdown({
 }) {
   return (
     <StreamingCtx.Provider value={streaming}>
-      <div className="markdown-body">
+      <div className="markdown-body min-w-0 max-w-full overflow-hidden">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[

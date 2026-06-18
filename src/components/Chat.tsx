@@ -731,7 +731,7 @@ export function Chat({
 
   return (
     <div
-      className="relative flex h-dvh min-w-0 flex-1 flex-col"
+      className="relative flex h-dvh min-w-0 flex-1 flex-col overflow-x-hidden"
       onDragEnter={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           dragDepth.current += 1;
@@ -758,7 +758,7 @@ export function Chat({
           放開以上傳檔案（圖片→視覺；其他→沙盒工作目錄）
         </div>
       )}
-      <header className="flex h-12 items-center gap-2 border-b border-border px-3 sm:px-4">
+      <header className="flex h-12 max-w-full items-center gap-2 overflow-hidden border-b border-border px-3 sm:px-4">
         {isMobile && (
           <button
             onClick={onOpenSidebar}
@@ -850,7 +850,7 @@ export function Chat({
       <div
         ref={scrollRef}
         onScroll={updateAutoScroll}
-        className="flex-1 overflow-y-auto"
+        className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
       >
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
@@ -866,7 +866,7 @@ export function Chat({
             </p>
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl divide-y divide-border/50">
+          <div className="mx-auto w-full max-w-3xl min-w-0 divide-y divide-border/50">
             {visibleMessages.map((m, i) => {
               const v = versionInfo(allMessages, m);
               return (
@@ -896,7 +896,7 @@ export function Chat({
       </div>
 
       {error && (
-        <div className="mx-auto w-full max-w-3xl px-4">
+        <div className="mx-auto w-full max-w-3xl min-w-0 px-4">
           <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
             {error}
           </div>
