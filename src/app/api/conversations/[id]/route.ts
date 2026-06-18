@@ -4,6 +4,8 @@ import {
   getConversation,
   getConversationMeta,
   renameConversation,
+  setConversationPinned,
+  updateConversationProject,
 } from "@/lib/repo";
 import { publishGlobal } from "@/lib/live/bus";
 
@@ -22,13 +24,35 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
-  if (typeof body.title !== "string") {
-    return Response.json({ error: "title required" }, { status: 400 });
+  let changed = false;
+  if (typeof body.title === "string") {
+    renameConversation(id, body.title, "manual");
+    changed = true;
   }
-  renameConversation(id, body.title);
+  if ("projectId" in body) {
+    updateConversationProject(
+      id,
+      typeof body.projectId === "string" && body.projectId.trim()
+        ? body.projectId
+        : null,
+    );
+    changed = true;
+  }
+  if (typeof body.pinned === "boolean") {
+    setConversationPinned(id, body.pinned);
+    changed = true;
+  }
+  if (!changed) {
+    return Response.json(
+      { error: "title, projectId, or pinned required" },
+      { status: 400 },
+    );
+  }
   const meta = getConversationMeta(id);
   if (meta) publishGlobal({ type: "conv-updated", conversation: meta });
-  return Response.json({ ok: true });
+  return meta
+    ? Response.json(meta)
+    : Response.json({ error: "Not found" }, { status: 404 });
 }
 
 export async function DELETE(_req: NextRequest, { params }: Ctx) {

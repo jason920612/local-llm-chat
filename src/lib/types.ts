@@ -70,6 +70,20 @@ export interface Conversation {
   title: string;
   createdAt: number;
   updatedAt: number;
+  projectId?: string | null;
+  pinnedAt?: number | null;
+  titleSource?: "auto" | "manual";
+  titleGeneratedAt?: number | null;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string | null;
+  systemPrompt?: string | null;
+  includeGlobalDocuments: boolean;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export type BgStatus =
@@ -86,6 +100,7 @@ export interface RagDocument {
   size: number;
   chunkCount: number;
   createdAt: number;
+  projectId?: string | null;
 }
 
 export interface ChatRequestBody {

@@ -139,8 +139,17 @@ export function SettingsModal({
                   </div>
                   <div>
                     Embedding model{" "}
+                    {health.embeddingProvider ? (
+                      <span className="text-muted">
+                        ({health.embeddingProvider})
+                      </span>
+                    ) : null}{" "}
                     {health.embedLoaded ? (
-                      <span className="text-emerald-400">loaded</span>
+                      <span className="text-emerald-400">
+                        {health.embeddingProvider === "local"
+                          ? "auto-start"
+                          : "loaded"}
+                      </span>
                     ) : (
                       <span className="text-amber-400">not loaded</span>
                     )}
@@ -334,6 +343,7 @@ export function SettingsModal({
               <div className="rounded-xl border border-border bg-surface-2 px-4 py-2">
                 <Row label="Base URL" value={config.baseURL} />
                 <Row label="Chat model" value={config.chatModel} />
+                <Row label="Embedding provider" value={config.embeddingProvider} />
                 <Row label="Embedding model" value={config.embeddingModel} />
                 <Row
                   label="Grok search"

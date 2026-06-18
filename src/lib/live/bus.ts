@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { Conversation, UIMessage } from "../types";
+import type { Conversation, Project, UIMessage } from "../types";
 
 /**
  * In-process pub/sub for live multi-device sync. A single EventEmitter (cached
@@ -36,6 +36,9 @@ export type GlobalEvent =
   | { type: "conv-created"; conversation: Conversation }
   | { type: "conv-updated"; conversation: Conversation }
   | { type: "conv-deleted"; id: string }
+  | { type: "project-created"; project: Project }
+  | { type: "project-updated"; project: Project }
+  | { type: "project-deleted"; id: string }
   | { type: "generating"; conversationId: string; active: boolean };
 
 export function publishConv(conversationId: string, e: ConvEvent): void {

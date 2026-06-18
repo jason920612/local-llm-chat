@@ -9,6 +9,7 @@ export async function ingestFile(
   name: string,
   type: string,
   buffer: Buffer,
+  opts: { projectId?: string | null } = {},
 ): Promise<RagDocument> {
   const parsed = await parseFile(name, type, buffer);
   const chunks = chunkText(parsed.text);
@@ -26,5 +27,6 @@ export async function ingestFile(
   return createDocumentWithChunks(
     { name, type: parsed.type, size: buffer.byteLength },
     chunks.map((content, i) => ({ content, embedding: embeddings[i] })),
+    { projectId: opts.projectId ?? null },
   );
 }

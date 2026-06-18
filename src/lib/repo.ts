@@ -5,6 +5,7 @@ import { deleteSandbox } from "./sandbox/run";
 import { ancestorsOf } from "./tree";
 import type {
   Conversation,
+  Project,
   UIMessage,
   Role,
   Citation,
@@ -14,6 +15,17 @@ import type {
   ArtifactMeta,
   ImageRef,
 } from "./types";
+
+interface ConversationRow {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  projectId: string | null;
+  pinnedAt: number | null;
+  titleSource: "auto" | "manual";
+  titleGeneratedAt: number | null;
+}
 
 interface MessageRow {
   id: string;
@@ -62,35 +74,74 @@ function rowToMessage(row: MessageRow): UIMessage {
   };
 }
 
-export function listConversations(): Conversation[] {
-  return db
-    .prepare(
-      `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt
-       FROM conversations ORDER BY updated_at DESC`,
-    )
-    .all() as Conversation[];
+function rowToConversation(row: ConversationRow): Conversation {
+  return {
+    id: row.id,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    projectId: row.projectId,
+    pinnedAt: row.pinnedAt,
+    titleSource: row.titleSource,
+    titleGeneratedAt: row.titleGeneratedAt,
+  };
 }
 
-export function createConversation(title: string): Conversation {
+export function listConversations(projectId?: string | null): Conversation[] {
+  const select = `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt,
+                         project_id AS projectId, pinned_at AS pinnedAt,
+                         title_source AS titleSource,
+                         title_generated_at AS titleGeneratedAt
+                  FROM conversations`;
+  const order = `ORDER BY pinned_at IS NULL ASC, pinned_at DESC, updated_at DESC`;
+  if (projectId !== undefined) {
+    const rows = db
+      .prepare(`${select} WHERE project_id ${projectId === null ? "IS NULL" : "= ?"} ${order}`)
+      .all(...(projectId === null ? [] : [projectId])) as ConversationRow[];
+    return rows.map(rowToConversation);
+  }
+  return db
+    .prepare(`${select} ${order}`)
+    .all()
+    .map((r) => rowToConversation(r as ConversationRow));
+}
+
+export function createConversation(
+  title: string,
+  opts: { projectId?: string | null; titleSource?: "auto" | "manual" } = {},
+): Conversation {
   const now = Date.now();
   const id = nanoid();
   const t = (title?.trim() || "New chat").slice(0, 80);
   db.prepare(
-    `INSERT INTO conversations (id, title, created_at, updated_at)
-     VALUES (?, ?, ?, ?)`,
-  ).run(id, t, now, now);
-  return { id, title: t, createdAt: now, updatedAt: now };
+    `INSERT INTO conversations
+       (id, title, created_at, updated_at, project_id, title_source)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, t, now, now, opts.projectId ?? null, opts.titleSource ?? "auto");
+  return {
+    id,
+    title: t,
+    createdAt: now,
+    updatedAt: now,
+    projectId: opts.projectId ?? null,
+    pinnedAt: null,
+    titleSource: opts.titleSource ?? "auto",
+    titleGeneratedAt: null,
+  };
 }
 
 /** Conversation row only (no messages) — for list-sync broadcasts. */
 export function getConversationMeta(id: string): Conversation | null {
-  const c = db
+  const row = db
     .prepare(
-      `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt,
+              project_id AS projectId, pinned_at AS pinnedAt,
+              title_source AS titleSource,
+              title_generated_at AS titleGeneratedAt
        FROM conversations WHERE id = ?`,
     )
-    .get(id) as Conversation | undefined;
-  return c ?? null;
+    .get(id) as ConversationRow | undefined;
+  return row ? rowToConversation(row) : null;
 }
 
 export function getConversation(
@@ -102,10 +153,13 @@ export function getConversation(
 } | null {
   const conversation = db
     .prepare(
-      `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, title, created_at AS createdAt, updated_at AS updatedAt,
+              project_id AS projectId, pinned_at AS pinnedAt,
+              title_source AS titleSource,
+              title_generated_at AS titleGeneratedAt
        FROM conversations WHERE id = ?`,
     )
-    .get(id) as Conversation | undefined;
+    .get(id) as ConversationRow | undefined;
   if (!conversation) return null;
 
   const rootRow = db
@@ -119,7 +173,7 @@ export function getConversation(
     .all(id) as MessageRow[];
 
   return {
-    conversation,
+    conversation: rowToConversation(conversation),
     messages: rows.map(rowToMessage),
     rootChildId: rootRow?.rootChildId ?? null,
   };
@@ -173,7 +227,9 @@ export function forkConversation(
   if (!target) return null;
 
   const chain = ancestorsOf(src.messages, target); // root → target, in order
-  const conv = createConversation(title || `${src.conversation.title} (fork)`);
+  const conv = createConversation(title || `${src.conversation.title} (fork)`, {
+    projectId: src.conversation.projectId ?? null,
+  });
   const base = Date.now();
   let prevNewId: string | null = null;
   chain.forEach((m, i) => {
@@ -214,9 +270,21 @@ export function setCachedSummary(
   ).run(throughId, conversationId, summary, Date.now());
 }
 
-export function renameConversation(id: string, title: string): void {
-  db.prepare(`UPDATE conversations SET title = ? WHERE id = ?`).run(
+export function renameConversation(
+  id: string,
+  title: string,
+  source: "auto" | "manual" = "manual",
+): void {
+  const now = Date.now();
+  db.prepare(
+    `UPDATE conversations
+     SET title = ?, title_source = ?, title_generated_at = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(
     (title?.trim() || "Untitled").slice(0, 80),
+    source,
+    source === "auto" ? now : null,
+    now,
     id,
   );
 }
@@ -224,6 +292,195 @@ export function renameConversation(id: string, title: string): void {
 export function deleteConversation(id: string): void {
   db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
   deleteSandbox(id); // remove any code-execution workspace for this conversation
+}
+
+export function updateConversationProject(
+  id: string,
+  projectId: string | null,
+): void {
+  db.prepare(
+    `UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?`,
+  ).run(projectId, Date.now(), id);
+}
+
+export function setConversationPinned(id: string, pinned: boolean): void {
+  db.prepare(`UPDATE conversations SET pinned_at = ? WHERE id = ?`).run(
+    pinned ? Date.now() : null,
+    id,
+  );
+}
+
+export function deleteConversationsBulk(opts: {
+  projectId?: string | null;
+  includePinned?: boolean;
+} = {}): string[] {
+  const clauses: string[] = [];
+  const args: unknown[] = [];
+  if (opts.projectId !== undefined) {
+    if (opts.projectId === null) clauses.push("project_id IS NULL");
+    else {
+      clauses.push("project_id = ?");
+      args.push(opts.projectId);
+    }
+  }
+  if (!opts.includePinned) clauses.push("pinned_at IS NULL");
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const ids = db
+    .prepare(`SELECT id FROM conversations ${where}`)
+    .all(...args)
+    .map((r) => (r as { id: string }).id);
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM conversations ${where}`).run(...args);
+  });
+  tx();
+  for (const id of ids) deleteSandbox(id);
+  return ids;
+}
+
+// --- Projects --------------------------------------------------------------
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  description: string | null;
+  system_prompt: string | null;
+  include_global_documents: number;
+  created_at: number;
+  updated_at: number;
+}
+
+function rowToProject(r: ProjectRow): Project {
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    systemPrompt: r.system_prompt,
+    includeGlobalDocuments: r.include_global_documents !== 0,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export function listProjects(): Project[] {
+  const rows = db
+    .prepare(`SELECT * FROM projects ORDER BY updated_at DESC, created_at DESC`)
+    .all() as ProjectRow[];
+  return rows.map(rowToProject);
+}
+
+export function getProject(id: string | null | undefined): Project | null {
+  if (!id) return null;
+  const row = db
+    .prepare(`SELECT * FROM projects WHERE id = ?`)
+    .get(id) as ProjectRow | undefined;
+  return row ? rowToProject(row) : null;
+}
+
+export function getConversationProject(conversationId: string): Project | null {
+  const row = db
+    .prepare(
+      `SELECT p.*
+       FROM conversations c
+       JOIN projects p ON p.id = c.project_id
+       WHERE c.id = ?`,
+    )
+    .get(conversationId) as ProjectRow | undefined;
+  return row ? rowToProject(row) : null;
+}
+
+export function createProject(input: {
+  name: string;
+  description?: string | null;
+  systemPrompt?: string | null;
+  includeGlobalDocuments?: boolean;
+}): Project {
+  const id = nanoid();
+  const now = Date.now();
+  const name = (input.name?.trim() || "New project").slice(0, 80);
+  db.prepare(
+    `INSERT INTO projects
+       (id, name, description, system_prompt, include_global_documents, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    name,
+    input.description?.trim() || null,
+    input.systemPrompt?.trim() || null,
+    input.includeGlobalDocuments === false ? 0 : 1,
+    now,
+    now,
+  );
+  return {
+    id,
+    name,
+    description: input.description?.trim() || null,
+    systemPrompt: input.systemPrompt?.trim() || null,
+    includeGlobalDocuments: input.includeGlobalDocuments !== false,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function updateProject(
+  id: string,
+  patch: Partial<Pick<Project, "name" | "description" | "systemPrompt" | "includeGlobalDocuments">>,
+): Project | null {
+  const cur = getProject(id);
+  if (!cur) return null;
+  const next = {
+    name: patch.name !== undefined ? (patch.name.trim() || "Untitled project").slice(0, 80) : cur.name,
+    description:
+      patch.description !== undefined
+        ? patch.description?.trim() || null
+        : cur.description ?? null,
+    systemPrompt:
+      patch.systemPrompt !== undefined
+        ? patch.systemPrompt?.trim() || null
+        : cur.systemPrompt ?? null,
+    includeGlobalDocuments:
+      patch.includeGlobalDocuments !== undefined
+        ? patch.includeGlobalDocuments
+        : cur.includeGlobalDocuments,
+    updatedAt: Date.now(),
+  };
+  db.prepare(
+    `UPDATE projects
+     SET name = ?, description = ?, system_prompt = ?,
+         include_global_documents = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(
+    next.name,
+    next.description,
+    next.systemPrompt,
+    next.includeGlobalDocuments ? 1 : 0,
+    next.updatedAt,
+    id,
+  );
+  return getProject(id);
+}
+
+export function deleteProject(
+  id: string,
+  opts: { deleteConversations?: boolean } = {},
+): string[] {
+  let deletedConversationIds: string[] = [];
+  const tx = db.transaction(() => {
+    if (opts.deleteConversations) {
+      deletedConversationIds = db
+        .prepare(`SELECT id FROM conversations WHERE project_id = ?`)
+        .all(id)
+        .map((r) => (r as { id: string }).id);
+      db.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
+    } else {
+      db.prepare(`UPDATE conversations SET project_id = NULL WHERE project_id = ?`).run(
+        id,
+      );
+    }
+    db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+  });
+  tx();
+  for (const cid of deletedConversationIds) deleteSandbox(cid);
+  return deletedConversationIds;
 }
 
 export function addMessage(conversationId: string, m: UIMessage): void {
@@ -568,13 +825,20 @@ export function listSopControlEvents(filters: {
 
 // --- RAG documents ---------------------------------------------------------
 
-export function listDocuments(): RagDocument[] {
+export function listDocuments(projectId?: string | null): RagDocument[] {
+  const select = `SELECT id, name, type, size, chunk_count AS chunkCount,
+                         created_at AS createdAt, project_id AS projectId
+                  FROM documents`;
+  if (projectId !== undefined) {
+    return db
+      .prepare(
+        `${select} WHERE project_id ${projectId === null ? "IS NULL" : "= ?"}
+         ORDER BY created_at DESC`,
+      )
+      .all(...(projectId === null ? [] : [projectId])) as RagDocument[];
+  }
   return db
-    .prepare(
-      `SELECT id, name, type, size, chunk_count AS chunkCount,
-              created_at AS createdAt
-       FROM documents ORDER BY created_at DESC`,
-    )
+    .prepare(`${select} ORDER BY created_at DESC`)
     .all() as RagDocument[];
 }
 
@@ -586,13 +850,15 @@ export function deleteDocument(id: string): void {
 export function createDocumentWithChunks(
   meta: { name: string; type: string; size: number },
   chunks: { content: string; embedding: number[] }[],
+  opts: { projectId?: string | null } = {},
 ): RagDocument {
   const id = nanoid();
   const now = Date.now();
 
   const insertDoc = db.prepare(
-    `INSERT INTO documents (id, name, type, size, chunk_count, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO documents
+       (id, name, type, size, chunk_count, created_at, project_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertChunk = db.prepare(
     `INSERT INTO chunks (id, document_id, idx, content, embedding)
@@ -600,7 +866,15 @@ export function createDocumentWithChunks(
   );
 
   const tx = db.transaction(() => {
-    insertDoc.run(id, meta.name, meta.type, meta.size, chunks.length, now);
+    insertDoc.run(
+      id,
+      meta.name,
+      meta.type,
+      meta.size,
+      chunks.length,
+      now,
+      opts.projectId ?? null,
+    );
     chunks.forEach((c, i) => {
       insertChunk.run(nanoid(), id, i, c.content, vectorToBlob(c.embedding));
     });
@@ -614,6 +888,7 @@ export function createDocumentWithChunks(
     size: meta.size,
     chunkCount: chunks.length,
     createdAt: now,
+    projectId: opts.projectId ?? null,
   };
 }
 
@@ -621,6 +896,7 @@ export interface StoredChunk {
   id: string;
   documentId: string;
   documentName: string;
+  projectId: string | null;
   idx: number;
   content: string;
   embedding: Float32Array;
@@ -630,25 +906,45 @@ interface ChunkJoinRow {
   id: string;
   document_id: string;
   documentName: string;
+  project_id: string | null;
   idx: number;
   content: string;
   embedding: Buffer;
 }
 
 /** Load every chunk with its parent document name (for in-memory retrieval). */
-export function getAllChunks(): StoredChunk[] {
+export function getAllChunks(opts: {
+  projectId?: string | null;
+  includeGlobal?: boolean;
+} = {}): StoredChunk[] {
+  const clauses: string[] = [];
+  const args: unknown[] = [];
+  if (opts.projectId !== undefined) {
+    if (opts.projectId === null) {
+      clauses.push("d.project_id IS NULL");
+    } else if (opts.includeGlobal) {
+      clauses.push("(d.project_id = ? OR d.project_id IS NULL)");
+      args.push(opts.projectId);
+    } else {
+      clauses.push("d.project_id = ?");
+      args.push(opts.projectId);
+    }
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const rows = db
     .prepare(
       `SELECT c.id, c.document_id, c.idx, c.content, c.embedding,
-              d.name AS documentName
-       FROM chunks c JOIN documents d ON d.id = c.document_id`,
+              d.name AS documentName, d.project_id
+       FROM chunks c JOIN documents d ON d.id = c.document_id
+       ${where}`,
     )
-    .all() as ChunkJoinRow[];
+    .all(...args) as ChunkJoinRow[];
 
   return rows.map((r) => ({
     id: r.id,
     documentId: r.document_id,
     documentName: r.documentName,
+    projectId: r.project_id,
     idx: r.idx,
     content: r.content,
     embedding: blobToVector(r.embedding),

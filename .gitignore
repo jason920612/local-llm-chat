@@ -32,6 +32,7 @@ cloudflared.local-*.yml
 
 # local data (SQLite DB + uploaded files)
 /data/
+/.cache/
 *.db
 *.db-shm
 *.db-wal

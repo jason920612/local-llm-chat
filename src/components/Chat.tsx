@@ -54,6 +54,7 @@ const AUTO_SCROLL_BOTTOM_PX = 96;
 export function Chat({
   conversationId,
   title,
+  projectId,
   isMobile,
   onOpenSidebar,
   useRag,
@@ -69,6 +70,7 @@ export function Chat({
 }: {
   conversationId: string | null;
   title: string | null;
+  projectId?: string | null;
   isMobile: boolean;
   onOpenSidebar: () => void;
   useRag: boolean;
@@ -465,12 +467,13 @@ export function Chat({
       if (conversationId) return conversationId;
       const conv = await createConversationApi(
         titleHint.slice(0, 40) || "New chat",
+        projectId ?? null,
       );
       loadedId.current = conv.id;
       onCreated(conv);
       return conv.id;
     },
-    [conversationId, onCreated],
+    [conversationId, onCreated, projectId],
   );
 
   const uploadToSandbox = useCallback(

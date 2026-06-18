@@ -16,6 +16,7 @@ import {
   historyThrough,
 } from "../repo";
 import { publishConv, publishGlobal, type GenStatus } from "./bus";
+import { generateConversationTitle } from "../auto-title";
 
 /**
  * Server-authoritative generation manager.
@@ -295,6 +296,11 @@ function finalize(
   publishGlobal({ type: "generating", conversationId, active: false });
   const meta = getConversationMeta(conversationId);
   if (meta) publishGlobal({ type: "conv-updated", conversation: meta });
+  if (status === "done" && !media.continue) {
+    void generateConversationTitle(conversationId).then((updated) => {
+      if (updated) publishGlobal({ type: "conv-updated", conversation: updated });
+    });
+  }
 
   // Keep the finished buffer around briefly so a device that connects right at
   // completion can still catch up, then drop it.

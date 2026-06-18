@@ -8,7 +8,12 @@ export async function GET() {
   return Response.json({
     baseURL: config.llm.baseURL,
     chatModel: config.llm.model,
-    embeddingModel: config.llm.embeddingModel,
+    embeddingProvider: config.llm.embeddingProvider,
+    embeddingModel:
+      config.llm.embeddingProvider === "lmstudio"
+        ? config.llm.embeddingModel
+        : config.llm.localEmbeddingModel,
+    localEmbeddingModel: config.llm.localEmbeddingModel,
     rag: config.rag,
     background: config.background,
     sop: config.sop,

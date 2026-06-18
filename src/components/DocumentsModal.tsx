@@ -15,11 +15,15 @@ export function DocumentsModal({
   open,
   onClose,
   documents,
+  projectId,
+  projectName,
   onChanged,
 }: {
   open: boolean;
   onClose: () => void;
   documents: RagDocument[];
+  projectId?: string | null;
+  projectName?: string | null;
   onChanged: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -33,7 +37,7 @@ export function DocumentsModal({
     setBusy(true);
     setError(null);
     try {
-      const { errors } = await uploadDocuments(files);
+      const { errors } = await uploadDocuments(files, projectId ?? null);
       if (errors.length > 0) {
         setError(errors.map((e) => `${e.name}: ${e.error}`).join("; "));
       }
@@ -60,7 +64,12 @@ export function DocumentsModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <h2 className="text-sm font-semibold">Knowledge base</h2>
+          <div>
+            <h2 className="text-sm font-semibold">Knowledge base</h2>
+            <p className="text-[11px] text-muted">
+              {projectName ? `Project: ${projectName}` : "Global documents"}
+            </p>
+          </div>
           <button
             onClick={onClose}
             className="text-muted hover:text-foreground"

@@ -7,8 +7,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-export async function GET() {
-  return Response.json(listDocuments());
+export async function GET(req: NextRequest) {
+  const project = req.nextUrl.searchParams.get("project");
+  const documents =
+    project === null
+      ? listDocuments()
+      : listDocuments(project === "global" ? null : project);
+  return Response.json(documents);
 }
 
 export async function POST(req: NextRequest) {
@@ -22,6 +27,9 @@ export async function POST(req: NextRequest) {
   }
 
   const files = form.getAll("files").filter((f): f is File => f instanceof File);
+  const projectRaw = form.get("projectId");
+  const projectId =
+    typeof projectRaw === "string" && projectRaw.trim() ? projectRaw : null;
   if (files.length === 0) {
     return Response.json({ error: "No files provided." }, { status: 400 });
   }
@@ -32,7 +40,7 @@ export async function POST(req: NextRequest) {
   for (const file of files) {
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
-      const doc = await ingestFile(file.name, file.type, buffer);
+      const doc = await ingestFile(file.name, file.type, buffer, { projectId });
       documents.push(doc);
     } catch (err) {
       errors.push({

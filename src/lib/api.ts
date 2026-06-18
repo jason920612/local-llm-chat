@@ -2,6 +2,7 @@ import type {
   BgStatus,
   Citation,
   Conversation,
+  Project,
   RagDocument,
   SandboxFileMeta,
   ToolCallTrace,
@@ -16,13 +17,59 @@ export async function fetchConversations(): Promise<Conversation[]> {
   return res.json();
 }
 
+export async function fetchProjects(): Promise<Project[]> {
+  const res = await fetch("/api/projects");
+  if (!res.ok) throw new Error("Failed to load projects");
+  return res.json();
+}
+
+export async function createProjectApi(name: string): Promise<Project> {
+  const res = await fetch("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error("Failed to create project");
+  return res.json();
+}
+
+export async function updateProjectApi(
+  id: string,
+  patch: {
+    name?: string;
+    description?: string | null;
+    systemPrompt?: string | null;
+    includeGlobalDocuments?: boolean;
+  },
+): Promise<Project> {
+  const res = await fetch(`/api/projects/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("Failed to update project");
+  return res.json();
+}
+
+export async function deleteProjectApi(
+  id: string,
+  deleteConversations = false,
+): Promise<void> {
+  await fetch(`/api/projects/${id}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deleteConversations }),
+  });
+}
+
 export async function createConversationApi(
   title: string,
+  projectId?: string | null,
 ): Promise<Conversation> {
   const res = await fetch("/api/conversations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, projectId }),
   });
   if (!res.ok) throw new Error("Failed to create conversation");
   return res.json();
@@ -82,6 +129,30 @@ export async function renameConversationApi(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
   });
+}
+
+export async function updateConversationApi(
+  id: string,
+  patch: { title?: string; projectId?: string | null; pinned?: boolean },
+): Promise<void> {
+  await fetch(`/api/conversations/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteConversationsBulkApi(args: {
+  projectId?: string | null;
+  includePinned?: boolean;
+} = {}): Promise<{ deleted: number; ids: string[] }> {
+  const res = await fetch("/api/conversations", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+  if (!res.ok) throw new Error("Failed to delete conversations");
+  return res.json();
 }
 
 export async function deleteConversationApi(id: string): Promise<void> {
@@ -232,17 +303,25 @@ export async function fetchSkills(): Promise<SkillInfo[]> {
 
 // --- Documents (RAG) -------------------------------------------------------
 
-export async function fetchDocuments(): Promise<RagDocument[]> {
-  const res = await fetch("/api/documents");
+export async function fetchDocuments(
+  projectId?: string | null,
+): Promise<RagDocument[]> {
+  const q =
+    projectId === undefined
+      ? ""
+      : `?project=${encodeURIComponent(projectId ?? "global")}`;
+  const res = await fetch(`/api/documents${q}`);
   if (!res.ok) throw new Error("Failed to load documents");
   return res.json();
 }
 
 export async function uploadDocuments(
   files: File[],
+  projectId?: string | null,
 ): Promise<{ documents: RagDocument[]; errors: { name: string; error: string }[] }> {
   const form = new FormData();
   files.forEach((f) => form.append("files", f));
+  if (projectId) form.append("projectId", projectId);
   const res = await fetch("/api/documents", { method: "POST", body: form });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -262,6 +341,7 @@ export interface HealthStatus {
   target?: "local" | "grok";
   models?: string[];
   chatModel?: string;
+  embeddingProvider?: "local" | "lmstudio" | "auto";
   embeddingModel?: string;
   chatLoaded?: boolean;
   embedLoaded?: boolean;
@@ -281,7 +361,9 @@ export async function fetchHealth(): Promise<HealthStatus> {
 export interface AppConfig {
   baseURL: string;
   chatModel: string;
+  embeddingProvider: "local" | "lmstudio" | "auto";
   embeddingModel: string;
+  localEmbeddingModel: string;
   rag: { chunkSize: number; chunkOverlap: number; topK: number };
   background: {
     maxConcurrentGlobal: number;

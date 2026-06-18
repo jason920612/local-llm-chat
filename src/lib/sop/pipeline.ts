@@ -16,7 +16,11 @@ import { grokSearchTool, generateImageTool } from "../grok/tool";
 import { streamGrokResponses } from "../grok/responses";
 import { skillsSummary } from "../skills";
 import { compactConversation } from "../compaction";
-import { insertSopControlEvent, type SopControlEvent } from "../repo";
+import {
+  getConversationProject,
+  insertSopControlEvent,
+  type SopControlEvent,
+} from "../repo";
 import type { Citation } from "../types";
 import { callStructured } from "./structured";
 import {
@@ -75,6 +79,27 @@ function withTimeNote(messages: UIMessage[]): UIMessage[] {
   return copy;
 }
 
+function projectInstructions(conversationId?: string): {
+  projectId?: string | null;
+  includeGlobalDocuments?: boolean;
+  prompt?: string;
+} {
+  if (!conversationId) return {};
+  const project = getConversationProject(conversationId);
+  if (!project) return { projectId: null };
+  return {
+    projectId: project.id,
+    includeGlobalDocuments: project.includeGlobalDocuments,
+    prompt: project.systemPrompt?.trim() || undefined,
+  };
+}
+
+function combineInstructions(globalPrompt: string, projectPrompt?: string): string {
+  const p = projectPrompt?.trim();
+  if (!p) return globalPrompt;
+  return `${globalPrompt}\n\n# Project Instructions\n${p}`;
+}
+
 /** Input the route gathers before invoking the controlled pipeline. */
 export interface PipelineInput {
   messages: UIMessage[];
@@ -99,13 +124,17 @@ export async function runControlledChat(
   );
 
   try {
+    const project = projectInstructions(body.conversationId);
     // RAG retrieval (shared by all backends).
     let ragContext: string | undefined;
     let citations: Citation[] = [];
     let allowedSources = 0;
     if (body.useRag) {
       const query = lastUserText(messages);
-      const result = await retrieve(query);
+      const result = await retrieve(query, config.rag.topK, {
+        projectId: project.projectId,
+        includeGlobal: project.includeGlobalDocuments,
+      });
       if (result.context) {
         ragContext = result.context;
         citations = result.citations;
@@ -128,7 +157,10 @@ export async function runControlledChat(
         hasImages,
         ragContext,
         grokNative: true,
-        customInstructions: customSystemPrompt(),
+        customInstructions: combineInstructions(
+          customSystemPrompt(),
+          project.prompt,
+        ),
         // Skills depend on the sandbox tools (run_code/clone_repo), so only
         // advertise them when the sandbox is enabled.
         skills: config.sandbox.enabled ? skillsSummary() : [],
@@ -192,7 +224,10 @@ export async function runControlledChat(
       hasImages,
       ragContext,
       hasGrokTool: useTools,
-      customInstructions: customSystemPrompt(),
+      customInstructions: combineInstructions(
+        customSystemPrompt(),
+        project.prompt,
+      ),
     });
     const openaiMessages: ChatParam[] = [
       { role: "system", content: systemPrompt },

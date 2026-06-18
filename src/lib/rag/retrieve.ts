@@ -24,8 +24,12 @@ function snippet(text: string): string {
 export async function retrieve(
   query: string,
   topK = config.rag.topK,
+  opts: { projectId?: string | null; includeGlobal?: boolean } = {},
 ): Promise<RetrievalResult> {
-  const chunks = getAllChunks();
+  const chunks = getAllChunks({
+    projectId: opts.projectId,
+    includeGlobal: opts.includeGlobal,
+  });
   if (chunks.length === 0 || !query.trim()) {
     return { context: "", citations: [] };
   }

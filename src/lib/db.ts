@@ -28,6 +28,16 @@ function init(): Database.Database {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS projects (
+      id                       TEXT PRIMARY KEY,
+      name                     TEXT NOT NULL,
+      description              TEXT,
+      system_prompt            TEXT,
+      include_global_documents INTEGER NOT NULL DEFAULT 1,
+      created_at               INTEGER NOT NULL,
+      updated_at               INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS messages (
       id              TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -168,6 +178,43 @@ function init(): Database.Database {
     db.exec(`ALTER TABLE conversations ADD COLUMN summary_through_id TEXT`);
   } catch {
     /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN pinned_at INTEGER`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'auto'`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN title_generated_at INTEGER`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE documents ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE CASCADE`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_conversations_project_updated
+      ON conversations(project_id, pinned_at DESC, updated_at DESC)`);
+  } catch {
+    /* best-effort */
+  }
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_project
+      ON documents(project_id, created_at DESC)`);
+  } catch {
+    /* best-effort */
   }
   // Generation status for server-authoritative streaming: 'streaming' while a
   // background generation is writing this (assistant) message, then 'done' /

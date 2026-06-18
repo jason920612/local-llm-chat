@@ -16,6 +16,12 @@ export async function GET() {
       ok: true,
       target: "grok",
       chatModel: config.grok.model,
+      embeddingProvider: config.llm.embeddingProvider,
+      embeddingModel:
+        config.llm.embeddingProvider === "lmstudio"
+          ? config.llm.embeddingModel
+          : config.llm.localEmbeddingModel,
+      embedLoaded: config.llm.embeddingProvider !== "lmstudio",
     });
   }
 
@@ -30,9 +36,10 @@ export async function GET() {
       target: "local",
       models,
       chatModel,
+      embeddingProvider: config.llm.embeddingProvider,
       embeddingModel: config.llm.embeddingModel,
       chatLoaded,
-      embedLoaded,
+      embedLoaded: config.llm.embeddingProvider === "lmstudio" ? embedLoaded : true,
     });
   } catch (err) {
     return Response.json({
@@ -41,6 +48,12 @@ export async function GET() {
       error: err instanceof Error ? err.message : "unreachable",
       baseURL: config.llm.baseURL,
       chatModel,
+      embeddingProvider: config.llm.embeddingProvider,
+      embeddingModel:
+        config.llm.embeddingProvider === "lmstudio"
+          ? config.llm.embeddingModel
+          : config.llm.localEmbeddingModel,
+      embedLoaded: config.llm.embeddingProvider !== "lmstudio",
     });
   }
 }

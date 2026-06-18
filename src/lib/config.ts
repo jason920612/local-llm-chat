@@ -20,9 +20,17 @@ export const config = {
     baseURL: process.env.LLM_BASE_URL ?? "http://localhost:1234/v1",
     apiKey: process.env.LLM_API_KEY ?? "lm-studio",
     model: process.env.LLM_MODEL ?? "gemma-3-4b-it",
+    embeddingProvider: (
+      process.env.EMBEDDING_PROVIDER ?? "local"
+    ).toLowerCase() as "local" | "lmstudio" | "auto",
     embeddingModel:
       process.env.EMBEDDING_MODEL ??
       "text-embedding-nomic-embed-text-v1.5",
+    localEmbeddingModel:
+      process.env.LOCAL_EMBEDDING_MODEL ??
+      "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+    localEmbeddingCacheDir:
+      process.env.LOCAL_EMBEDDING_CACHE_DIR ?? ".cache/transformers",
   },
   rag: {
     chunkSize: 1000, // characters per chunk
