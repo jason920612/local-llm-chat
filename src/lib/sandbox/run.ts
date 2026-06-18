@@ -7,10 +7,9 @@ import {
   type SandboxFile,
   type RunResult,
   type CloneResult,
-  type ComputerAction,
-  type ComputerActionResult,
+  type ActionSequence,
+  type ActionSequenceResult,
   type ComputerObservation,
-  type BrowserAction,
   type BrowserActionResult,
   type BrowserObservation,
 } from "./driver";
@@ -23,10 +22,9 @@ export type {
   SandboxFile,
   RunResult,
   CloneResult,
-  ComputerAction,
-  ComputerActionResult,
+  ActionSequence,
+  ActionSequenceResult,
   ComputerObservation,
-  BrowserAction,
   BrowserActionResult,
   BrowserObservation,
 };
@@ -117,21 +115,20 @@ export function computerObserve(
   return driver.computerObserve(conversationId, opts);
 }
 
-/** Send a constrained mouse/keyboard action into the isolated virtual display. */
+/** Run a GUI action program (step sequence) on the isolated virtual display. */
 export function computerAction(
   conversationId: string,
-  action: ComputerAction,
-): Promise<ComputerActionResult> {
+  seq: ActionSequence,
+): Promise<ActionSequenceResult> {
   const driver = getDriver();
   if (!driver.computerAction) {
     return Promise.resolve({
       ok: false,
-      action: action.action,
-      durationMs: 0,
+      steps: [],
       error: "computer use requires the microVM sandbox driver",
     });
   }
-  return driver.computerAction(conversationId, action);
+  return driver.computerAction(conversationId, seq);
 }
 
 export function browserOpenUrl(
@@ -168,18 +165,17 @@ export function browserObserve(
 
 export function browserAction(
   conversationId: string,
-  action: BrowserAction,
-): Promise<BrowserActionResult> {
+  seq: ActionSequence,
+): Promise<ActionSequenceResult> {
   const driver = getDriver();
   if (!driver.browserAction) {
     return Promise.resolve({
       ok: false,
-      action: action.action,
-      durationMs: 0,
+      steps: [],
       error: "browser computer use requires the microVM sandbox driver",
     });
   }
-  return driver.browserAction(conversationId, action);
+  return driver.browserAction(conversationId, seq);
 }
 
 /**

@@ -125,7 +125,14 @@ function executionDirective(): string {
 For ANY request that involves computation, files, data, code, repos, documents, or producing an artifact, ACTUALLY use the matching tool or skill THIS turn — don't explain what you would do, and don't ask permission first. Reach for tools/skills by default; only skip them for pure chat, general knowledge, or reasoning that needs none.
 ${exec}
 
-When using computer-use tools, remember they control only this conversation's isolated VM screen, never the user's host computer. For websites, prefer browser_open_url, browser_observe, and browser_action because they return stable DOM element IDs. For non-browser GUI targets, call computer_observe first, choose coordinates from the returned element centers, perform one computer_action, then observe again before the next action.`;
+When using computer-use tools, remember they control only this conversation's isolated VM screen, never the user's host computer. For websites prefer browser_observe + browser_action (DOM handles); for non-browser GUIs use computer_observe (ocr=true) + computer_action. Observe first to get element handles, then act.
+
+computer_action and browser_action take an "action program" — a "steps" array run in ONE call, so do a whole coherent gesture/flow at once instead of one click per round-trip:
+- Target each step by element handle "id", by visible "text" (re-located fresh — prefer this when ids change on dynamic pages), or by "x","y".
+- Verbs include move, left_click, right_click, middle_click, double_click, drag (to_id/to_text/to_x,to_y), mouse_down/up, type_text, key/key_down/key_up (combos like ctrl+shift+t), scroll, wait; "modifiers" for shift/ctrl-click.
+- Gate steps with "when" (skip if false now) and "wait_for" (poll until true, else the step fails) using condition trees: leaves {text}/{gone}/{id_present}/{id_gone}/{clickable}/{url_contains}/{ms} with optional "label", combined by all(AND)/any(OR)/not/none(NOR)/nand. The result tells you WHY a wait ended (wait_result.by / unmet).
+- Handle failure inline with on_fail: "stop" | "continue" | { do:[recovery steps], then:"return"|"continue" } — pre-plan a plan B (recursively).
+Each call returns per-step results plus a fresh observation, so you usually don't need a separate observe afterwards. Verify outcomes with wait_for/results rather than assuming success.`;
 }
 
 const skillsDirective = (

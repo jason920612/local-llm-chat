@@ -46,7 +46,10 @@ export const config = {
       process.env.GROK_MODEL ??
       "grok-build-0.1",
     enabled: Boolean(process.env.XAI_API_KEY),
-    maxRounds: 6, // max tool-call rounds per turn
+    // Max tool-call rounds per turn. Higher = the model can run longer
+    // observe→act loops (multi-step GUI / browsing tasks) before the turn is
+    // forced to finish. Override with GROK_MAX_ROUNDS.
+    maxRounds: Number(process.env.GROK_MAX_ROUNDS ?? 48),
     serviceTier: envTier("XAI_SERVICE_TIER"),
     webSearch: {
       enableImageSearch: envBool("XAI_WEB_SEARCH_IMAGE_SEARCH", true),

@@ -1011,6 +1011,451 @@ def action_computer(req):
         }
 
 
+# ===== Action sequence engine (computer + browser) ==========================
+# Runs a model-authored action program in one VM round-trip: targeting by handle
+# id / visible text / raw coords, rich verbs, recursive declarative condition
+# gates (all/any/not/none/nand) for when/wait_for, on_fail recovery branches, and
+# an execution-time observation. See docs/computer-use-action-plan.md.
+
+_SEQ_POLL_SEC = 0.4
+_SEQ_DEFAULT_TIMEOUT_MS = 8000
+_LEAF_KINDS = ("text", "gone", "id_present", "id_gone", "clickable", "url_contains", "ms")
+
+
+def _cond_leaves(cond):
+    """Flatten a condition tree to a list of (label, leaf_dict)."""
+    out = []
+    if not isinstance(cond, dict):
+        return out
+    for gate in ("all", "any", "none", "nand"):
+        if isinstance(cond.get(gate), list):
+            for sub in cond[gate]:
+                out.extend(_cond_leaves(sub))
+            return out
+    if isinstance(cond.get("not"), dict):
+        return _cond_leaves(cond["not"])
+    for kind in _LEAF_KINDS:
+        if kind in cond:
+            out.append((cond.get("label") or f"{kind}:{cond[kind]}", cond))
+            break
+    return out
+
+
+def _cond_needs_text(cond):
+    return any(
+        any(k in leaf for k in ("text", "gone", "clickable"))
+        for _lbl, leaf in _cond_leaves(cond)
+    )
+
+
+def _leaf_true(snap, leaf, t0):
+    els = snap.get("elements", [])
+    blob = (snap.get("text", "") or "").lower()
+
+    def has_text(v):
+        v = str(v).lower()
+        return v in blob or any(v in str(e.get("text", "")).lower() for e in els)
+
+    def has_id(v):
+        return any(e.get("id") == v for e in els)
+
+    if "text" in leaf:
+        return has_text(leaf["text"])
+    if "gone" in leaf:
+        return not has_text(leaf["gone"]) and not has_id(leaf["gone"])
+    if "id_present" in leaf:
+        return has_id(leaf["id_present"])
+    if "id_gone" in leaf:
+        return not has_id(leaf["id_gone"])
+    if "clickable" in leaf:
+        v = leaf["clickable"]
+        return has_id(v) or has_text(v)
+    if "url_contains" in leaf:
+        return str(leaf["url_contains"]).lower() in str(snap.get("url") or "").lower()
+    if "ms" in leaf:
+        return (time.time() - t0) * 1000 >= float(leaf["ms"])
+    return False
+
+
+def _eval_cond(snap, cond, t0):
+    if not isinstance(cond, dict):
+        return True
+    if isinstance(cond.get("all"), list):
+        return all(_eval_cond(snap, c, t0) for c in cond["all"])
+    if isinstance(cond.get("any"), list):
+        return any(_eval_cond(snap, c, t0) for c in cond["any"])
+    if isinstance(cond.get("none"), list):
+        return not any(_eval_cond(snap, c, t0) for c in cond["none"])
+    if isinstance(cond.get("nand"), list):
+        return not all(_eval_cond(snap, c, t0) for c in cond["nand"])
+    if isinstance(cond.get("not"), dict):
+        return not _eval_cond(snap, cond["not"], t0)
+    return _leaf_true(snap, cond, t0)
+
+
+def _snapshot_computer(width, height, need_text):
+    env = computer_env()
+    shot = COMPUTER / "seq-snap.png"
+    run_cmd(["scrot", "-o", str(shot)], timeout=8, env=env)
+    windows = list_windows()
+    elements = [
+        {
+            "id": f"win_{i + 1}",
+            "kind": "window",
+            "text": w.get("title", ""),
+            "bbox": w["bbox"],
+            "center": [
+                int((w["bbox"][0] + w["bbox"][2]) / 2),
+                int((w["bbox"][1] + w["bbox"][3]) / 2),
+            ],
+            "source": "window",
+        }
+        for i, w in enumerate(windows)
+    ]
+    blob = " ".join(w.get("title", "") for w in windows)
+    if need_text and shot.exists():
+        ocr_els, _err = run_ppocr(shot)
+        elements.extend(ocr_els)
+        blob += " " + " ".join(str(e.get("text", "")) for e in ocr_els)
+    return {"kind": "computer", "text": blob, "elements": elements, "url": None}
+
+
+def _snapshot_browser(page):
+    els = browser_elements(page)
+    if isinstance(els, dict):
+        els = []
+    blob = " ".join(str(e.get("text", "")) for e in els)
+    try:
+        url = page.url
+    except Exception:  # noqa: BLE001
+        url = ""
+    return {"kind": "browser", "text": blob, "elements": els, "url": url}
+
+
+def _resolve_center(snap, want):
+    if want.get("id"):
+        for e in snap["elements"]:
+            if e.get("id") == want["id"]:
+                return e.get("center")
+        return None
+    if want.get("text"):
+        v = str(want["text"]).strip().lower()
+        for e in snap["elements"]:
+            if str(e.get("text", "")).strip().lower() == v:
+                return e.get("center")
+        for e in snap["elements"]:
+            if v and v in str(e.get("text", "")).lower():
+                return e.get("center")
+        return None
+    if want.get("x") is not None and want.get("y") is not None:
+        return [int(want["x"]), int(want["y"])]
+    return None
+
+
+def _exec_computer_step(step, snap):
+    env = computer_env()
+    action = step.get("action")
+    mods = [str(m) for m in (step.get("modifiers") or [])]
+    pointer = action in (
+        "move", "left_click", "right_click", "middle_click", "double_click",
+        "mouse_down", "mouse_up", "drag",
+    )
+    center = _resolve_center(snap, step) if (pointer or action == "scroll") else None
+    if pointer and center is None and action != "mouse_up":
+        raise ValueError("target not found (id/text/x,y)")
+
+    def with_mods(fn):
+        for m in mods:
+            run_cmd(["xdotool", "keydown", m], timeout=2, env=env)
+        try:
+            fn()
+        finally:
+            for m in mods:
+                run_cmd(["xdotool", "keyup", m], timeout=2, env=env)
+
+    if action == "move":
+        smooth_move(*center)
+    elif action in ("left_click", "right_click", "middle_click", "double_click"):
+        smooth_move(*center)
+        btn = {"left_click": "1", "right_click": "3", "middle_click": "2", "double_click": "1"}[action]
+        if action == "double_click":
+            with_mods(lambda: run_cmd(["xdotool", "click", "--repeat", "2", "--delay", "120", btn], timeout=5, env=env))
+        else:
+            with_mods(lambda: run_cmd(["xdotool", "click", btn], timeout=5, env=env))
+    elif action == "mouse_down":
+        smooth_move(*center)
+        run_cmd(["xdotool", "mousedown", "1"], timeout=3, env=env)
+    elif action == "mouse_up":
+        if center:
+            smooth_move(*center)
+        run_cmd(["xdotool", "mouseup", "1"], timeout=3, env=env)
+    elif action == "drag":
+        dest = _resolve_center(snap, {
+            "id": step.get("to_id"), "text": step.get("to_text"),
+            "x": step.get("to_x"), "y": step.get("to_y"),
+        })
+        if dest is None:
+            raise ValueError("drag destination not found (to_id/to_text/to_x,to_y)")
+        smooth_move(*center)
+        run_cmd(["xdotool", "mousedown", "1"], timeout=3, env=env)
+        smooth_move(*dest)
+        run_cmd(["xdotool", "mouseup", "1"], timeout=3, env=env)
+    elif action == "type_text":
+        text = str(step.get("text") or "")
+        run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "18", text], timeout=max(5, len(text) // 10), env=env)
+    elif action == "key":
+        run_cmd(["xdotool", "key", "--clearmodifiers", str(step.get("key") or "")], timeout=5, env=env)
+    elif action == "key_down":
+        run_cmd(["xdotool", "keydown", str(step.get("key") or "")], timeout=3, env=env)
+    elif action == "key_up":
+        run_cmd(["xdotool", "keyup", str(step.get("key") or "")], timeout=3, env=env)
+    elif action == "scroll":
+        if center:
+            smooth_move(*center)
+        amount = int(step.get("amount") or 0)
+        button = "5" if amount < 0 else "4"
+        for _ in range(min(30, abs(amount) or 3)):
+            run_cmd(["xdotool", "click", button], timeout=2, env=env)
+    elif action == "wait":
+        pass
+    else:
+        raise ValueError(f"unknown action: {action}")
+
+
+def _exec_browser_step(page, step, _snap):
+    action = step.get("action")
+    mods = [m.capitalize() for m in (step.get("modifiers") or [])]  # Control/Shift/Alt/Meta
+
+    def locator():
+        if step.get("id"):
+            return page.locator(f'[data-llm-element-id="{step["id"]}"]').first
+        if step.get("text"):
+            return page.get_by_text(str(step["text"]), exact=False).first
+        return None
+
+    if action in ("left_click", "right_click", "middle_click", "double_click", "move", "mouse_down", "mouse_up"):
+        loc = None if (step.get("x") is not None and not step.get("id") and not step.get("text")) else locator()
+        if loc is None:
+            x, y = int(step.get("x") or 0), int(step.get("y") or 0)
+            page.mouse.move(x, y)
+            if action == "double_click":
+                page.mouse.dblclick(x, y)
+            elif action == "left_click":
+                page.mouse.click(x, y)
+            elif action == "right_click":
+                page.mouse.click(x, y, button="right")
+            elif action == "middle_click":
+                page.mouse.click(x, y, button="middle")
+            elif action == "mouse_down":
+                page.mouse.down()
+            elif action == "mouse_up":
+                page.mouse.up()
+        else:
+            kw = {"timeout": 10000}
+            if mods:
+                kw["modifiers"] = mods
+            if action == "double_click":
+                loc.dblclick(**kw)
+            elif action == "left_click":
+                loc.click(**kw)
+            elif action == "right_click":
+                loc.click(button="right", **kw)
+            elif action == "middle_click":
+                loc.click(button="middle", **kw)
+            elif action == "move":
+                loc.hover(timeout=10000)
+            else:
+                loc.scroll_into_view_if_needed(timeout=10000)
+    elif action == "drag":
+        loc = locator()
+        if step.get("to_id"):
+            dest = page.locator(f'[data-llm-element-id="{step["to_id"]}"]').first
+        elif step.get("to_text"):
+            dest = page.get_by_text(str(step["to_text"]), exact=False).first
+        else:
+            dest = None
+        if loc is not None and dest is not None:
+            loc.drag_to(dest, timeout=10000)
+        elif step.get("to_x") is not None:
+            box = loc.bounding_box() if loc is not None else None
+            sx, sy = ((box["x"] + box["width"] / 2, box["y"] + box["height"] / 2) if box else (int(step.get("x") or 0), int(step.get("y") or 0)))
+            page.mouse.move(sx, sy)
+            page.mouse.down()
+            page.mouse.move(int(step["to_x"]), int(step.get("to_y") or 0))
+            page.mouse.up()
+        else:
+            raise ValueError("drag needs a destination (to_id/to_text/to_x,to_y)")
+    elif action == "type_text":
+        text = str(step.get("text") or "")
+        if step.get("id"):
+            page.locator(f'[data-llm-element-id="{step["id"]}"]').first.fill(text, timeout=10000)
+        else:
+            page.keyboard.type(text)
+    elif action in ("key", "key_down", "key_up"):
+        key = str(step.get("key") or "")
+        if action == "key":
+            page.keyboard.press(key)
+        elif action == "key_down":
+            page.keyboard.down(key)
+        else:
+            page.keyboard.up(key)
+    elif action == "scroll":
+        page.mouse.wheel(0, int(step.get("amount") or 600))
+    elif action == "wait":
+        pass
+    else:
+        raise ValueError(f"unknown browser action: {action}")
+
+
+def _wait_for(get_snap, cond, timeout_ms):
+    t0 = time.time()
+    deadline = t0 + (timeout_ms or _SEQ_DEFAULT_TIMEOUT_MS) / 1000.0
+    need_text = _cond_needs_text(cond)
+    snap = get_snap(need_text)
+    while True:
+        if _eval_cond(snap, cond, t0):
+            by = [lbl for lbl, leaf in _cond_leaves(cond) if _leaf_true(snap, leaf, t0)]
+            return True, {"outcome": "matched", "by": by, "waited_ms": int((time.time() - t0) * 1000)}, snap
+        if time.time() >= deadline:
+            unmet = [lbl for lbl, leaf in _cond_leaves(cond) if not _leaf_true(snap, leaf, t0)]
+            return False, {"outcome": "timeout", "unmet": unmet, "waited_ms": int((time.time() - t0) * 1000)}, snap
+        time.sleep(_SEQ_POLL_SEC)
+        snap = get_snap(need_text)
+
+
+def _run_steps(ctx, steps):
+    results = []
+    stopped = False
+    handled = False
+    for i, step in enumerate(steps or []):
+        r = {"i": i, "action": step.get("action")}
+        if isinstance(step.get("when"), dict):
+            snap = ctx["snap"](_cond_needs_text(step["when"]))
+            if not _eval_cond(snap, step["when"], time.time()):
+                r["skipped"] = True
+                r["ok"] = True
+                results.append(r)
+                continue
+        failed = False
+        err = None
+        if isinstance(step.get("wait_for"), dict):
+            ok, wres, _snap = _wait_for(ctx["snap"], step["wait_for"], step.get("timeout_ms"))
+            r["wait_result"] = wres
+            r["waitedMs"] = wres.get("waited_ms")
+            if not ok:
+                failed = True
+                err = f"wait_for timed out; unmet={wres.get('unmet')}"
+        if not failed:
+            try:
+                snap = ctx["snap"](bool(step.get("id") or step.get("text")))
+                ctx["exec"](step, snap)
+            except Exception as ex:  # noqa: BLE001
+                failed = True
+                err = str(ex)
+        if not failed and step.get("delay_ms"):
+            time.sleep(min(10000, int(step["delay_ms"])) / 1000.0)
+        if not failed:
+            r["ok"] = True
+            results.append(r)
+            continue
+        # failed → on_fail
+        r["ok"] = False
+        r["error"] = err
+        onf = step.get("on_fail", "stop")
+        if isinstance(onf, dict) and isinstance(onf.get("do"), list):
+            fb_results, fb_stopped, _fb_handled = _run_steps(ctx, onf["do"])
+            then = onf.get("then", "return")
+            r["fallback"] = {"then": then, "steps": fb_results}
+            results.append(r)
+            recovered = not fb_stopped
+            if recovered:
+                handled = True
+            if then == "continue" and recovered:
+                continue
+            stopped = True
+            break
+        if onf == "continue":
+            results.append(r)
+            continue
+        results.append(r)
+        stopped = True
+        break
+    return results, stopped, handled
+
+
+def action_sequence(req, mode):
+    start = time.time()
+    steps = req.get("steps") or []
+    include_screenshot = bool(req.get("includeScreenshot"))
+    width = int(req.get("width") or 1280)
+    height = int(req.get("height") or 720)
+    auto_install = bool(req.get("autoInstall", True))
+
+    if mode == "computer":
+        missing = start_computer(width, height, auto_install=auto_install, ocr=False)
+        if missing:
+            return {"ok": False, "error": f"missing dependencies: {', '.join(missing)}", "steps": [], "observation": {}}
+        ctx = {
+            "snap": lambda need_text: _snapshot_computer(width, height, need_text),
+            "exec": _exec_computer_step,
+        }
+        results, stopped, handled = _run_steps(ctx, steps)
+        obs = observe_computer({
+            "includeScreenshot": include_screenshot, "ocr": True,
+            "width": width, "height": height, "autoInstall": False,
+        })
+        observation = {
+            "screen": obs.get("screen"),
+            "elements": obs.get("elements", []),
+            "screenshot": obs.get("screenshot"),
+        }
+    else:
+        handle, err = ensure_browser(auto_install=auto_install, width=width, height=height)
+        if err or handle is None:
+            return {"ok": False, "error": err or "browser unavailable", "steps": [], "observation": {}}
+        page = handle["page"]
+        ctx = {
+            "snap": lambda _need_text: _snapshot_browser(page),
+            "exec": lambda step, snap: _exec_browser_step(page, step, snap),
+        }
+        try:
+            results, stopped, handled = _run_steps(ctx, steps)
+            els = browser_elements(page)
+            if isinstance(els, dict):
+                els = []
+            shot = None
+            if include_screenshot:
+                p = COMPUTER / f"browser-{now_ms()}.png"
+                try:
+                    page.screenshot(path=str(p), full_page=False)
+                    shot = {"path": str(p).replace(WS + "/", ""), "dataUrl": screenshot_data_url(p)}
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                title = page.title()
+            except Exception:  # noqa: BLE001
+                title = ""
+            observation = {
+                "url": page.url, "title": title,
+                "screen": {"width": width, "height": height},
+                "elements": els[:200], "screenshot": shot,
+            }
+        finally:
+            close_browser_handle(handle)
+
+    stopped_at = None
+    if stopped:
+        stopped_at = next((r["i"] for r in reversed(results) if not r.get("ok")), None)
+    return {
+        "ok": not stopped,
+        "handled": handled,
+        "stoppedAt": stopped_at,
+        "durationMs": int((time.time() - start) * 1000),
+        "steps": results,
+        "observation": observation,
+    }
+
+
 def append(fp, chunk):
     fp.write(chunk)
     fp.flush()
@@ -1059,13 +1504,21 @@ def run_job(job_dir, req):
             if req_type == "computer_observe":
                 data = observe_computer(req)
             elif req_type == "computer_action":
-                data = action_computer(req)
+                data = (
+                    action_sequence(req, "computer")
+                    if isinstance(req.get("steps"), list)
+                    else action_computer(req)
+                )
             elif req_type == "browser_observe":
                 data = observe_browser(req)
             elif req_type == "browser_open_url":
                 data = browser_open_url(req)
             else:
-                data = browser_act(req)
+                data = (
+                    action_sequence(req, "browser")
+                    if isinstance(req.get("steps"), list)
+                    else browser_act(req)
+                )
             status = "exited" if data.get("ok") else "error"
             result = {
                 "stdout": json.dumps(data, ensure_ascii=False),

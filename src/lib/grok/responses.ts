@@ -29,8 +29,6 @@ import {
   listSandboxFiles,
   type RunResult,
   type SandboxFile,
-  type ComputerAction,
-  type BrowserAction,
 } from "../sandbox/run";
 import { getSkill, installSkill } from "../skills";
 import {
@@ -495,54 +493,60 @@ const COMPUTER_OBSERVE_TOOL = {
   },
 };
 
+// Shared "action program" schema for computer_action / browser_action. The
+// guest validates the full (recursive) shape; here nested when/wait_for/on_fail
+// are typed loosely as objects and explained in the description.
+const ACTION_STEP_PROPERTIES = {
+  action: {
+    type: "string",
+    enum: [
+      "move", "left_click", "right_click", "middle_click", "double_click",
+      "mouse_down", "mouse_up", "drag", "type_text", "key", "key_down",
+      "key_up", "scroll", "wait",
+    ],
+  },
+  id: { type: "string", description: "Target element handle from the latest observation (e.g. el_3 / dom_5 / win_1)." },
+  text: { type: "string", description: "Pointer actions: re-locate the target by visible text/role (robust to id churn). For type_text: the literal text to type." },
+  x: { type: "number" },
+  y: { type: "number", description: "Raw target coordinates (fallback when no id/text)." },
+  to_id: { type: "string" },
+  to_text: { type: "string" },
+  to_x: { type: "number" },
+  to_y: { type: "number", description: "Drag destination — one of to_id/to_text/to_x+to_y." },
+  modifiers: { type: "array", items: { type: "string", enum: ["ctrl", "shift", "alt", "meta"] }, description: "Modifier keys held during a click." },
+  key: { type: "string", description: "For key/key_down/key_up; combos allowed, e.g. Return, Escape, ctrl+shift+t." },
+  amount: { type: "number", description: "Scroll notches: positive scrolls down, negative up." },
+  when: { type: "object", description: "Instant gate: skip this step if the condition is currently false." },
+  wait_for: { type: "object", description: "Poll until this condition is true before acting; else the step fails." },
+  timeout_ms: { type: "number", description: "Timeout for wait_for (default 8000)." },
+  delay_ms: { type: "number", description: "Pause after this step (ms)." },
+  on_fail: { description: "'stop' (default) | 'continue' | { do: [steps], then?: 'return'|'continue' } — a pre-planned recovery branch." },
+};
+
+const ACTION_PROGRAM_DESC =
+  "Run an ACTION PROGRAM: an ordered `steps` array executed server-side in ONE round-trip, fail-fast. Returns per-step results plus a fresh execution-time observation (new element handles), so you don't need a separate observe after. " +
+  "TARGET a pointer step by `id` (handle from observe) OR `text` (re-locate by visible text/role — best when ids change) OR `x`,`y`. " +
+  "VERBS: move, left_click, right_click, middle_click, double_click, mouse_down, mouse_up, drag (destination via to_id/to_text/to_x+to_y), type_text (types `text`), key/key_down/key_up (`key`, combos like ctrl+shift+t), scroll (`amount`), wait. `modifiers` holds keys during a click. " +
+  "CONDITION GATES — `when` (skip step now if false) and `wait_for` (poll until true, else step fails): leaves { text } | { gone } | { id_present } | { id_gone } | { clickable } | { url_contains } | { ms }, each may add a `label`; combine with { all:[…] } AND, { any:[…] } OR, { not:… } NOT, { none:[…] } NOR, { nand:[…] } NAND — nestable to any depth. A finished wait reports WHY in wait_result (which labelled leaf matched, or which were unmet on timeout). " +
+  "ON FAILURE, `on_fail` may run a pre-planned recovery sub-sequence { do:[…steps…], then:'return'(default)|'continue' } — recursive, so plan B can carry plan C.";
+
 const COMPUTER_ACTION_TOOL = {
   type: "function",
   name: COMPUTER_ACTION_FN,
   description:
-    "Send one constrained mouse/keyboard action to the isolated virtual screen inside this conversation's microVM. Mouse movement is smooth and non-instant. Use only after computer_observe gives target coordinates. After every action, call computer_observe before deciding the next action.",
+    ACTION_PROGRAM_DESC +
+    " This drives the VM's RAW GUI (mouse/keyboard on the isolated Xvfb display) — get handles/coords from computer_observe (set ocr=true). The VM screen is isolated from the user's host.",
   parameters: {
     type: "object",
     properties: {
-      action: {
-        type: "string",
-        enum: [
-          "move_mouse",
-          "left_click",
-          "right_click",
-          "type_text",
-          "key",
-          "scroll",
-          "wait",
-        ],
+      steps: {
+        type: "array",
+        items: { type: "object", properties: ACTION_STEP_PROPERTIES, required: ["action"] },
+        description: "Ordered action steps to run.",
       },
-      x: {
-        type: "number",
-        description: "Screen x coordinate for mouse actions.",
-      },
-      y: {
-        type: "number",
-        description: "Screen y coordinate for mouse actions.",
-      },
-      text: {
-        type: "string",
-        description: "Text to type for type_text.",
-      },
-      key: {
-        type: "string",
-        description:
-          "xdotool key name for key actions, e.g. Return, Escape, ctrl+l, ctrl+c.",
-      },
-      amount: {
-        type: "number",
-        description:
-          "Scroll wheel notches. Negative scrolls down, positive scrolls up.",
-      },
-      ms: {
-        type: "number",
-        description: "Milliseconds to wait for wait action.",
-      },
+      include_screenshot: { type: "boolean", description: "Include a screenshot in the returned observation." },
     },
-    required: ["action"],
+    required: ["steps"],
   },
 };
 
@@ -583,42 +587,19 @@ const BROWSER_ACTION_TOOL = {
   type: "function",
   name: BROWSER_ACTION_FN,
   description:
-    "Perform one browser action inside the isolated VM browser using element IDs from browser_observe. After each action, call browser_observe again before deciding the next action.",
+    ACTION_PROGRAM_DESC +
+    " This drives the isolated VM BROWSER (Playwright) — get element handles (dom_*) and text from browser_observe. Targeting by `id`/`text` is preferred over coordinates; the `url_contains` condition is available for navigation waits.",
   parameters: {
     type: "object",
     properties: {
-      action: {
-        type: "string",
-        enum: [
-          "click_element",
-          "type_element",
-          "press",
-          "scroll",
-          "wait_for_text",
-        ],
+      steps: {
+        type: "array",
+        items: { type: "object", properties: ACTION_STEP_PROPERTIES, required: ["action"] },
+        description: "Ordered action steps to run.",
       },
-      element_id: {
-        type: "string",
-        description: "DOM element id from browser_observe, e.g. dom_3.",
-      },
-      text: {
-        type: "string",
-        description: "Text for type_element or wait_for_text.",
-      },
-      key: {
-        type: "string",
-        description: "Keyboard key for press, e.g. Enter, Escape, Control+L.",
-      },
-      amount: {
-        type: "number",
-        description: "Scroll delta in pixels. Positive scrolls down.",
-      },
-      timeout_ms: {
-        type: "number",
-        description: "Timeout for wait_for_text.",
-      },
+      include_screenshot: { type: "boolean", description: "Include a screenshot in the returned observation." },
     },
-    required: ["action"],
+    required: ["steps"],
   },
 };
 
@@ -768,73 +749,6 @@ function extractSearchedImageRefs(output: unknown): ImageRef[] {
     }
   }
   return refs;
-}
-
-function parseComputerActionArgs(args: {
-  action?: string;
-  x?: number;
-  y?: number;
-  text?: string;
-  key?: string;
-  amount?: number;
-  ms?: number;
-}): ComputerAction | string {
-  const action = args.action;
-  if (action === "move_mouse" || action === "left_click" || action === "right_click") {
-    if (!Number.isFinite(args.x) || !Number.isFinite(args.y)) {
-      return `${action} requires finite x and y coordinates`;
-    }
-    return { action, x: Math.round(args.x ?? 0), y: Math.round(args.y ?? 0) };
-  }
-  if (action === "type_text") {
-    return { action, text: args.text ?? "" };
-  }
-  if (action === "key") {
-    if (!args.key) return "key action requires key";
-    return { action, key: args.key };
-  }
-  if (action === "scroll") {
-    return { action, x: args.x, y: args.y, amount: Math.trunc(args.amount ?? -3) };
-  }
-  if (action === "wait") {
-    return { action, ms: Math.trunc(args.ms ?? 1000) };
-  }
-  return `unknown computer action: ${action ?? ""}`;
-}
-
-function parseBrowserActionArgs(args: {
-  action?: string;
-  element_id?: string;
-  text?: string;
-  key?: string;
-  amount?: number;
-  timeout_ms?: number;
-}): BrowserAction | string {
-  const action = args.action;
-  if (action === "click_element") {
-    if (!args.element_id) return "click_element requires element_id";
-    return { action, elementId: args.element_id };
-  }
-  if (action === "type_element") {
-    if (!args.element_id) return "type_element requires element_id";
-    return { action, elementId: args.element_id, text: args.text ?? "" };
-  }
-  if (action === "press") {
-    if (!args.key) return "press requires key";
-    return { action, key: args.key };
-  }
-  if (action === "scroll") {
-    return { action, amount: Math.trunc(args.amount ?? 600) };
-  }
-  if (action === "wait_for_text") {
-    if (!args.text) return "wait_for_text requires text";
-    return {
-      action,
-      text: args.text,
-      timeoutMs: Math.trunc(args.timeout_ms ?? 10000),
-    };
-  }
-  return `unknown browser action: ${action ?? ""}`;
 }
 
 /** Append source URLs as citations, de-duplicating by URL (snippet holds URL). */
@@ -1145,6 +1059,7 @@ export function streamGrokResponses(
               timeout_ms?: number;
               target?: string;
               caption?: string;
+              steps?: unknown[];
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -1324,19 +1239,16 @@ export function streamGrokResponses(
               });
               out = JSON.stringify(obs);
             } else if (c.name === COMPUTER_ACTION_FN) {
-              const action = parseComputerActionArgs(args);
+              const steps = Array.isArray(args.steps) ? args.steps : [];
               emitTool("computer_action", {
-                action: args.action ?? "",
-                x: args.x,
-                y: args.y,
-                key: args.key,
+                steps: steps.length,
+                first: (steps[0] as { action?: string })?.action ?? "",
               });
-              if (typeof action === "string") {
-                out = `computer_action failed: ${action}`;
-              } else {
-                const result = await computerAction(conversationId, action);
-                out = JSON.stringify(result);
-              }
+              const result = await computerAction(conversationId, {
+                steps: steps as Record<string, unknown>[],
+                includeScreenshot: Boolean(args.include_screenshot),
+              });
+              out = JSON.stringify(result);
             } else if (c.name === BROWSER_OPEN_URL_FN) {
               emitTool("browser_open_url", { url: args.url ?? "" });
               const result = await browserOpenUrl(conversationId, args.url ?? "");
@@ -1350,18 +1262,16 @@ export function streamGrokResponses(
               });
               out = JSON.stringify(obs);
             } else if (c.name === BROWSER_ACTION_FN) {
-              const action = parseBrowserActionArgs(args);
+              const steps = Array.isArray(args.steps) ? args.steps : [];
               emitTool("browser_action", {
-                action: args.action ?? "",
-                element_id: args.element_id,
-                key: args.key,
+                steps: steps.length,
+                first: (steps[0] as { action?: string })?.action ?? "",
               });
-              if (typeof action === "string") {
-                out = `browser_action failed: ${action}`;
-              } else {
-                const result = await browserAction(conversationId, action);
-                out = JSON.stringify(result);
-              }
+              const result = await browserAction(conversationId, {
+                steps: steps as Record<string, unknown>[],
+                includeScreenshot: Boolean(args.include_screenshot),
+              });
+              out = JSON.stringify(result);
             } else if (c.name === SEND_SCREENSHOT_FN) {
               const target = args.target === "browser" ? "browser" : "screen";
               const caption =

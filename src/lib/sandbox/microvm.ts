@@ -7,10 +7,9 @@ import {
   type SandboxDriver,
   type RunResult,
   type CloneResult,
-  type ComputerAction,
-  type ComputerActionResult,
+  type ActionSequence,
+  type ActionSequenceResult,
   type ComputerObservation,
-  type BrowserAction,
   type BrowserActionResult,
   type BrowserObservation,
   safeConvId,
@@ -244,15 +243,10 @@ export class MicroVMDriver implements SandboxDriver {
 
   async computerAction(
     conversationId: string,
-    action: ComputerAction,
-  ): Promise<ComputerActionResult> {
+    seq: ActionSequence,
+  ): Promise<ActionSequenceResult> {
     if (!this.cfg.computer.enabled) {
-      return {
-        ok: false,
-        action: action.action,
-        durationMs: 0,
-        error: "VM computer use is disabled",
-      };
+      return { ok: false, steps: [], error: "VM computer use is disabled" };
     }
     const jobId = this.safeJobId(`cu_act_${nanoid(8)}`);
     const result = await this.runVmRequest(
@@ -262,16 +256,17 @@ export class MicroVMDriver implements SandboxDriver {
         id: jobId,
         type: "computer_action",
         timeoutMs: 20 * 60 * 1000,
-        maxOutputChars: 100_000,
+        maxOutputChars: 2_000_000,
         autoInstall: this.cfg.computer.autoInstall,
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
-        ...action,
+        steps: seq.steps ?? [],
+        includeScreenshot: Boolean(seq.includeScreenshot),
       },
       20 * 60 * 1000,
-      100_000,
+      2_000_000,
     );
-    return this.parseComputerActionResult(result, action.action);
+    return this.parseSequenceResult(result);
   }
 
   async browserOpenUrl(
@@ -324,8 +319,8 @@ export class MicroVMDriver implements SandboxDriver {
 
   async browserAction(
     conversationId: string,
-    action: BrowserAction,
-  ): Promise<BrowserActionResult> {
+    seq: ActionSequence,
+  ): Promise<ActionSequenceResult> {
     const jobId = this.safeJobId(`br_act_${nanoid(8)}`);
     const result = await this.runVmRequest(
       conversationId,
@@ -334,16 +329,32 @@ export class MicroVMDriver implements SandboxDriver {
         id: jobId,
         type: "browser_action",
         timeoutMs: 20 * 60 * 1000,
-        maxOutputChars: 100_000,
+        maxOutputChars: 2_000_000,
         autoInstall: this.cfg.computer.autoInstall,
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
-        ...action,
+        steps: seq.steps ?? [],
+        includeScreenshot: Boolean(seq.includeScreenshot),
       },
       20 * 60 * 1000,
-      100_000,
+      2_000_000,
     );
-    return this.parseBrowserActionResult(result, action.action);
+    return this.parseSequenceResult(result);
+  }
+
+  private parseSequenceResult(result: RunResult): ActionSequenceResult {
+    if (result.error || result.stderr) {
+      return { ok: false, steps: [], error: result.error ?? result.stderr };
+    }
+    try {
+      return JSON.parse(result.stdout) as ActionSequenceResult;
+    } catch (e) {
+      return {
+        ok: false,
+        steps: [],
+        error: `invalid action result: ${String(e)}; ${result.stdout.slice(0, 500)}`,
+      };
+    }
   }
 
   private safeJobId(jobId: string): string {
@@ -407,35 +418,6 @@ export class MicroVMDriver implements SandboxDriver {
         windows: [],
         elements: [],
         error: `invalid computer observation: ${String(e)}; ${result.stdout.slice(0, 500)}`,
-      };
-    }
-  }
-
-  private parseComputerActionResult(
-    result: RunResult,
-    fallbackAction: string,
-  ): ComputerActionResult {
-    if (result.error || result.stderr) {
-      return {
-        ok: false,
-        action: fallbackAction,
-        durationMs: result.durationMs,
-        error: result.error ?? result.stderr,
-      };
-    }
-    try {
-      const parsed = JSON.parse(result.stdout) as ComputerActionResult;
-      return {
-        ...parsed,
-        action: parsed.action ?? fallbackAction,
-        durationMs: parsed.durationMs ?? result.durationMs,
-      };
-    } catch (e) {
-      return {
-        ok: false,
-        action: fallbackAction,
-        durationMs: result.durationMs,
-        error: `invalid computer action result: ${String(e)}; ${result.stdout.slice(0, 500)}`,
       };
     }
   }

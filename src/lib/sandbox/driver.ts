@@ -119,6 +119,28 @@ export interface BrowserActionResult {
   error?: string;
 }
 
+/**
+ * A model-authored GUI action program (computer_action / browser_action). One
+ * call carries a sequence of steps with targeting, condition gates and recovery
+ * branches; the guest executes it in a single VM round-trip. The detailed schema
+ * lives in docs/computer-use-action-plan.md and is validated guest-side, so here
+ * a step is a loose structured object that the driver forwards verbatim.
+ */
+export type ActionStep = Record<string, unknown>;
+export interface ActionSequence {
+  steps: ActionStep[];
+  includeScreenshot?: boolean;
+}
+export interface ActionSequenceResult {
+  ok: boolean;
+  handled?: boolean;
+  stoppedAt?: number | null;
+  durationMs?: number;
+  steps?: unknown[];
+  observation?: unknown;
+  error?: string;
+}
+
 export interface SandboxDriver {
   readonly name: "local" | "microvm";
 
@@ -160,11 +182,11 @@ export interface SandboxDriver {
     opts?: { includeScreenshot?: boolean; ocr?: boolean },
   ): Promise<ComputerObservation>;
 
-  /** Act on the conversation VM's isolated virtual display. */
+  /** Run a GUI action program on the conversation VM's isolated virtual display. */
   computerAction?(
     conversationId: string,
-    action: ComputerAction,
-  ): Promise<ComputerActionResult>;
+    seq: ActionSequence,
+  ): Promise<ActionSequenceResult>;
 
   /** Open or navigate the isolated VM browser. */
   browserOpenUrl?(
@@ -178,11 +200,11 @@ export interface SandboxDriver {
     opts?: { includeScreenshot?: boolean },
   ): Promise<BrowserObservation>;
 
-  /** Act on browser elements returned by browserObserve. */
+  /** Run a GUI action program against the isolated VM browser. */
   browserAction?(
     conversationId: string,
-    action: BrowserAction,
-  ): Promise<BrowserActionResult>;
+    seq: ActionSequence,
+  ): Promise<ActionSequenceResult>;
 
   /** Remove a conversation's workspace (on conversation delete). */
   deleteSandbox(conversationId: string): void;
