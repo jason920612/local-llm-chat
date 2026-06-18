@@ -331,7 +331,7 @@ async function runStreaming(
       model,
       messages: openaiMessages,
       stream: true,
-      temperature: 0.4,
+      temperature: 1,
     },
     { signal },
   );
@@ -413,7 +413,7 @@ function streamFinal(
         model,
         messages,
         stream: true,
-        temperature: 0.4,
+        temperature: 1,
       },
       { signal },
     )
@@ -493,7 +493,7 @@ async function runWithGrokTool(
         messages,
         tools: [grokSearchTool, generateImageTool],
         tool_choice: "auto",
-        temperature: 0.3,
+        temperature: 1,
       },
       { signal },
     );
@@ -602,7 +602,7 @@ async function runBlocking(
     {
       model,
       messages: openaiMessages,
-      temperature: 0.4,
+      temperature: 1,
     },
     { signal },
   );
@@ -679,7 +679,7 @@ async function regenerate(
     const { client, model } = chatClient();
     const res = await client.chat.completions.create({
       model,
-      temperature: 0.2,
+      temperature: 1,
       messages: [
         ...openaiMessages,
         { role: "assistant", content: draft },

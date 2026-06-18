@@ -30,7 +30,7 @@ export async function callStructured<T>(args: {
       const res = await client.chat.completions.create({
         model,
         messages: args.messages,
-        temperature: args.temperature ?? 0,
+        temperature: args.temperature ?? 1,
         // LM Studio honors JSON-schema structured output; if a given model
         // ignores it, the zod validation below catches it and we retry.
         response_format: {

@@ -1820,7 +1820,7 @@ export async function fixMermaid(code: string): Promise<string> {
     model: config.grok.model,
     instructions: MERMAID_FIX_INSTRUCTIONS,
     input: [{ role: "user", content: `Fix this Mermaid diagram:\n\n${code}` }],
-    temperature: 0,
+    temperature: 1,
   });
   return extractText(resp.output ?? [])
     .replace(/^\s*```(?:mermaid)?\s*/i, "")
@@ -1869,7 +1869,7 @@ export async function summarizeForCompaction(
     model: config.grok.summaryModel, // stronger model for faithful summarization
     instructions: COMPACTION_INSTRUCTIONS,
     input: [{ role: "user", content }],
-    temperature: 0, // faithful summarization, not creative
+    temperature: 1,
   });
   return extractText(resp.output ?? []);
 }

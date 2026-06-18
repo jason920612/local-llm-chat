@@ -259,7 +259,7 @@ export async function runMonitor(
   if (initialDraft != null) {
     draft = stripBoilerplate(initialDraft);
   } else {
-    const gen = await generate(messages, 0.4, opts.signal);
+    const gen = await generate(messages, 1, opts.signal);
     draft = gen.content;
     lastReasoning = gen.reasoning;
   }
