@@ -436,6 +436,70 @@ def screenshot_data_url(path, max_width=640, quality=55):
         return None
 
 
+def cursor_dict(x, y, width=None, height=None, **extra):
+    cur = {"x": int(x), "y": int(y)}
+    if width is not None and height is not None:
+        cur["visible"] = 0 <= int(x) < int(width) and 0 <= int(y) < int(height)
+    cur.update(extra)
+    return cur
+
+
+def draw_cursor_overlay(path, cursor):
+    """Draw a visible cursor marker onto a screenshot copy for model vision.
+
+    Xvfb/Playwright screenshots usually omit the mouse pointer, so the model can
+    otherwise move/click without ever seeing where the cursor ended up.
+    """
+    try:
+        if not cursor or cursor.get("visible") is False:
+            return path
+        from PIL import Image, ImageDraw
+
+        img = Image.open(path).convert("RGB")
+        x, y = int(cursor.get("x", 0)), int(cursor.get("y", 0))
+        if x < 0 or y < 0 or x >= img.width or y >= img.height:
+            return path
+        draw = ImageDraw.Draw(img)
+        r = 12
+        # Black outline + bright red crosshair keeps the marker readable on both
+        # light and dark UI without hiding much of the underlying content.
+        draw.line([(x - r, y), (x + r, y)], fill=(0, 0, 0), width=5)
+        draw.line([(x, y - r), (x, y + r)], fill=(0, 0, 0), width=5)
+        draw.ellipse((x - 5, y - 5, x + 5, y + 5), outline=(0, 0, 0), width=4)
+        draw.line([(x - r, y), (x + r, y)], fill=(255, 40, 40), width=3)
+        draw.line([(x, y - r), (x, y + r)], fill=(255, 40, 40), width=3)
+        draw.ellipse((x - 5, y - 5, x + 5, y + 5), outline=(255, 40, 40), width=2)
+        out = COMPUTER / ("%s-cursor-%d.png" % (Path(path).stem, now_ms()))
+        img.save(out, format="PNG")
+        return out
+    except Exception:  # noqa: BLE001
+        return path
+
+
+def add_cursor_distances(items, cursor):
+    if not cursor:
+        return items
+    try:
+        cx, cy = float(cursor.get("x", 0)), float(cursor.get("y", 0))
+    except Exception:  # noqa: BLE001
+        return items
+    for item in items or []:
+        center = item.get("center") if isinstance(item, dict) else None
+        if not isinstance(center, (list, tuple)) or len(center) < 2:
+            continue
+        try:
+            dx = float(center[0]) - cx
+            dy = float(center[1]) - cy
+        except Exception:  # noqa: BLE001
+            continue
+        item["distanceFromCursor"] = {
+            "dx": int(round(dx)),
+            "dy": int(round(dy)),
+            "px": round(math.hypot(dx, dy), 1),
+        }
+    return items
+
+
 def read_screen_size(path):
     try:
         from PIL import Image
@@ -691,6 +755,7 @@ def observe_browser(req):
     if isinstance(elements, dict) and elements.get("error"):
         warnings.append(f"DOM extraction failed: {elements.get('error')[-500:]}")
         elements = []
+    cursor = browser_cursor_dict(page, width, height)
     shot_info = None
     shot = None
     shot_for_vision = None
@@ -699,9 +764,10 @@ def observe_browser(req):
         try:
             page.screenshot(path=str(shot), full_page=False)
             shot_for_vision = shot
+            shot_for_model = draw_cursor_overlay(shot_for_vision, cursor)
             shot_info = {
-                "path": str(shot).replace(WS + "/", ""),
-                **({"dataUrl": screenshot_data_url(shot)} if include_screenshot else {}),
+                "path": str(shot_for_model).replace(WS + "/", ""),
+                **({"dataUrl": screenshot_data_url(shot_for_model)} if include_screenshot else {}),
             }
         except Exception as ex:  # noqa: BLE001
             warnings.append(f"browser screenshot failed: {str(ex)[-500:]}")
@@ -728,15 +794,22 @@ def observe_browser(req):
         )
         if marked:
             shot_for_vision = marked
+            shot_for_model = draw_cursor_overlay(shot_for_vision, cursor)
             shot_info = {
-                "path": str(shot_for_vision).replace(WS + "/", ""),
-                "dataUrl": screenshot_data_url(shot_for_vision),
+                "path": str(shot_for_model).replace(WS + "/", ""),
+                "dataUrl": screenshot_data_url(shot_for_model),
             }
         elif shot_info is not None:
-            shot_info["dataUrl"] = screenshot_data_url(shot)
+            shot_for_model = draw_cursor_overlay(shot, cursor)
+            shot_info["path"] = str(shot_for_model).replace(WS + "/", "")
+            shot_info["dataUrl"] = screenshot_data_url(shot_for_model)
+    add_cursor_distances(elements, cursor)
+    if marks is not None:
+        add_cursor_distances(marks, cursor)
     result = {
         "ok": True,
         "screen": {"width": width, "height": height},
+        "cursor": cursor,
         "url": page.url,
         "title": page.title(),
         "windows": list_windows(),
@@ -1283,6 +1356,9 @@ def observe_computer(req):
             "elements": [],
             "error": f"screenshot failed: {err[-500:]}",
         }
+    screen = read_screen_size(shot) or {"width": width, "height": height}
+    mx, my = mouse_position()
+    cursor = cursor_dict(mx, my, screen.get("width", width), screen.get("height", height))
     windows = list_windows()
     elements = [
         {
@@ -1328,10 +1404,18 @@ def observe_computer(req):
         if marked:
             shot_for_vision = marked
 
+    add_cursor_distances(elements, cursor)
+    if marks is not None:
+        add_cursor_distances(marks, cursor)
+
+    if include_screenshot or want_mark:
+        shot_for_vision = draw_cursor_overlay(shot_for_vision, cursor)
+
     return {
         "ok": True,
         "display": DISPLAY,
-        "screen": read_screen_size(shot) or {"width": width, "height": height},
+        "screen": screen,
+        "cursor": cursor,
         "screenshot": {
             "path": str(shot_for_vision).replace(WS + "/", ""),
             **(
@@ -1821,6 +1905,21 @@ def _browser_screen_offset(page):
         return 0, 0
 
 
+def browser_cursor_dict(page, width, height):
+    sx, sy = mouse_position()
+    ox, oy = _browser_screen_offset(page)
+    vx, vy = sx - ox, sy - oy
+    return cursor_dict(
+        vx,
+        vy,
+        width,
+        height,
+        screenX=int(sx),
+        screenY=int(sy),
+        screenOffset=[int(ox), int(oy)],
+    )
+
+
 def _browser_human_pointer(page, vx, vy, kind, raw_mods):
     """Move the real cursor to a viewport point and perform a real click/hover."""
     ox, oy = _browser_screen_offset(page)
@@ -2169,6 +2268,7 @@ def action_sequence(req, mode):
         })
         observation = {
             "screen": obs.get("screen"),
+            "cursor": obs.get("cursor"),
             "elements": obs.get("elements", []),
             "screenshot": obs.get("screenshot"),
         }
@@ -2187,11 +2287,14 @@ def action_sequence(req, mode):
             if isinstance(els, dict):
                 els = []
             shot = None
+            cursor = browser_cursor_dict(page, width, height)
+            add_cursor_distances(els, cursor)
             if include_screenshot:
                 p = COMPUTER / f"browser-{now_ms()}.png"
                 try:
                     page.screenshot(path=str(p), full_page=False)
-                    shot = {"path": str(p).replace(WS + "/", ""), "dataUrl": screenshot_data_url(p)}
+                    p_model = draw_cursor_overlay(p, cursor)
+                    shot = {"path": str(p_model).replace(WS + "/", ""), "dataUrl": screenshot_data_url(p_model)}
                 except Exception:  # noqa: BLE001
                     pass
             try:
@@ -2201,6 +2304,7 @@ def action_sequence(req, mode):
             observation = {
                 "url": page.url, "title": title,
                 "screen": {"width": width, "height": height},
+                "cursor": cursor,
                 "elements": els[:200], "screenshot": shot,
             }
         finally:

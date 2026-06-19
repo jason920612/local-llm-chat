@@ -44,8 +44,16 @@ export interface ComputerElement {
   text?: string;
   bbox: [number, number, number, number];
   center: [number, number];
+  /** Vector/distance from the current cursor to this element center, in px. */
+  distanceFromCursor?: CursorDistance;
   confidence?: number;
   source: "ocr" | "window" | "accessibility" | "dom" | "vision";
+}
+
+export interface CursorDistance {
+  dx: number;
+  dy: number;
+  px: number;
 }
 
 /** A numbered Set-of-Mark element overlaid on the screenshot (v3 grounding). */
@@ -53,9 +61,24 @@ export interface ComputerMark {
   mark: number;
   center: [number, number];
   bbox: [number, number, number, number];
+  /** Vector/distance from the current cursor to this mark center, in px. */
+  distanceFromCursor?: CursorDistance;
   text?: string;
   source?: "detector" | "opencv" | "ocr" | "dom";
   score?: number;
+}
+
+export interface ComputerCursor {
+  /** Cursor coordinates in the returned screenshot/surface coordinate space. */
+  x: number;
+  y: number;
+  /** Whether x/y are inside the returned screenshot/surface. */
+  visible?: boolean;
+  /** Raw X screen coordinates, present for browser observations. */
+  screenX?: number;
+  screenY?: number;
+  /** Browser viewport origin in raw X screen coordinates, present for browser observations. */
+  screenOffset?: [number, number];
 }
 
 /** look_closer: a zoomed high-res crop around a mark/bbox so the model can read tiny UI. */
@@ -81,6 +104,7 @@ export interface ComputerObservation {
   ok: boolean;
   screen?: { width: number; height: number };
   display?: string;
+  cursor?: ComputerCursor;
   screenshot?: {
     path: string;
     dataUrl?: string;
@@ -104,6 +128,7 @@ export interface BrowserElement extends ComputerElement {
 export interface BrowserObservation {
   ok: boolean;
   screen?: { width: number; height: number };
+  cursor?: ComputerCursor;
   url?: string;
   title?: string;
   screenshot?: {
