@@ -1,9 +1,31 @@
 # Plan: Computer-use v3 — visual grounding + human-like real input
 
-Status: **design finalized (owner-approved in chat); implementation pending**
+Status: **implemented and production-tested; maintained as the v3 design record**
 Scope: `computer_observe` / `computer_action` / `browser_*` (microVM sandbox).
 Builds on v1/v2 (see computer-use-action-plan.md). Author: design agreed with
 the project owner in chat.
+
+## 0. Implementation status
+
+Implemented:
+
+- Host-side WSL2 GPU detector service with on-demand lifecycle and idle exit.
+- `computer_observe(mark=true)` Set-of-Mark overlay, OCR fallback, smart
+  re-marking, stable numbering, and `remark=true` force refresh.
+- `browser_observe(mark=true)` Set-of-Mark overlay for the browser viewport,
+  merging detector boxes, OCR boxes, and browser DOM boxes.
+- `computer_action` / `browser_action` targeting by `mark` and `to_mark`.
+- Human-like real X cursor movement for desktop and browser pointer actions,
+  with `fast:true` bypass and configurable movement knobs.
+- `focus_window` / `raise_window` desktop actions so the model can explicitly
+  bring a `win_*` window to the foreground before typing/clicking.
+
+Production smoke tests performed:
+
+- Overlapped Chrome + Terminal flow: Grok used `focus_window` on `win_1`, typed
+  into Terminal, and verified the text did not land in Chrome.
+- Browser icon-heavy flow: use `browser_observe(mark=true)` and target
+  text-less controls by `mark:N`.
 
 ## 1. Why (the flexibility ceiling v2 still hits)
 

@@ -54,7 +54,7 @@ export interface ComputerMark {
   center: [number, number];
   bbox: [number, number, number, number];
   text?: string;
-  source?: "detector" | "ocr";
+  source?: "detector" | "ocr" | "dom";
   score?: number;
 }
 
@@ -93,6 +93,8 @@ export interface BrowserObservation {
   } | null;
   windows: ComputerWindow[];
   elements: BrowserElement[];
+  /** Numbered marks (when a marked browser observe was requested); target via `mark:N`. */
+  marks?: ComputerMark[];
   warnings?: string[];
   error?: string;
 }
@@ -294,7 +296,7 @@ export interface SandboxDriver {
   /** Observe DOM/accessibility-like browser elements in the isolated VM browser. */
   browserObserve?(
     conversationId: string,
-    opts?: { includeScreenshot?: boolean },
+    opts?: { includeScreenshot?: boolean; mark?: boolean; remark?: boolean },
   ): Promise<BrowserObservation>;
 
   /** Run a GUI action program against the isolated VM browser. */

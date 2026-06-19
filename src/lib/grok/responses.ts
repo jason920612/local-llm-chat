@@ -680,7 +680,7 @@ const ACTION_STEP_PROPERTIES = {
     ],
   },
   js: { type: "string", description: "Browser only — for action 'eval': JavaScript run in the page via page.evaluate. Returns its value in the step result. Use to set a contenteditable directly, read <img>.src / canvas data, or install a persistent reactive handler (MutationObserver/setInterval) that auto-handles dynamic events." },
-  mark: { type: "number", description: "Target the numbered Set-of-Mark element from the latest marked computer_observe (mark=true). Most reliable way to click — including text-less icons. Resolves to that element's exact center." },
+  mark: { type: "number", description: "Target the numbered Set-of-Mark element from the latest marked computer_observe/browser_observe (mark=true). Most reliable way to click — including text-less icons. Resolves to that element's exact center." },
   id: { type: "string", description: "Target element handle from the latest observation (e.g. el_3 / dom_5 / win_1)." },
   text: { type: "string", description: "Pointer actions: re-locate the target by visible text/role (robust to id churn). For type_text: the literal text to type." },
   x: { type: "number" },
@@ -704,7 +704,7 @@ const ACTION_STEP_PROPERTIES = {
 
 const ACTION_PROGRAM_DESC =
   "Run an ACTION PROGRAM: an ordered `steps` array executed server-side in ONE round-trip, fail-fast. Returns per-step results plus a fresh execution-time observation (new element handles), so you don't need a separate observe after. " +
-  "TARGET a pointer step by `mark` (a number from a marked computer_observe — BEST, works for text-less icons) OR `id` (handle) OR `text` (re-locate by visible text/role) OR `x`,`y` (last resort). " +
+  "TARGET a pointer step by `mark` (a number from a marked computer_observe/browser_observe — BEST, works for text-less icons) OR `id` (handle) OR `text` (re-locate by visible text/role) OR `x`,`y` (last resort). " +
   "Clicks move a REAL cursor smoothly to the target (human-like, not a synthetic/JS event) on both desktop and browser; set a step's `fast:true` to skip the travel. " +
   "VERBS: move, left_click, right_click, middle_click, double_click, mouse_down, mouse_up, drag (destination via to_id/to_text/to_x+to_y), type_text (types `text`), key/key_down/key_up (`key`, combos like ctrl+shift+t), scroll (`amount`), focus_window/raise_window (desktop only: bring a win_* target to the foreground without clicking), wait (`ms`). `modifiers` holds keys during a click. " +
   "CONDITION GATES — `when` (skip step now if false) and `wait_for` (poll until true, else step fails): leaves { text } | { gone } | { id_present } | { id_gone } | { clickable } | { url_contains } | { ms }, each may add a `label`; combine with { all:[…] } AND, { any:[…] } OR, { not:… } NOT, { none:[…] } NOR, { nand:[…] } NAND — nestable to any depth. A finished wait reports WHY in wait_result.by/unmet plus wait_result.condition, a recursive explanation tree that correctly explains negative gates like not/none/nand. " +
@@ -757,13 +757,23 @@ const BROWSER_OBSERVE_TOOL = {
   type: "function",
   name: BROWSER_OBSERVE_FN,
   description:
-    "Observe the isolated VM browser using DOM-derived elements. Returns current URL/title and visible elements with element IDs, text, roles, bounding boxes, and center coordinates. Prefer this over raw coordinate computer_observe for websites.",
+    "Observe the isolated VM browser using DOM-derived elements. Returns current URL/title and visible elements with element IDs, text, roles, bounding boxes, and center coordinates. Set mark=true for Set-of-Mark grounding on the browser viewport: detector + DOM + OCR boxes are overlaid with numbered marks, useful for text-less icons/canvas/image controls. Prefer this over raw coordinate computer_observe for websites.",
   parameters: {
     type: "object",
     properties: {
       include_screenshot: {
         type: "boolean",
         description: "Include a downscaled screenshot data URL.",
+      },
+      mark: {
+        type: "boolean",
+        description:
+          "Overlay numbered marks on browser viewport interactables and return a marks list. Target with `mark:N` in browser_action.",
+      },
+      remark: {
+        type: "boolean",
+        description:
+          "Force re-detection of browser marks even if the viewport looks unchanged.",
       },
     },
   },
@@ -1772,9 +1782,12 @@ export function streamGrokResponses(
             } else if (c.name === BROWSER_OBSERVE_FN) {
               emitTool("browser_observe", {
                 include_screenshot: Boolean(args.include_screenshot),
+                mark: Boolean(args.mark),
               });
               const obs = await browserObserve(conversationId, {
                 includeScreenshot: Boolean(args.include_screenshot),
+                mark: Boolean(args.mark),
+                remark: Boolean(args.remark),
               });
               visionFromObservation(obs, "browser_observe");
               out = JSON.stringify(obs);

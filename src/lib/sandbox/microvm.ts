@@ -282,6 +282,8 @@ export class MicroVMDriver implements SandboxDriver {
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
         humanMouse: this.cfg.computer.humanMouse,
+        humanMouseMaxSteps: this.cfg.computer.humanMouseMaxSteps,
+        humanMouseJitter: this.cfg.computer.humanMouseJitter,
         steps: seq.steps ?? [],
         includeScreenshot: Boolean(seq.includeScreenshot),
       },
@@ -317,8 +319,11 @@ export class MicroVMDriver implements SandboxDriver {
 
   async browserObserve(
     conversationId: string,
-    opts: { includeScreenshot?: boolean } = {},
+    opts: { includeScreenshot?: boolean; mark?: boolean; remark?: boolean } = {},
   ): Promise<BrowserObservation> {
+    const det = this.cfg.detector;
+    const wantMark = Boolean(opts.mark) && this.cfg.computer.marking;
+    if (wantMark && det.enabled) ensureDetector();
     const jobId = this.safeJobId(`br_obs_${nanoid(8)}`);
     const result = await this.runVmRequest(
       conversationId,
@@ -332,6 +337,12 @@ export class MicroVMDriver implements SandboxDriver {
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
         includeScreenshot: Boolean(opts.includeScreenshot),
+        mark: wantMark,
+        remark: Boolean(opts.remark),
+        markDiffThreshold: this.cfg.computer.markDiffThreshold,
+        detectorCaption: det.caption,
+        detectorConf: det.conf,
+        detectorMaxBoxes: det.maxBoxes,
       },
       20 * 60 * 1000,
       2_000_000,
@@ -356,6 +367,8 @@ export class MicroVMDriver implements SandboxDriver {
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
         humanMouse: this.cfg.computer.humanMouse,
+        humanMouseMaxSteps: this.cfg.computer.humanMouseMaxSteps,
+        humanMouseJitter: this.cfg.computer.humanMouseJitter,
         steps: seq.steps ?? [],
         includeScreenshot: Boolean(seq.includeScreenshot),
       },

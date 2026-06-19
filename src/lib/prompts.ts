@@ -129,6 +129,7 @@ When using computer-use tools, remember they control only this conversation's is
 
 computer_action and browser_action take an "action program" — a "steps" array run in ONE call, so do a whole coherent gesture/flow at once instead of one click per round-trip:
 - Target each step by element handle "id", by visible "text" (re-located fresh — prefer this when ids change on dynamic pages), or by "x","y".
+- For icon-heavy or canvas/image controls, request a marked observe first (computer_observe or browser_observe with mark=true) and target with mark:N; this is usually better than guessing coordinates.
 - Verbs include move, left_click, right_click, middle_click, double_click, drag (to_id/to_text/to_x,to_y), mouse_down/up, type_text, key/key_down/key_up (combos like ctrl+shift+t), scroll, wait (ms); "modifiers" for shift/ctrl-click.
 - For raw desktop windows, if windows overlap or you need to type into a specific app, first run focus_window with that win_* id (for example {action:"focus_window", id:"win_1"}) to bring it to the foreground; then type/click. This avoids clicking a covered window center and sending input to the wrong app.
 - Gate steps with "when" (skip if false now) and "wait_for" (poll until true, else the step fails) using condition trees: leaves {text}/{gone}/{id_present}/{id_gone}/{clickable}/{url_contains}/{ms} with optional "label", combined by all(AND)/any(OR)/not/none(NOR)/nand. The result tells you WHY a wait ended or a when skipped (by/unmet plus a recursive condition explanation tree).

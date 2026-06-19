@@ -675,6 +675,7 @@ def observe_browser(req):
     height = int(req.get("height") or 720)
     auto_install = bool(req.get("autoInstall", True))
     include_screenshot = bool(req.get("includeScreenshot"))
+    want_mark = bool(req.get("mark", False))
     handle, err = ensure_browser(auto_install=auto_install, width=width, height=height)
     if err or handle is None:
         return {
@@ -691,16 +692,46 @@ def observe_browser(req):
         warnings.append(f"DOM extraction failed: {elements.get('error')[-500:]}")
         elements = []
     shot_info = None
-    if include_screenshot:
+    shot = None
+    shot_for_vision = None
+    if include_screenshot or want_mark:
         shot = COMPUTER / f"browser-{now_ms()}.png"
         try:
             page.screenshot(path=str(shot), full_page=False)
+            shot_for_vision = shot
             shot_info = {
                 "path": str(shot).replace(WS + "/", ""),
-                "dataUrl": screenshot_data_url(shot),
+                **({"dataUrl": screenshot_data_url(shot)} if include_screenshot else {}),
             }
         except Exception as ex:  # noqa: BLE001
             warnings.append(f"browser screenshot failed: {str(ex)[-500:]}")
+    marks = None
+    if want_mark and shot and shot.exists():
+        ocr_elements, ocr_error = run_ppocr(shot)
+        if ocr_error:
+            warnings.append(f"PP-OCR unavailable or failed: {ocr_error[-500:]}")
+        windows = list_windows()
+        marks, marked, _re = build_marks(
+            shot,
+            str(shot).replace(WS + "/", ""),
+            windows,
+            ocr_elements,
+            bool(req.get("remark", False)),
+            float(req.get("markDiffThreshold", 0.06)),
+            float(req.get("detectorConf", 0.05)),
+            int(req.get("detectorMaxBoxes", 120)),
+            bool(req.get("detectorCaption", True)),
+            state_name="browser",
+            dom_els=elements,
+        )
+        if marked:
+            shot_for_vision = marked
+            shot_info = {
+                "path": str(shot_for_vision).replace(WS + "/", ""),
+                "dataUrl": screenshot_data_url(shot_for_vision),
+            }
+        elif shot_info is not None:
+            shot_info["dataUrl"] = screenshot_data_url(shot)
     result = {
         "ok": True,
         "screen": {"width": width, "height": height},
@@ -709,6 +740,7 @@ def observe_browser(req):
         "windows": list_windows(),
         "elements": elements[:200],
         "screenshot": shot_info,
+        **({"marks": marks} if marks is not None else {}),
         "warnings": warnings,
     }
     close_browser_handle(handle)
@@ -939,8 +971,13 @@ def _reset_ocr_proc():
 # ---------------------------------------------------------------------------
 
 DETECT = RUN / "detect"
-# Per-VM cache of the last marking (this daemon serves one conversation).
-_MARK_STATE = {"sig": None, "windows": None, "marks": [], "marked_path": None}
+# Per-VM cache of the last marking (this daemon serves one conversation). Keep
+# desktop and browser marks separate: desktop marks are absolute screen coords,
+# browser marks are viewport coords.
+_MARK_STATES = {
+    "computer": {"sig": None, "windows": None, "marks": [], "marked_path": None},
+    "browser": {"sig": None, "windows": None, "marks": [], "marked_path": None},
+}
 
 
 def request_detection(ws_rel_image, caption=True, conf=0.05, max_boxes=120, timeout=40):
@@ -1004,7 +1041,7 @@ def _iou(a, b):
     return inter / float(area_a + area_b - inter + 1e-6)
 
 
-def _merge_detection(det_els, ocr_els):
+def _merge_detection(det_els, ocr_els, dom_els=None):
     """Combine detector boxes (+captions) with OCR text boxes; drop near-duplicate
     overlaps, preferring the entry that carries text/caption."""
     merged = []
@@ -1026,6 +1063,16 @@ def _merge_detection(det_els, ocr_els):
                 "text": str(e.get("text", "")).strip(),
                 "score": e.get("confidence"),
                 "source": "ocr",
+            }
+        )
+    for e in dom_els or []:
+        merged.append(
+            {
+                "bbox": e.get("bbox"),
+                "center": e.get("center"),
+                "text": str(e.get("text", "")).strip(),
+                "score": e.get("confidence", 1),
+                "source": "dom",
             }
         )
     out = []
@@ -1100,28 +1147,29 @@ def _draw_overlay(shot_path, marks):
         return None
 
 
-def build_marks(shot, ws_rel, windows, ocr_els, force, threshold, conf, max_boxes, caption):
+def build_marks(shot, ws_rel, windows, ocr_els, force, threshold, conf, max_boxes, caption, state_name="computer", dom_els=None):
     """Decide reuse-vs-redetect, run host detection if needed, merge + number +
     overlay. Returns (marks, marked_png_path, redetected)."""
     sig = _frame_sig(shot)
+    state = _MARK_STATES.get(state_name) or _MARK_STATES["computer"]
     win_titles = [w.get("title", "") for w in windows]
     reuse = (
         not force
-        and _MARK_STATE["marks"]
-        and _MARK_STATE["marked_path"]
-        and os.path.exists(str(_MARK_STATE["marked_path"]))
-        and win_titles == _MARK_STATE["windows"]
-        and _sig_diff(sig, _MARK_STATE["sig"]) < threshold
+        and state["marks"]
+        and state["marked_path"]
+        and os.path.exists(str(state["marked_path"]))
+        and win_titles == state["windows"]
+        and _sig_diff(sig, state["sig"]) < threshold
     )
     if reuse:
-        return _MARK_STATE["marks"], _MARK_STATE["marked_path"], False
+        return state["marks"], state["marked_path"], False
     det_els = request_detection(ws_rel, caption=caption, conf=conf, max_boxes=max_boxes)
     if det_els is None:
         det_els = []  # service unavailable — fall back to OCR-only marks
-    merged = _merge_detection(det_els, ocr_els)
-    marks = _assign_marks(merged, _MARK_STATE["marks"])
+    merged = _merge_detection(det_els, ocr_els, dom_els=dom_els)
+    marks = _assign_marks(merged, state["marks"])
     marked = _draw_overlay(shot, marks)
-    _MARK_STATE.update(sig=sig, windows=win_titles, marks=marks, marked_path=marked)
+    state.update(sig=sig, windows=win_titles, marks=marks, marked_path=marked)
     return marks, marked, True
 
 
@@ -1236,10 +1284,11 @@ def smooth_move(x, y):
     sx, sy = mouse_position()
     dx, dy = x - sx, y - sy
     dist = math.hypot(dx, dy)
-    steps = max(8, min(90, int(dist / 12)))
+    steps = max(4, min(_HUMAN_MOUSE_MAX_STEPS, int(dist / 12)))
     duration = max(0.18, min(1.2, dist / 900.0 + random.random() * 0.15))
-    c1 = (sx + dx * 0.25 + random.uniform(-20, 20), sy + dy * 0.1 + random.uniform(-20, 20))
-    c2 = (sx + dx * 0.75 + random.uniform(-20, 20), sy + dy * 0.9 + random.uniform(-20, 20))
+    jitter = max(0.0, float(_HUMAN_MOUSE_JITTER))
+    c1 = (sx + dx * 0.25 + random.uniform(-10 * jitter, 10 * jitter), sy + dy * 0.1 + random.uniform(-10 * jitter, 10 * jitter))
+    c2 = (sx + dx * 0.75 + random.uniform(-10 * jitter, 10 * jitter), sy + dy * 0.9 + random.uniform(-10 * jitter, 10 * jitter))
     env = computer_env()
     for i in range(1, steps + 1):
         t = i / steps
@@ -1258,6 +1307,14 @@ def smooth_move(x, y):
         )
         run_cmd(["xdotool", "mousemove", str(int(bx)), str(int(by))], timeout=2, env=env)
         time.sleep(duration / steps)
+
+
+def pointer_move(x, y, fast=False):
+    env = computer_env()
+    if fast:
+        run_cmd(["xdotool", "mousemove", str(int(x)), str(int(y))], timeout=2, env=env)
+    else:
+        smooth_move(int(x), int(y))
 
 
 def action_computer(req):
@@ -1281,7 +1338,7 @@ def action_computer(req):
         if action in {"move_mouse", "left_click", "right_click"}:
             x = int(req.get("x"))
             y = int(req.get("y"))
-            smooth_move(x, y)
+            pointer_move(x, y, fast=bool(req.get("fast", False)))
             if action == "left_click":
                 run_cmd(["xdotool", "click", "1"], timeout=5, env=env)
             elif action == "right_click":
@@ -1538,7 +1595,7 @@ def _resolve_target(snap, want):
             target = int(want["mark"])
         except (TypeError, ValueError):
             return None
-        for m in (snap.get("marks") or []) + _MARK_STATE["marks"]:
+        for m in (snap.get("marks") or []) + _MARK_STATES["computer"]["marks"]:
             if m.get("mark") == target:
                 return m.get("center"), m
         return None
@@ -1601,25 +1658,25 @@ def _exec_computer_step(step, snap):
                 run_cmd(["xdotool", "keyup", m], timeout=2, env=env)
 
     if action == "move":
-        smooth_move(*center)
+        pointer_move(*center, fast=bool(step.get("fast", False)))
     elif focus:
         if not isinstance(target, dict) or target.get("source") != "window":
             raise ValueError("focus_window target must be a window handle such as win_1")
         if not activate_window(target.get("window_id")):
             raise ValueError("focus_window failed")
     elif action in ("left_click", "right_click", "middle_click", "double_click"):
-        smooth_move(*center)
+        pointer_move(*center, fast=bool(step.get("fast", False)))
         btn = {"left_click": "1", "right_click": "3", "middle_click": "2", "double_click": "1"}[action]
         if action == "double_click":
             with_mods(lambda: run_cmd(["xdotool", "click", "--repeat", "2", "--delay", "120", btn], timeout=5, env=env))
         else:
             with_mods(lambda: run_cmd(["xdotool", "click", btn], timeout=5, env=env))
     elif action == "mouse_down":
-        smooth_move(*center)
+        pointer_move(*center, fast=bool(step.get("fast", False)))
         run_cmd(["xdotool", "mousedown", "1"], timeout=3, env=env)
     elif action == "mouse_up":
         if center:
-            smooth_move(*center)
+            pointer_move(*center, fast=bool(step.get("fast", False)))
         run_cmd(["xdotool", "mouseup", "1"], timeout=3, env=env)
     elif action == "drag":
         dest = _resolve_center(snap, {
@@ -1629,9 +1686,9 @@ def _exec_computer_step(step, snap):
         })
         if dest is None:
             raise ValueError("drag destination not found (to_mark/to_id/to_text/to_x,to_y)")
-        smooth_move(*center)
+        pointer_move(*center, fast=bool(step.get("fast", False)))
         run_cmd(["xdotool", "mousedown", "1"], timeout=3, env=env)
-        smooth_move(*dest)
+        pointer_move(*dest, fast=bool(step.get("fast", False)))
         run_cmd(["xdotool", "mouseup", "1"], timeout=3, env=env)
     elif action == "type_text":
         text = str(step.get("text") or "")
@@ -1644,7 +1701,7 @@ def _exec_computer_step(step, snap):
         run_cmd(["xdotool", "keyup", str(step.get("key") or "")], timeout=3, env=env)
     elif action == "scroll":
         if center:
-            smooth_move(*center)
+            pointer_move(*center, fast=bool(step.get("fast", False)))
         amount = int(step.get("amount") or 0)
         button = "5" if amount < 0 else "4"
         for _ in range(min(30, abs(amount) or 3)):
@@ -1660,6 +1717,8 @@ def _exec_computer_step(step, snap):
 # of Playwright's synthetic input — many sites behave differently under, or
 # detect, JS/synthetic clicks. Set per-sequence from the request.
 _HUMAN_MOUSE = True
+_HUMAN_MOUSE_MAX_STEPS = 40
+_HUMAN_MOUSE_JITTER = 2.0
 _XDO_MODS = {"ctrl": "ctrl", "control": "ctrl", "shift": "shift", "alt": "alt",
              "meta": "super", "cmd": "super", "command": "super"}
 
@@ -1702,6 +1761,19 @@ def _browser_human_pointer(page, vx, vy, kind, raw_mods):
             run_cmd(["xdotool", "keyup", m], timeout=2, env=env)
 
 
+def _resolve_browser_mark(snap, mark):
+    if mark is None:
+        return None
+    try:
+        target = int(mark)
+    except (TypeError, ValueError):
+        return None
+    for m in (snap.get("marks") or []) + _MARK_STATES["browser"]["marks"]:
+        if m.get("mark") == target:
+            return m.get("center")
+    return None
+
+
 def _exec_browser_step(page, step, _snap):
     action = step.get("action")
 
@@ -1738,13 +1810,14 @@ def _exec_browser_step(page, step, _snap):
 
     def locator():
         if step.get("id"):
-            return page.locator(f'[data-llm-element-id="{step["id"]}"]').first
+            return page.locator(f'[data-llm-element-id="{step["id"]}"]').first()
         if step.get("text"):
-            return page.get_by_text(str(step["text"]), exact=False).first
+            return page.get_by_text(str(step["text"]), exact=False).first()
         return None
 
     if action in ("left_click", "right_click", "middle_click", "double_click", "move", "mouse_down", "mouse_up"):
-        loc = None if (step.get("x") is not None and not step.get("id") and not step.get("text")) else locator()
+        mark_center = _resolve_browser_mark(_snap, step.get("mark"))
+        loc = None if (mark_center is not None or (step.get("x") is not None and not step.get("id") and not step.get("text"))) else locator()
         # Human-cursor path (default): drive the REAL X pointer over the page
         # (no synthetic/JS click) for clicks/move. Resolve a viewport point from
         # the element box or raw x,y, then move + click via xdotool.
@@ -1762,6 +1835,8 @@ def _exec_browser_step(page, step, _snap):
                         vy = box["y"] + box["height"] / 2
                 except Exception:  # noqa: BLE001
                     vx = vy = None
+            elif mark_center is not None:
+                vx, vy = float(mark_center[0]), float(mark_center[1])
             elif step.get("x") is not None:
                 vx, vy = float(step.get("x") or 0), float(step.get("y") or 0)
             if vx is not None:
@@ -1769,7 +1844,10 @@ def _exec_browser_step(page, step, _snap):
                 return None
             # else: fall through to Playwright (couldn't resolve a point)
         if loc is None:
-            x, y = int(step.get("x") or 0), int(step.get("y") or 0)
+            if mark_center is not None:
+                x, y = int(mark_center[0]), int(mark_center[1])
+            else:
+                x, y = int(step.get("x") or 0), int(step.get("y") or 0)
             page.mouse.move(x, y)
             if action == "double_click":
                 page.mouse.dblclick(x, y)
@@ -1801,27 +1879,35 @@ def _exec_browser_step(page, step, _snap):
                 loc.scroll_into_view_if_needed(timeout=10000)
     elif action == "drag":
         loc = locator()
+        mark_center = _resolve_browser_mark(_snap, step.get("mark"))
+        to_mark_center = _resolve_browser_mark(_snap, step.get("to_mark"))
         if step.get("to_id"):
-            dest = page.locator(f'[data-llm-element-id="{step["to_id"]}"]').first
+            dest = page.locator(f'[data-llm-element-id="{step["to_id"]}"]').first()
         elif step.get("to_text"):
-            dest = page.get_by_text(str(step["to_text"]), exact=False).first
+            dest = page.get_by_text(str(step["to_text"]), exact=False).first()
         else:
             dest = None
         if loc is not None and dest is not None:
             loc.drag_to(dest, timeout=10000)
-        elif step.get("to_x") is not None:
+        elif to_mark_center is not None or step.get("to_x") is not None:
             box = loc.bounding_box() if loc is not None else None
-            sx, sy = ((box["x"] + box["width"] / 2, box["y"] + box["height"] / 2) if box else (int(step.get("x") or 0), int(step.get("y") or 0)))
+            if box:
+                sx, sy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            elif mark_center is not None:
+                sx, sy = mark_center
+            else:
+                sx, sy = int(step.get("x") or 0), int(step.get("y") or 0)
+            dx, dy = (to_mark_center if to_mark_center is not None else (int(step["to_x"]), int(step.get("to_y") or 0)))
             page.mouse.move(sx, sy)
             page.mouse.down()
-            page.mouse.move(int(step["to_x"]), int(step.get("to_y") or 0))
+            page.mouse.move(int(dx), int(dy))
             page.mouse.up()
         else:
-            raise ValueError("drag needs a destination (to_id/to_text/to_x,to_y)")
+            raise ValueError("drag needs a destination (to_mark/to_id/to_text/to_x,to_y)")
     elif action == "type_text":
         text = str(step.get("text") or "")
         if step.get("id"):
-            page.locator(f'[data-llm-element-id="{step["id"]}"]').first.fill(text, timeout=10000)
+            page.locator(f'[data-llm-element-id="{step["id"]}"]').first().fill(text, timeout=10000)
         else:
             page.keyboard.type(text)
     elif action in ("key", "key_down", "key_up"):
@@ -1981,8 +2067,10 @@ def action_sequence(req, mode):
     height = int(req.get("height") or 720)
     auto_install = bool(req.get("autoInstall", True))
     # Whether browser pointer actions use the real X cursor (vs synthetic input).
-    global _HUMAN_MOUSE
+    global _HUMAN_MOUSE, _HUMAN_MOUSE_MAX_STEPS, _HUMAN_MOUSE_JITTER
     _HUMAN_MOUSE = bool(req.get("humanMouse", True))
+    _HUMAN_MOUSE_MAX_STEPS = max(4, min(180, int(req.get("humanMouseMaxSteps") or 40)))
+    _HUMAN_MOUSE_JITTER = max(0.0, min(8.0, float(req.get("humanMouseJitter") or 2.0)))
 
     if mode == "computer":
         missing = start_computer(width, height, auto_install=auto_install, ocr=False)

@@ -162,7 +162,7 @@ export function browserOpenUrl(
 
 export function browserObserve(
   conversationId: string,
-  opts?: { includeScreenshot?: boolean },
+  opts?: { includeScreenshot?: boolean; mark?: boolean; remark?: boolean },
 ): Promise<BrowserObservation> {
   const driver = getDriver();
   if (!driver.browserObserve) {
