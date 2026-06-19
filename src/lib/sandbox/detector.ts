@@ -5,8 +5,9 @@ import { config } from "../config";
 
 /**
  * Lifecycle for the host-side GPU UI-detector service (WSL2). The microVM has no
- * GPU, so the OmniParser YOLO + Florence-2-large models run in a persistent WSL2
- * CUDA process that serves all VMs over the shared workspace (file transport).
+ * GPU, so OmniParser YOLO runs in a persistent WSL2 CUDA process that serves all
+ * VMs over the shared workspace (file transport). Florence-2-large captions are
+ * either preloaded or lazy-loaded by the first caption=true request.
  *
  * This module only ENSURES the service is running (launches it on demand); the
  * service itself idle-exits to free VRAM, and a flock makes double-launch safe.
@@ -86,4 +87,24 @@ export function ensureDetector(): void {
   } catch {
     /* best-effort */
   }
+}
+
+/**
+ * Like ensureDetector, but AWAIT until the service is reporting a fresh heartbeat
+ * (model loaded, watching) — up to timeoutMs. Use before the FIRST marked observe
+ * so it isn't a cold-start race: if we sent the VM job while the service was still
+ * loading, that first detect request could expire and the observe would fall back
+ * to OCR/DOM-only marks. Returns true if ready, false on timeout (caller proceeds
+ * anyway — the guest's own detect poll may still catch a slightly-late service).
+ */
+export async function ensureDetectorReady(timeoutMs = 15000): Promise<boolean> {
+  if (!cfg().detector.enabled) return false;
+  if (aliveRecently()) return true;
+  ensureDetector();
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 300));
+    if (aliveRecently()) return true;
+  }
+  return false;
 }

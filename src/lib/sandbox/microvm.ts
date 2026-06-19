@@ -24,7 +24,7 @@ import {
   repoDirName,
 } from "./driver";
 import { listFiles, emptyResult, cloneTree } from "./fsutil";
-import { ensureDetector } from "./detector";
+import { ensureDetectorReady } from "./detector";
 
 /**
  * Cap how many conversation VMs may be alive at once. A VM slot is held for the
@@ -236,8 +236,9 @@ export class MicroVMDriver implements SandboxDriver {
     }
     const det = this.cfg.detector;
     const wantMark = Boolean(opts.mark) && this.cfg.computer.marking;
-    // Set-of-Mark detection runs on the host GPU service — make sure it's up.
-    if (wantMark && det.enabled) ensureDetector();
+    // Set-of-Mark detection runs on the host GPU service — wait until it's ready
+    // before the job so the FIRST marked observe isn't a cold-start race.
+    if (wantMark && det.enabled) await ensureDetectorReady();
     const jobId = this.safeJobId(`cu_obs_${nanoid(8)}`);
     const result = await this.runVmRequest(
       conversationId,
@@ -371,7 +372,7 @@ export class MicroVMDriver implements SandboxDriver {
   ): Promise<BrowserObservation> {
     const det = this.cfg.detector;
     const wantMark = Boolean(opts.mark) && this.cfg.computer.marking;
-    if (wantMark && det.enabled) ensureDetector();
+    if (wantMark && det.enabled) await ensureDetectorReady();
     const jobId = this.safeJobId(`br_obs_${nanoid(8)}`);
     const result = await this.runVmRequest(
       conversationId,
