@@ -27,6 +27,7 @@ import {
   browserAction,
   watchVideo,
   inspectVideoMoments,
+  lookCloser,
   saveMediaToSandbox,
   mountSkill,
   listSandboxFiles,
@@ -340,6 +341,7 @@ const BROWSER_OBSERVE_FN = "browser_observe";
 const BROWSER_ACTION_FN = "browser_action";
 const SEND_SCREENSHOT_FN = "send_screenshot";
 const WATCH_VIDEO_FN = "watch_video";
+const LOOK_CLOSER_FN = "look_closer";
 const INSPECT_VIDEO_MOMENTS_FN = "inspect_video_moments";
 
 function looksLikeImageUrl(url: string): boolean {
@@ -663,6 +665,11 @@ const COMPUTER_OBSERVE_TOOL = {
         description:
           "Force re-detection of marks even if the screen looks unchanged (e.g. after a subtle update). Normally unnecessary.",
       },
+      caption: {
+        type: "boolean",
+        description:
+          "Add short AI captions to detector marks (slower; off by default). You already see the overlaid screenshot, so this is usually unnecessary — use look_closer to read a specific tiny element.",
+      },
     },
   },
 };
@@ -757,7 +764,7 @@ const BROWSER_OBSERVE_TOOL = {
   type: "function",
   name: BROWSER_OBSERVE_FN,
   description:
-    "Observe the isolated VM browser using DOM-derived elements. Returns current URL/title and visible elements with element IDs, text, roles, bounding boxes, and center coordinates. Set mark=true for Set-of-Mark grounding on the browser viewport: detector + DOM + OCR boxes are overlaid with numbered marks, useful for text-less icons/canvas/image controls. Prefer this over raw coordinate computer_observe for websites.",
+    "Observe the isolated VM browser using DOM-derived elements. Returns current URL/title and visible elements with element IDs, text, roles, bounding boxes, and center coordinates. Set mark=true for Set-of-Mark grounding on the browser viewport: detector + DOM + OCR boxes are overlaid with numbered marks, useful for text-less icons/canvas/image controls. Prefer this over raw coordinate computer_observe for websites. NOTE: for ordinary clickable links/buttons, the DOM-sourced marks (and dom_* element ids) are the most reliable target even when the visible glyph is tiny (e.g. an upvote ▲) — prefer them over detector marks for clicking.",
   parameters: {
     type: "object",
     properties: {
@@ -774,6 +781,11 @@ const BROWSER_OBSERVE_TOOL = {
         type: "boolean",
         description:
           "Force re-detection of browser marks even if the viewport looks unchanged.",
+      },
+      caption: {
+        type: "boolean",
+        description:
+          "Add short AI captions to detector marks (slower; off by default). Usually unnecessary — you see the overlaid screenshot. Use look_closer to inspect a specific tiny element instead.",
       },
     },
   },
@@ -801,6 +813,32 @@ const BROWSER_ACTION_TOOL = {
       },
     },
     required: ["steps"],
+  },
+};
+
+const LOOK_CLOSER_TOOL = {
+  type: "function",
+  name: LOOK_CLOSER_FN,
+  description:
+    "Zoom in: get a high-resolution crop around a mark (from the last marked observe) or an explicit region, so you can read a tiny icon/text you can't make out in the downscaled screenshot. The crop is returned to you as an image. Use this instead of relying on AI captions for small elements.",
+  parameters: {
+    type: "object",
+    properties: {
+      mark: {
+        type: "number",
+        description: "A mark number from the last marked observe to zoom into.",
+      },
+      bbox: {
+        type: "array",
+        items: { type: "number" },
+        description: "Alternative to mark: an explicit region [x1,y1,x2,y2] to zoom into.",
+      },
+      state: {
+        type: "string",
+        enum: ["computer", "browser"],
+        description: "Which marked surface the mark came from (default 'computer').",
+      },
+    },
   },
 };
 
@@ -939,6 +977,7 @@ function toolset() {
     tools.push(COMPUTER_OBSERVE_TOOL, COMPUTER_ACTION_TOOL);
     tools.push(BROWSER_OPEN_URL_TOOL, BROWSER_OBSERVE_TOOL, BROWSER_ACTION_TOOL);
     tools.push(SEND_SCREENSHOT_TOOL);
+    tools.push(LOOK_CLOSER_TOOL);
   }
   if (
     config.sandbox.driver === "microvm" &&
@@ -1517,7 +1556,7 @@ export function streamGrokResponses(
               element_id?: string;
               timeout_ms?: number;
               target?: string;
-              caption?: string;
+              caption?: string | boolean;
               steps?: unknown[];
               audio?: boolean;
               overview_frames?: number;
@@ -1527,8 +1566,10 @@ export function streamGrokResponses(
               moments?: unknown[];
               windowSec?: number;
               framesPerMoment?: number;
-              mark?: boolean;
+              mark?: boolean | number;
               remark?: boolean;
+              bbox?: unknown[];
+              state?: string;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -1735,6 +1776,7 @@ export function streamGrokResponses(
                 ocr: args.ocr ?? false,
                 mark: Boolean(args.mark),
                 remark: Boolean(args.remark),
+                caption: Boolean(args.caption),
               });
               visionFromObservation(obs, "computer_observe");
               out = JSON.stringify(obs);
@@ -1788,9 +1830,41 @@ export function streamGrokResponses(
                 includeScreenshot: Boolean(args.include_screenshot),
                 mark: Boolean(args.mark),
                 remark: Boolean(args.remark),
+                caption: Boolean(args.caption),
               });
               visionFromObservation(obs, "browser_observe");
               out = JSON.stringify(obs);
+            } else if (c.name === LOOK_CLOSER_FN) {
+              const markN =
+                typeof args.mark === "number" ? args.mark : undefined;
+              const bbox = Array.isArray(args.bbox)
+                ? (args.bbox.map(Number) as number[])
+                : undefined;
+              emitTool("look_closer", { mark: markN });
+              const res = await lookCloser(conversationId, {
+                mark: markN,
+                bbox:
+                  bbox && bbox.length >= 4
+                    ? ([bbox[0], bbox[1], bbox[2], bbox[3]] as [
+                        number,
+                        number,
+                        number,
+                        number,
+                      ])
+                    : undefined,
+                state: args.state === "browser" ? "browser" : "computer",
+              });
+              if (res.ok && res.dataUrl) {
+                pushVision(
+                  res.dataUrl,
+                  `look_closer${markN != null ? ` mark ${markN}` : ""}`,
+                );
+                out = `Zoomed crop attached as an image${
+                  res.region ? ` (region ${res.region.join(",")})` : ""
+                }.`;
+              } else {
+                out = `look_closer failed: ${res.error ?? "unknown error"}`;
+              }
             } else if (c.name === BROWSER_ACTION_FN) {
               const steps = Array.isArray(args.steps) ? args.steps : [];
               emitTool("browser_action", {

@@ -58,6 +58,25 @@ export interface ComputerMark {
   score?: number;
 }
 
+/** look_closer: a zoomed high-res crop around a mark/bbox so the model can read tiny UI. */
+export interface LookCloserOptions {
+  /** A mark number from the last marked observe. */
+  mark?: number;
+  /** Explicit region [x1,y1,x2,y2] (alternative to mark). */
+  bbox?: [number, number, number, number];
+  /** Which marked surface the mark refers to. */
+  state?: "computer" | "browser";
+  /** Padding around the region, px. */
+  pad?: number;
+}
+export interface LookCloserResult {
+  ok: boolean;
+  /** The zoomed crop as a data URL (fed to the model as an image). */
+  dataUrl?: string;
+  region?: [number, number, number, number];
+  error?: string;
+}
+
 export interface ComputerObservation {
   ok: boolean;
   screen?: { width: number; height: number };
@@ -278,6 +297,8 @@ export interface SandboxDriver {
       mark?: boolean;
       /** Force re-detection even if the frame looks unchanged. */
       remark?: boolean;
+      /** Add Florence-2 captions to marks (slower; off by default). */
+      caption?: boolean;
     },
   ): Promise<ComputerObservation>;
 
@@ -296,8 +317,19 @@ export interface SandboxDriver {
   /** Observe DOM/accessibility-like browser elements in the isolated VM browser. */
   browserObserve?(
     conversationId: string,
-    opts?: { includeScreenshot?: boolean; mark?: boolean; remark?: boolean },
+    opts?: {
+      includeScreenshot?: boolean;
+      mark?: boolean;
+      remark?: boolean;
+      caption?: boolean;
+    },
   ): Promise<BrowserObservation>;
+
+  /** Return a zoomed high-res crop around a mark/bbox (look-closer). */
+  lookCloser?(
+    conversationId: string,
+    opts: LookCloserOptions,
+  ): Promise<LookCloserResult>;
 
   /** Run a GUI action program against the isolated VM browser. */
   browserAction?(

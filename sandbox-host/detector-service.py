@@ -68,8 +68,55 @@ def load_models(want_caption=True):
     log("models loaded")
 
 
-def detect(image_path, conf, max_boxes):
-    res = _yolo.predict(source=image_path, conf=conf, iou=0.1, verbose=False)
+def _iou(a, b):
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    aa = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+    bb = max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+    return inter / float(aa + bb - inter + 1e-6)
+
+
+def _opencv_small_boxes(image_path, existing, min_px=8, max_px=72, cap=60):
+    """Cheap contour-based proposals for tiny text-less icons YOLO may miss
+    (e.g. an upvote triangle). Bounded + filtered to icon-like shapes; the model
+    can ignore irrelevant marks."""
+    try:
+        import cv2
+        import numpy as np
+
+        img = cv2.imread(image_path)
+        if img is None:
+            return []
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 60, 160)
+        edges = cv2.dilate(edges, np.ones((2, 2), np.uint8))
+        cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        out = []
+        for c in cnts:
+            x, y, w, h = cv2.boundingRect(c)
+            if not (min_px <= w <= max_px and min_px <= h <= max_px):
+                continue
+            if not (0.4 <= (w / max(1, h)) <= 2.5):
+                continue
+            box = [int(x), int(y), int(x + w), int(y + h)]
+            if any(_iou(box, e["bbox"]) > 0.3 for e in existing):
+                continue
+            if any(_iou(box, o["bbox"]) > 0.5 for o in out):
+                continue
+            out.append({"bbox": box, "center": [int(x + w / 2), int(y + h / 2)], "score": 0.0, "source": "opencv"})
+            if len(out) >= cap:
+                break
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def detect(image_path, conf, max_boxes, imgsz=1280, use_opencv=True):
+    res = _yolo.predict(source=image_path, conf=conf, iou=0.1, imgsz=imgsz, verbose=False)
     r = res[0]
     xyxy = r.boxes.xyxy.cpu().numpy()
     confs = r.boxes.conf.cpu().numpy()
@@ -80,10 +127,14 @@ def detect(image_path, conf, max_boxes):
                 "bbox": [int(x1), int(y1), int(x2), int(y2)],
                 "center": [int((x1 + x2) / 2), int((y1 + y2) / 2)],
                 "score": float(c),
+                "source": "detector",
             }
         )
     out.sort(key=lambda e: e["score"], reverse=True)
-    return out[:max_boxes]
+    out = out[:max_boxes]
+    if use_opencv:
+        out.extend(_opencv_small_boxes(image_path, out))
+    return out
 
 
 def caption(crops):
@@ -136,18 +187,36 @@ def handle(req_path):
     max_boxes = int(req.get("max", 120))
     want_caption = bool(req.get("caption", True))
 
+    imgsz = int(req.get("imgsz", 1280))
+    use_opencv = bool(req.get("opencv", True))
+    ocr_boxes = req.get("ocr_boxes", []) or []
+    min_caption_area = int(req.get("min_caption_area", 24 * 24))
+    max_captions = int(req.get("max_captions", 40))
+
     img = Image.open(img_abs).convert("RGB")
     W, H = img.size
-    elements = detect(img_abs, conf, max_boxes)
+    elements = detect(img_abs, conf, max_boxes, imgsz, use_opencv)
+    # Caption only when asked, and only boxes worth it: big enough AND not already
+    # covered by an OCR text box (those get text from OCR anyway). Bounded count.
     if want_caption and elements:
-        crops = []
+        to_cap = []
         for e in elements:
+            x1, y1, x2, y2 = e["bbox"]
+            if (x2 - x1) * (y2 - y1) < min_caption_area:
+                continue
+            if any(_iou(e["bbox"], ob) > 0.5 for ob in ocr_boxes):
+                continue
+            to_cap.append(e)
+            if len(to_cap) >= max_captions:
+                break
+        crops = []
+        for e in to_cap:
             x1, y1, x2, y2 = e["bbox"]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(W, x2), min(H, y2)
             crops.append(img.crop((x1, y1, max(x1 + 1, x2), max(y1 + 1, y2))))
         caps = caption(crops)
-        for e, c in zip(elements, caps):
+        for e, c in zip(to_cap, caps):
             e["caption"] = c
     return {"ok": True, "w": W, "h": H, "elements": elements}
 

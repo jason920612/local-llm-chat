@@ -16,6 +16,8 @@ import {
   type WatchVideoResult,
   type InspectVideoMomentsOptions,
   type InspectVideoMomentsResult,
+  type LookCloserOptions,
+  type LookCloserResult,
 } from "./driver";
 import { LocalProcessDriver } from "./local";
 import { MicroVMDriver } from "./microvm";
@@ -35,6 +37,8 @@ export type {
   WatchVideoResult,
   InspectVideoMomentsOptions,
   InspectVideoMomentsResult,
+  LookCloserOptions,
+  LookCloserResult,
 };
 
 const fsp = fs.promises;
@@ -114,6 +118,7 @@ export function computerObserve(
     ocr?: boolean;
     mark?: boolean;
     remark?: boolean;
+    caption?: boolean;
   },
 ): Promise<ComputerObservation> {
   const driver = getDriver();
@@ -162,7 +167,12 @@ export function browserOpenUrl(
 
 export function browserObserve(
   conversationId: string,
-  opts?: { includeScreenshot?: boolean; mark?: boolean; remark?: boolean },
+  opts?: {
+    includeScreenshot?: boolean;
+    mark?: boolean;
+    remark?: boolean;
+    caption?: boolean;
+  },
 ): Promise<BrowserObservation> {
   const driver = getDriver();
   if (!driver.browserObserve) {
@@ -174,6 +184,20 @@ export function browserObserve(
     });
   }
   return driver.browserObserve(conversationId, opts);
+}
+
+export function lookCloser(
+  conversationId: string,
+  opts: LookCloserOptions,
+): Promise<LookCloserResult> {
+  const driver = getDriver();
+  if (!driver.lookCloser) {
+    return Promise.resolve({
+      ok: false,
+      error: "look_closer requires the microVM sandbox driver",
+    });
+  }
+  return driver.lookCloser(conversationId, opts);
 }
 
 export function watchVideo(

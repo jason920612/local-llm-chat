@@ -17,6 +17,8 @@ import {
   type WatchVideoFrame,
   type InspectVideoMomentsOptions,
   type InspectVideoMomentsResult,
+  type LookCloserOptions,
+  type LookCloserResult,
   safeConvId,
   normalizeRepoUrl,
   repoDirName,
@@ -221,6 +223,7 @@ export class MicroVMDriver implements SandboxDriver {
       ocr?: boolean;
       mark?: boolean;
       remark?: boolean;
+      caption?: boolean;
     } = {},
   ): Promise<ComputerObservation> {
     if (!this.cfg.computer.enabled) {
@@ -248,10 +251,12 @@ export class MicroVMDriver implements SandboxDriver {
         ocr: opts.ocr ?? this.cfg.computer.ocr,
         mark: wantMark,
         remark: Boolean(opts.remark),
+        caption: opts.caption ?? det.caption,
         markDiffThreshold: this.cfg.computer.markDiffThreshold,
-        detectorCaption: det.caption,
         detectorConf: det.conf,
         detectorMaxBoxes: det.maxBoxes,
+        detectorImgsz: det.imgsz,
+        detectorOpencv: det.opencv,
         autoInstall: this.cfg.computer.autoInstall,
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
@@ -260,6 +265,44 @@ export class MicroVMDriver implements SandboxDriver {
       2_000_000,
     );
     return this.parseComputerObservation(result);
+  }
+
+  async lookCloser(
+    conversationId: string,
+    opts: LookCloserOptions,
+  ): Promise<LookCloserResult> {
+    const jobId = this.safeJobId(`cu_zoom_${nanoid(8)}`);
+    const result = await this.runVmRequest(
+      conversationId,
+      jobId,
+      {
+        id: jobId,
+        type: "look_closer",
+        timeoutMs: 60_000,
+        maxOutputChars: 4_000_000,
+        mark: opts.mark,
+        bbox: opts.bbox,
+        state: opts.state ?? "computer",
+        pad: opts.pad,
+      },
+      60_000,
+      4_000_000,
+    );
+    if (result.error || result.stderr) {
+      return { ok: false, error: result.error ?? result.stderr };
+    }
+    try {
+      const parsed = JSON.parse(result.stdout) as {
+        ok?: boolean;
+        crop?: { dataUrl?: string };
+        region?: [number, number, number, number];
+        error?: string;
+      };
+      if (!parsed.ok) return { ok: false, error: parsed.error ?? "look_closer failed" };
+      return { ok: true, dataUrl: parsed.crop?.dataUrl, region: parsed.region };
+    } catch (e) {
+      return { ok: false, error: `invalid look_closer result: ${String(e)}` };
+    }
   }
 
   async computerAction(
@@ -319,7 +362,12 @@ export class MicroVMDriver implements SandboxDriver {
 
   async browserObserve(
     conversationId: string,
-    opts: { includeScreenshot?: boolean; mark?: boolean; remark?: boolean } = {},
+    opts: {
+      includeScreenshot?: boolean;
+      mark?: boolean;
+      remark?: boolean;
+      caption?: boolean;
+    } = {},
   ): Promise<BrowserObservation> {
     const det = this.cfg.detector;
     const wantMark = Boolean(opts.mark) && this.cfg.computer.marking;
@@ -339,10 +387,12 @@ export class MicroVMDriver implements SandboxDriver {
         includeScreenshot: Boolean(opts.includeScreenshot),
         mark: wantMark,
         remark: Boolean(opts.remark),
+        caption: opts.caption ?? det.caption,
         markDiffThreshold: this.cfg.computer.markDiffThreshold,
-        detectorCaption: det.caption,
         detectorConf: det.conf,
         detectorMaxBoxes: det.maxBoxes,
+        detectorImgsz: det.imgsz,
+        detectorOpencv: det.opencv,
       },
       20 * 60 * 1000,
       2_000_000,

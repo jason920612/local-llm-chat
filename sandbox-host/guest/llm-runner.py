@@ -720,9 +720,11 @@ def observe_browser(req):
             float(req.get("markDiffThreshold", 0.06)),
             float(req.get("detectorConf", 0.05)),
             int(req.get("detectorMaxBoxes", 120)),
-            bool(req.get("detectorCaption", True)),
+            bool(req.get("caption", False)),
             state_name="browser",
             dom_els=elements,
+            opencv=bool(req.get("detectorOpencv", True)),
+            imgsz=int(req.get("detectorImgsz", 1280)),
         )
         if marked:
             shot_for_vision = marked
@@ -980,10 +982,22 @@ _MARK_STATES = {
 }
 
 
-def request_detection(ws_rel_image, caption=True, conf=0.05, max_boxes=120, timeout=40):
+def request_detection(
+    ws_rel_image,
+    caption=False,
+    conf=0.05,
+    max_boxes=120,
+    timeout=60,
+    ocr_boxes=None,
+    opencv=True,
+    imgsz=1280,
+    min_caption_area=576,
+    max_captions=40,
+):
     """Ask the host GPU detector service to find interactable regions in a
     screenshot already written under the shared workspace. Returns its element
-    list (bbox/center/caption/score) or None on timeout/unavailable."""
+    list (bbox/center/caption/score) or None on timeout/unavailable. Captioning
+    is opt-in and the host only captions big, non-OCR-covered boxes (bounded)."""
     try:
         DETECT.mkdir(parents=True, exist_ok=True)
     except Exception:  # noqa: BLE001
@@ -991,7 +1005,20 @@ def request_detection(ws_rel_image, caption=True, conf=0.05, max_boxes=120, time
     rid = "%d_%d" % (now_ms(), random.randint(1000, 9999))
     req_p = DETECT / ("req-%s.json" % rid)
     res_p = DETECT / ("res-%s.json" % rid)
-    write_json(req_p, {"image": ws_rel_image, "caption": bool(caption), "conf": conf, "max": max_boxes})
+    write_json(
+        req_p,
+        {
+            "image": ws_rel_image,
+            "caption": bool(caption),
+            "conf": conf,
+            "max": max_boxes,
+            "ocr_boxes": ocr_boxes or [],
+            "opencv": bool(opencv),
+            "imgsz": int(imgsz),
+            "min_caption_area": int(min_caption_area),
+            "max_captions": int(max_captions),
+        },
+    )
     deadline = time.time() + timeout
     while time.time() < deadline:
         if res_p.exists():
@@ -1147,7 +1174,7 @@ def _draw_overlay(shot_path, marks):
         return None
 
 
-def build_marks(shot, ws_rel, windows, ocr_els, force, threshold, conf, max_boxes, caption, state_name="computer", dom_els=None):
+def build_marks(shot, ws_rel, windows, ocr_els, force, threshold, conf, max_boxes, caption, state_name="computer", dom_els=None, opencv=True, imgsz=1280):
     """Decide reuse-vs-redetect, run host detection if needed, merge + number +
     overlay. Returns (marks, marked_png_path, redetected)."""
     sig = _frame_sig(shot)
@@ -1163,14 +1190,67 @@ def build_marks(shot, ws_rel, windows, ocr_els, force, threshold, conf, max_boxe
     )
     if reuse:
         return state["marks"], state["marked_path"], False
-    det_els = request_detection(ws_rel, caption=caption, conf=conf, max_boxes=max_boxes)
+    # Pass OCR boxes so the host skips captioning text it already has (speed).
+    ocr_boxes = [e["bbox"] for e in (ocr_els or []) if e.get("bbox")]
+    det_els = request_detection(
+        ws_rel, caption=caption, conf=conf, max_boxes=max_boxes,
+        ocr_boxes=ocr_boxes, opencv=opencv, imgsz=imgsz,
+    )
     if det_els is None:
         det_els = []  # service unavailable — fall back to OCR-only marks
     merged = _merge_detection(det_els, ocr_els, dom_els=dom_els)
     marks = _assign_marks(merged, state["marks"])
     marked = _draw_overlay(shot, marks)
-    state.update(sig=sig, windows=win_titles, marks=marks, marked_path=marked)
+    # Remember the ORIGINAL (full-res) screenshot so look_closer can crop it.
+    state.update(sig=sig, windows=win_titles, marks=marks, marked_path=marked, shot_path=str(shot))
     return marks, marked, True
+
+
+def look_closer(req):
+    """Return a zoomed, high-res crop around a mark (from the last marked observe)
+    or an explicit bbox — so the model can read tiny icons/text it can't make out
+    in the downscaled full screenshot. Returns the crop as a data URL."""
+    from PIL import Image
+
+    state_name = req.get("state") or "computer"
+    state = _MARK_STATES.get(state_name) or _MARK_STATES["computer"]
+    shot_path = state.get("shot_path")
+    if not shot_path or not os.path.exists(str(shot_path)):
+        return {"ok": False, "error": "no recent marked screenshot; run a marked observe (mark=true) first"}
+    bbox = req.get("bbox")
+    if not bbox and req.get("mark") is not None:
+        try:
+            target = int(req["mark"])
+        except (TypeError, ValueError):
+            target = None
+        for m in state["marks"]:
+            if m.get("mark") == target:
+                bbox = m.get("bbox")
+                break
+    if not bbox or len(bbox) < 4:
+        return {"ok": False, "error": "provide a valid mark (from the last marked observe) or an explicit bbox"}
+    try:
+        im = Image.open(str(shot_path)).convert("RGB")
+        W, H = im.size
+        x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+        pad = int(req.get("pad", 24))
+        cx1, cy1 = max(0, x1 - pad), max(0, y1 - pad)
+        cx2, cy2 = min(W, x2 + pad), min(H, y2 + pad)
+        crop = im.crop((cx1, cy1, max(cx1 + 1, cx2), max(cy1 + 1, cy2)))
+        target_edge = int(req.get("targetEdge", 512))
+        scale = max(1.0, target_edge / max(1, max(crop.width, crop.height)))
+        if scale > 1.0:
+            crop = crop.resize((int(crop.width * scale), int(crop.height * scale)))
+        out = COMPUTER / ("closer-%d.jpg" % now_ms())
+        crop.save(out, format="JPEG", quality=85)
+        data = base64.b64encode(out.read_bytes()).decode("ascii")
+        return {
+            "ok": True,
+            "region": [cx1, cy1, cx2, cy2],
+            "crop": {"dataUrl": "data:image/jpeg;base64," + data},
+        }
+    except Exception as ex:  # noqa: BLE001
+        return {"ok": False, "error": str(ex)}
 
 
 def observe_computer(req):
@@ -1241,7 +1321,9 @@ def observe_computer(req):
             float(req.get("markDiffThreshold", 0.06)),
             float(req.get("detectorConf", 0.05)),
             int(req.get("detectorMaxBoxes", 120)),
-            bool(req.get("detectorCaption", True)),
+            bool(req.get("caption", False)),
+            opencv=bool(req.get("detectorOpencv", True)),
+            imgsz=int(req.get("detectorImgsz", 1280)),
         )
         if marked:
             shot_for_vision = marked
@@ -2752,10 +2834,13 @@ def run_job(job_dir, req):
         "browser_action",
         "watch_video",
         "inspect_video_moments",
+        "look_closer",
     }:
         try:
             if req_type == "computer_observe":
                 data = observe_computer(req)
+            elif req_type == "look_closer":
+                data = look_closer(req)
             elif req_type == "computer_action":
                 data = (
                     action_sequence(req, "computer")

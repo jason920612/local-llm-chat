@@ -146,13 +146,19 @@ export const config = {
        */
       detector: {
         enabled: envBool("SANDBOX_VM_DETECTOR", true),
-        // Caption each detected element with Florence-2 (off = boxes only).
-        caption: envBool("SANDBOX_VM_DETECTOR_CAPTION", true),
+        // Florence-2 captioning is OFF by default (the model reads the marked
+        // image itself) — captioning all boxes is slow + hallucinates on tiny
+        // ones. When a marked observe sets caption=true, the host only captions
+        // big, non-OCR-covered boxes. Use look_closer for tiny-element detail.
+        caption: envBool("SANDBOX_VM_DETECTOR_CAPTION", false),
         // Service idle seconds before it exits and frees VRAM.
         idleSec: Number(process.env.SANDBOX_VM_DETECTOR_IDLE_SEC ?? 600),
-        // YOLO confidence threshold and max boxes per frame.
+        // YOLO confidence threshold, inference resolution, max boxes per frame.
         conf: Number(process.env.SANDBOX_VM_DETECTOR_CONF ?? 0.05),
+        imgsz: Number(process.env.SANDBOX_VM_DETECTOR_IMGSZ ?? 1280),
         maxBoxes: Number(process.env.SANDBOX_VM_DETECTOR_MAX_BOXES ?? 120),
+        // OpenCV small-box fallback for tiny text-less icons YOLO may miss.
+        opencv: envBool("SANDBOX_VM_DETECTOR_OPENCV", true),
       },
       /**
        * `watch_video`: sample frames (scene-change detection + duration-scaled
