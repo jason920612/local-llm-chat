@@ -21,6 +21,26 @@ TIMEOUT_BIN=/usr/bin/timeout
 KERNEL="$LSB/kernel/vmlinuz"
 ROOTFS="$LSB/images/base.img"
 ROOT="${SANDBOX_WSL_ROOT:-/srv/llm-sandboxes}"
+SLOTDIR="$LSB/run/slots"
+
+active_vm_args_for_slot() {
+  local slot="$1"
+  pgrep -af "$CH" 2>/dev/null | grep -F -- "--net tap=lt${slot}," || true
+}
+
+slot_in_use_by_any_vm() {
+  active_vm_args_for_slot "$1" | grep -q .
+}
+
+slot_in_use_by_other_vm() {
+  local slot="$1"
+  local convdir="${2:-}"
+  if [ -n "$convdir" ]; then
+    active_vm_args_for_slot "$slot" | grep -v -F "$convdir/sys.img" | grep -q .
+  else
+    slot_in_use_by_any_vm "$slot"
+  fi
+}
 
 # --- stop mode: "llm-vm-run stop <CONVID>" -----------------------------------
 # Tear down a conversation's VM. Killing the Windows-side wsl.exe relay does NOT
@@ -42,8 +62,20 @@ if [ "${1:-}" = "stop" ]; then
   # 3) free the tap device + IP slot (derive the slot from the guest net config).
   SLOT=$(sed -n 's#.*"ip":"[0-9.]*\.\([0-9]\{1,3\}\)/24".*#\1#p' "$WS/.run/net.json" 2>/dev/null | head -1)
   if [ -n "$SLOT" ]; then
-    "$IP" link del "lt$SLOT" 2>/dev/null || true
-    rm -f "$LSB/run/slots/$SLOT" 2>/dev/null || true
+    mkdir -p "$SLOTDIR"
+    exec 8>"$SLOTDIR/.alloc.lock"
+    flock 8
+    SLOT_OWNER=$(awk 'NR == 1 { print $1 }' "$SLOTDIR/$SLOT" 2>/dev/null || true)
+    if [ -n "$SLOT_OWNER" ] && [ "$SLOT_OWNER" != "$CONVID" ]; then
+      echo "keeping lt$SLOT: reserved by $SLOT_OWNER"
+    elif slot_in_use_by_other_vm "$SLOT" "$CONVDIR"; then
+      echo "keeping lt$SLOT: still used by another VM"
+    else
+      "$IP" link del "lt$SLOT" 2>/dev/null || true
+      rm -f "$SLOTDIR/$SLOT" 2>/dev/null || true
+    fi
+    flock -u 8
+    exec 8>&-
   fi
   rm -f "$WS/.run/vfsd.sock" 2>/dev/null || true
   echo "stopped $CONVID slot=${SLOT:-?}"
@@ -90,12 +122,27 @@ fi
 exec 9>"$WS/.run/.lock"
 flock 9
 
-# --- allocate a free guest IP slot (2..250) via atomic lockfiles ---
-SLOTDIR="$LSB/run/slots"; mkdir -p "$SLOTDIR"
+# --- allocate a free guest IP slot (2..250) via lockfiles + live VM checks ---
+mkdir -p "$SLOTDIR"
+exec 8>"$SLOTDIR/.alloc.lock"
+flock 8
 SLOT=""
 for n in $(seq 2 250); do
-  if ( set -o noclobber; echo $$ >"$SLOTDIR/$n" ) 2>/dev/null; then SLOT=$n; break; fi
+  # Slot files are advisory; a killed launcher can leave one behind and a hard
+  # stop can remove one while the VM is still alive. The running CH process is
+  # the source of truth, so never reuse a tap that any active VM still owns.
+  if slot_in_use_by_any_vm "$n"; then
+    continue
+  fi
+  rm -f "$SLOTDIR/$n" 2>/dev/null || true
+  sudo "$IP" link del "lt$n" 2>/dev/null || true
+  if ( set -o noclobber; printf '%s %s\n' "$CONVID" "$$" >"$SLOTDIR/$n" ) 2>/dev/null; then
+    SLOT=$n
+    break
+  fi
 done
+flock -u 8
+exec 8>&-
 [ -z "$SLOT" ] && { echo "ERR no free vm slot"; exit 3; }
 TAP="lt${SLOT}"
 SOCK="$WS/.run/vfsd.sock"
@@ -103,17 +150,34 @@ VFSD=""
 
 cleanup() {
   [ -n "$VFSD" ] && sudo "$KILL" "$VFSD" 2>/dev/null || true
-  sudo "$IP" link del "$TAP" 2>/dev/null || true
-  rm -f "$SOCK" "$SLOTDIR/$SLOT" 2>/dev/null || true
+  mkdir -p "$SLOTDIR"
+  exec 8>"$SLOTDIR/.alloc.lock"
+  flock 8
+  SLOT_OWNER=$(awk 'NR == 1 { print $1 }' "$SLOTDIR/$SLOT" 2>/dev/null || true)
+  if [ -n "$SLOT_OWNER" ] && [ "$SLOT_OWNER" != "$CONVID" ]; then
+    echo "keeping $TAP: reserved by $SLOT_OWNER" >&2
+  elif slot_in_use_by_other_vm "$SLOT" "$CONVDIR"; then
+    echo "keeping $TAP: still used by another VM" >&2
+  else
+    sudo "$IP" link del "$TAP" 2>/dev/null || true
+    rm -f "$SLOTDIR/$SLOT" 2>/dev/null || true
+  fi
+  flock -u 8
+  exec 8>&-
+  rm -f "$SOCK" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 # --- network config handed to the guest via control file ---
 printf '{"ip":"%s.%s/24","gw":"%s.1"}' "$SUBNET" "$SLOT" "$SUBNET" >"$WS/.run/net.json"
 
-# Delete any stale tap for this slot FIRST (a prior VM may have leaked it on a
-# hard kill). Re-adding without this silently reuses the broken device, which
-# fails CH with "tap offload: File descriptor in bad state".
+# Delete any stale tap for this slot FIRST. Allocation above has already proved
+# no active VM owns this tap; without that guard, deleting here can sever another
+# conversation's network while its VM keeps running.
+if slot_in_use_by_any_vm "$SLOT"; then
+  echo "ERR allocated active vm slot $SLOT"
+  exit 3
+fi
 sudo "$IP" link del "$TAP" 2>/dev/null || true
 sudo "$IP" tuntap add dev "$TAP" mode tap
 sudo "$IP" link set "$TAP" master "$BR"

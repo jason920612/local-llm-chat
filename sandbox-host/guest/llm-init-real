@@ -29,7 +29,13 @@ if [ -f /workspace/.run/net.json ]; then
   ip link set lo up 2>/dev/null
   ip link set eth0 up 2>/dev/null
   [ -n "$GIP" ] && ip addr add "$GIP" dev eth0 2>/dev/null
-  [ -n "$GGW" ] && ip route add default via "$GGW" 2>/dev/null
+  [ -n "$GGW" ] && ip route replace default via "$GGW" 2>/dev/null
+  cat >/etc/resolv.conf <<'EOF'
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+nameserver 9.9.9.9
+options timeout:2 attempts:2 rotate
+EOF
   echo "[llm-init] net eth0=$GIP gw=$GGW"
 fi
 
