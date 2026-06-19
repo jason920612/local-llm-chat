@@ -111,7 +111,11 @@ trap cleanup EXIT
 # --- network config handed to the guest via control file ---
 printf '{"ip":"%s.%s/24","gw":"%s.1"}' "$SUBNET" "$SLOT" "$SUBNET" >"$WS/.run/net.json"
 
-sudo "$IP" tuntap add dev "$TAP" mode tap 2>/dev/null || true
+# Delete any stale tap for this slot FIRST (a prior VM may have leaked it on a
+# hard kill). Re-adding without this silently reuses the broken device, which
+# fails CH with "tap offload: File descriptor in bad state".
+sudo "$IP" link del "$TAP" 2>/dev/null || true
+sudo "$IP" tuntap add dev "$TAP" mode tap
 sudo "$IP" link set "$TAP" master "$BR"
 sudo "$IP" link set "$TAP" up
 
