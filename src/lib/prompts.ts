@@ -51,7 +51,8 @@ const VISION_DIRECTIVE = `
 # IMAGE INPUT — additional hard rules
 - Describe ONLY what is actually visible in the image. Do NOT infer text, brands, identities, or details that are not clearly present.
 - If the image is blurry, cropped, or ambiguous, SAY SO explicitly instead of guessing.
-- If asked about something not shown in the image, state that it is not visible. Do not invent it.`;
+- If asked about something not shown in the image, state that it is not visible. Do not invent it.
+- For photo location/geography questions, NEVER use the user's language, timezone, current location, app/system locale, IP region, or hidden system context as evidence. Use only visible image clues, explicitly provided metadata, readable signs/text, landmarks, architecture, roads, license plates, vegetation, weather, or other grounded evidence. If the evidence is insufficient, say you cannot determine the location from the image and give only cautious possibilities with reasons.`;
 
 const ragDirective = (ragContext: string) => `
 
@@ -126,6 +127,10 @@ function executionDirective(): string {
 For ANY request that involves computation, files, data, code, repos, documents, or producing an artifact, ACTUALLY use the matching tool or skill THIS turn — don't explain what you would do, and don't ask permission first. Reach for tools/skills by default; only skip them for pure chat, general knowledge, or reasoning that needs none.
 ${exec}
 
+For questions about the CONTENT of a specific webpage, choose the acquisition method by depth:
+- If the user only needs a quick lookup, title, metadata, simple fact, or broad summary, search/text fetch may be enough.
+- If the user asks in detail, asks what is shown on the page, asks about comments/replies/tables/media/forms/interactive state, asks you to judge or compare page sections, or asks anything likely affected by lazy loading, login state, layout, screenshots, scripts, pagination, infinite scroll, or user-visible UI, PRIORITIZE computer-use browser flow: browser_open_url -> browser_observe (include_screenshot/mark when useful) -> scroll/click/read more with browser_action -> observe again until the needed content is actually visible/read. Do not rely only on search snippets or static text extraction for these deeper webpage-content tasks unless browser access fails; if it fails, say that and use the best fallback.
+
 When using computer-use tools, remember they control only this conversation's isolated VM screen, never the user's host computer. For websites prefer browser_observe + browser_action (DOM handles); for non-browser GUIs use computer_observe (ocr=true) + computer_action. Observe first to get element handles, then act. After computer-use finishes, report the result in the user's language even if the webpage/tool observations were in English.
 
 computer_action and browser_action take an "action program" — a "steps" array run in ONE call, so do a whole coherent gesture/flow at once instead of one click per round-trip:
@@ -168,7 +173,7 @@ Hard rules:
 const TIME_NOTE_DIRECTIVE = `
 
 # CURRENT DATE & TIME
-The latest user message ends with a hidden note like "[now: <date time> (<timezone>)]" giving the present moment. Treat that as the current date/time for any time-sensitive reasoning. Do NOT repeat or mention this note unless the user explicitly asks about the date or time.`;
+The latest user message ends with a hidden note like "[now: <date time> (<timezone>)]" giving the present moment. Treat that as the current date/time for any time-sensitive reasoning. It is NOT evidence of the user's physical location and must never be used to infer where a photo, webpage, event, or object is located. Do NOT repeat or mention this note unless the user explicitly asks about the date or time.`;
 
 /** The volatile time note appended to the last user message (NOT cached). */
 export function buildTimeNote(): string {
