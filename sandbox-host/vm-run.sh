@@ -139,7 +139,7 @@ sudo "$TIMEOUT_BIN" "$HARD" "$CH" \
   --disk path="$ROOTFS",readonly=on,image_type=raw path="$SYSIMG",readonly=off,image_type=raw \
   --fs tag=workspace,socket="$SOCK" \
   --net tap="$TAP",mac="$MAC" \
-  --cmdline "console=ttyS0 root=/dev/vda ro init=/llm-init" \
+  --cmdline "console=ttyS0 root=/dev/vda ro init=/llm-init ipv6.disable=1" \
   --serial file="$WS/.run/serial.log" \
   --console off \
   --cpus boot="$VCPUS" \
