@@ -54,7 +54,7 @@ export interface ComputerMark {
   center: [number, number];
   bbox: [number, number, number, number];
   text?: string;
-  source?: "detector" | "ocr" | "dom";
+  source?: "detector" | "opencv" | "ocr" | "dom";
   score?: number;
 }
 

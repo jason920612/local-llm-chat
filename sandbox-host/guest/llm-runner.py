@@ -1079,7 +1079,7 @@ def _merge_detection(det_els, ocr_els, dom_els=None):
                 "center": e.get("center"),
                 "text": str(e.get("caption", "")).strip(),
                 "score": e.get("score"),
-                "source": "detector",
+                "source": str(e.get("source") or "detector"),
             }
         )
     for e in ocr_els:

@@ -46,8 +46,8 @@ v3 fixes both, as **general** capabilities.
 ## 2. Decisions (owner-approved)
 
 - **Grounding via an OmniParser-style detector**: YOLO interactable-region
-  detection **+ Florence-2-large icon captioning** (each mark gets a short text
-  description).
+  detection with optional **Florence-2-large icon captioning** (caption requests
+  add short text descriptions for selected marks).
 - **Detection runs on the GPU, host-side in WSL2 — NOT in the microVM.** The
   Cloud Hypervisor microVM has no GPU passthrough (infeasible on WSL2), but WSL2
   itself has CUDA via `/dev/dxg` on the host's **RTX 4060 (8GB)**. So the heavy
@@ -71,8 +71,9 @@ v3 fixes both, as **general** capabilities.
 ### 3.1 GPU detector service (host-side, WSL2)
 
 - A **persistent WSL2 process** (`sandbox-host/detector-service.py`) that loads
-  the YOLO interactable-region model + **Florence-2-large** on **CUDA** once and
-  serves every conversation VM. NOT baked into base.img; not in the VM.
+  the YOLO interactable-region model on **CUDA** and serves every conversation
+  VM. **Florence-2-large** captioning can be preloaded, or lazy-loaded by the
+  first `caption=true` observe request. NOT baked into base.img; not in the VM.
 - Setup script `sandbox-host/setup-detector.sh`: create a venv with
   PyTorch (CUDA build), `ultralytics`/`transformers`, download the OmniParser
   YOLO weights + Florence-2-large. (WSL2 ships `libcuda`; no nvcc needed —
@@ -140,8 +141,8 @@ v3 fixes both, as **general** capabilities.
 
 Host GPU service (NOT in base.img):
 - `sandbox-host/detector-service.py` (new) — persistent WSL2 CUDA service: load
-  YOLO + Florence-2-large once, watch `/srv/llm-sandboxes/*/ws/.run/detect/`,
-  infer on GPU, write results; idle-exit.
+  YOLO, lazy/preload Florence-2-large for captions, watch
+  `/srv/llm-sandboxes/*/ws/.run/detect/`, infer on GPU, write results; idle-exit.
 - `sandbox-host/setup-detector.sh` (new) — venv + torch(CUDA) + transformers +
   ultralytics + weight download.
 - `src/lib/sandbox/detector.ts` (new) — Node lifecycle: ensure the WSL2 service
@@ -169,12 +170,12 @@ Guest + wiring:
 
 ## 5. Performance & safety
 
-- GPU (RTX 4060, 8GB): Florence-2-large + YOLO load once in the host service;
-  captioning is the cost driver but fast on GPU and gated behind smart re-marking
-  + caching (no recompute on unchanged frames). YOLO-only fallback if captions
-  are disabled.
-- VRAM: service idle-exits to free ~2-3GB; avoids clashing with a local LM Studio
-  model. One service instance shared across all VMs (single model load).
+- GPU (RTX 4060, 8GB): YOLO loads in the host service; Florence-2-large either
+  preloads or lazy-loads on the first `caption=true` request. Captioning is the
+  cost driver but is gated behind smart re-marking + caching (no recompute on
+  unchanged frames). YOLO-only fallback if captions are unavailable.
+- VRAM: service idle-exits to free GPU memory; avoids clashing with a local LM
+  Studio model. One detector/caption service instance is shared across all VMs.
 - The microVM has NO GPU — only frame capture + overlay + xdotool run in it.
 - Human movement adds latency per click (hundreds of ms); `fast:true` bypasses.
 - Deploy: app code via build+restart; the GPU service via `setup-detector.sh`

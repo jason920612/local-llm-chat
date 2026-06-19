@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Host-side GPU UI-detector service (WSL2).
 
-Loads the OmniParser YOLO interactable-region detector + Florence-2-large caption
-model ONCE on CUDA (the RTX 4060 via WSL /dev/dxg) and serves every conversation
-microVM. The VM has no GPU, so it writes a detect request onto the shared
-virtio-fs workspace and this host process answers it.
+Loads the OmniParser YOLO interactable-region detector on CUDA (the RTX 4060 via
+WSL /dev/dxg) and serves every conversation microVM. Florence-2-large captioning
+is either preloaded at startup or lazy-loaded by the first caption=true request.
+The VM has no GPU, so it writes a detect request onto the shared virtio-fs
+workspace and this host process answers it.
 
 Transport (file-based over the shared workspace):
   request : /srv/llm-sandboxes/<conv>/ws/.run/detect/req-<id>.json
@@ -43,7 +44,7 @@ def log(*a):
 
 
 def load_models(want_caption=True):
-    global _yolo, _flo_model, _flo_proc, _dtype
+    global _yolo, _dtype
     import torch
     from ultralytics import YOLO
 
@@ -53,19 +54,46 @@ def load_models(want_caption=True):
     log("device", dev, "dtype", _dtype)
     _yolo = YOLO(YOLO_PATH)
     if want_caption:
+        ensure_florence_loaded()
+    log("models loaded")
+
+
+def ensure_florence_loaded():
+    """Load Florence-2 on demand.
+
+    The service usually starts with --no-caption to keep VRAM free. A single
+    observe call can still request caption=true; that first request pays the
+    model-load cost, then later caption requests reuse the loaded model.
+    """
+    global _flo_model, _flo_proc, _dtype, _device
+    if _flo_model is not None and _flo_proc is not None:
+        return True
+    try:
+        import torch
         from transformers import AutoModelForCausalLM, AutoProcessor
 
+        if _dtype is None:
+            _dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            _device = "cuda" if torch.cuda.is_available() else "cpu"
+        log("loading caption model on demand")
         _flo_model = AutoModelForCausalLM.from_pretrained(
             FLORENCE_PATH,
             torch_dtype=_dtype,
             trust_remote_code=True,
             attn_implementation="sdpa",
-        ).to(dev)
+        ).to(_device)
         _flo_model.eval()
         _flo_proc = AutoProcessor.from_pretrained(
             FLORENCE_PATH, trust_remote_code=True
         )
-    log("models loaded")
+        log("caption model loaded")
+        return True
+    except Exception as ex:  # noqa: BLE001
+        _flo_model = None
+        _flo_proc = None
+        log("caption model load failed:", ex)
+        traceback.print_exc()
+        return False
 
 
 def _iou(a, b):
@@ -141,7 +169,9 @@ def caption(crops):
     """Batch-caption a list of PIL crops with Florence-2 (<CAPTION>)."""
     import torch
 
-    if not crops or _flo_model is None:
+    if not crops:
+        return []
+    if (_flo_model is None or _flo_proc is None) and not ensure_florence_loaded():
         return ["" for _ in crops]
     prompt = "<CAPTION>"
     texts = []
@@ -231,7 +261,11 @@ def write_atomic(path, obj):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--idle", type=int, default=600, help="idle seconds before exit")
-    ap.add_argument("--no-caption", action="store_true")
+    ap.add_argument(
+        "--no-caption",
+        action="store_true",
+        help="do not preload Florence captions; caption=true requests lazy-load it",
+    )
     args = ap.parse_args()
 
     os.makedirs(DET, exist_ok=True)

@@ -668,7 +668,7 @@ const COMPUTER_OBSERVE_TOOL = {
       caption: {
         type: "boolean",
         description:
-          "Add short AI captions to detector marks (slower; off by default). You already see the overlaid screenshot, so this is usually unnecessary — use look_closer to read a specific tiny element.",
+          "Add short AI captions to detector marks (slower; first use may lazy-load the caption model). You already see the overlaid screenshot, so this is usually unnecessary — use look_closer to read a specific tiny element.",
       },
     },
   },
@@ -785,7 +785,7 @@ const BROWSER_OBSERVE_TOOL = {
       caption: {
         type: "boolean",
         description:
-          "Add short AI captions to detector marks (slower; off by default). Usually unnecessary — you see the overlaid screenshot. Use look_closer to inspect a specific tiny element instead.",
+          "Add short AI captions to detector marks (slower; first use may lazy-load the caption model). Usually unnecessary — you see the overlaid screenshot. Use look_closer to inspect a specific tiny element instead.",
       },
     },
   },

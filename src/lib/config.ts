@@ -139,17 +139,17 @@ export const config = {
         humanMouseJitter: Number(process.env.SANDBOX_VM_HUMAN_MOUSE_JITTER ?? 2),
       },
       /**
-       * Host-side GPU UI-detector service (WSL2). The microVM has no GPU, so the
-       * OmniParser YOLO + Florence-2-large models run in a persistent WSL2 CUDA
-       * process that serves all VMs over the shared workspace. Launched on demand
-       * and idle-exits. See docs/computer-use-v3-grounding-plan.md.
+       * Host-side GPU UI-detector service (WSL2). The microVM has no GPU, so
+       * OmniParser YOLO runs in a persistent WSL2 CUDA process shared by all VMs.
+       * Florence-2-large captions can be preloaded or lazy-loaded on request.
+       * Launched on demand and idle-exits. See docs/computer-use-v3-grounding-plan.md.
        */
       detector: {
         enabled: envBool("SANDBOX_VM_DETECTOR", true),
-        // Florence-2 captioning is OFF by default (the model reads the marked
-        // image itself) — captioning all boxes is slow + hallucinates on tiny
-        // ones. When a marked observe sets caption=true, the host only captions
-        // big, non-OCR-covered boxes. Use look_closer for tiny-element detail.
+        // Florence-2 captioning is not preloaded by default (the model reads the
+        // marked image itself). A marked observe with caption=true lazy-loads
+        // Florence if needed, then captions only big, non-OCR-covered boxes.
+        // Set this true to preload Florence at detector-service startup.
         caption: envBool("SANDBOX_VM_DETECTOR_CAPTION", false),
         // Service idle seconds before it exits and frees VRAM.
         idleSec: Number(process.env.SANDBOX_VM_DETECTOR_IDLE_SEC ?? 600),
