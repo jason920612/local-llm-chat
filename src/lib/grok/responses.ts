@@ -41,8 +41,14 @@ import {
   readBackgroundLog,
   listBackground,
   killBackground,
-  wakeConversation,
+  wakeConversationWhenIdle,
+  normalizeLongRunningCommandClass,
 } from "../live/background";
+import {
+  formatTaskLedgerState,
+  noteTaskProgress,
+  updateTaskLedger,
+} from "../task-ledger";
 
 type ToolBgStatus = "running" | "done" | "error";
 type ToolBgKind = "computer_action" | "browser_action" | "watch_video";
@@ -70,11 +76,16 @@ interface ToolBgJob {
 
 const toolBgGlobal = globalThis as unknown as {
   __grokToolBg?: Map<string, ToolBgJob>;
+  __grokToolFailures?: Map<string, { count: number; lastAt: number }>;
 };
 const toolBgJobs =
   toolBgGlobal.__grokToolBg ?? (toolBgGlobal.__grokToolBg = new Map());
+const toolFailures =
+  toolBgGlobal.__grokToolFailures ??
+  (toolBgGlobal.__grokToolFailures = new Map());
 const TOOL_BG_WAKE_RETRY_MS = 1500;
 const TOOL_BG_WAKE_MAX_RETRIES = 600;
+const TOOL_FAILURE_TTL_MS = 20 * 60 * 1000;
 
 function startToolBackground(
   conversationId: string,
@@ -111,9 +122,9 @@ function startToolBackground(
 
 function scheduleToolBgWake(job: ToolBgJob): void {
   const tryWake = (tries: number) => {
-    void import("../live/generations").then(({ getActiveForConversation }) => {
+    void import("../live/generations").then(({ getRunningForConversation }) => {
       if (
-        getActiveForConversation(job.conversationId) &&
+        getRunningForConversation(job.conversationId) &&
         tries < TOOL_BG_WAKE_MAX_RETRIES
       ) {
         setTimeout(() => tryWake(tries + 1), TOOL_BG_WAKE_RETRY_MS);
@@ -139,7 +150,7 @@ function wakeToolBackground(job: ToolBgJob): void {
     `Call read_tool_background with id "${job.id}" to fetch the full result and any tool-generated images.`,
     "Do not treat this completion notice as a user request.",
   ];
-  wakeConversation(job.conversationId, lines.filter(Boolean).join("\n"));
+  wakeConversationWhenIdle(job.conversationId, lines.filter(Boolean).join("\n"));
 }
 
 function blockingToolBackgroundJobs(conversationId: string): ToolBgJob[] {
@@ -240,30 +251,64 @@ async function attachReferencedFiles(
 }
 
 /** Wake the model when a backgrounded run_code finishes. */
-function onBgRunComplete(conversationId: string, r: RunResult): void {
+function onBgRunComplete(
+  conversationId: string,
+  language: "python" | "bash",
+  code: string,
+  r: RunResult,
+): void {
+  const codeSummary = code.replace(/\s+/g, " ").trim().slice(0, 500);
+  noteTaskProgress(conversationId, `Backgrounded run_code finished: ${codeSummary || "(empty)"}`, {
+    evidence: [
+      `run_code ${language} exit_code=${r.exitCode}${r.timedOut ? " timed_out" : ""}`,
+      r.stdout ? `run_code stdout tail: ${r.stdout.slice(-500)}` : "",
+      r.stderr ? `run_code stderr tail: ${r.stderr.slice(-500)}` : "",
+    ].filter(Boolean),
+    currentPhase: r.exitCode === 0 && !r.timedOut ? "background run_code completed" : "background run_code needs reconciliation",
+    nextAction:
+      r.exitCode === 0 && !r.timedOut
+        ? "reconcile result with task goal and continue or report verified success"
+        : "inspect failure and continue with a different fix if the user goal is not satisfied",
+  });
   const content = [
-    "⚙ Background run_code finished (auto-generated)",
+    "INTERNAL TOOL RESULT: background_run_code_completed",
+    "WAKE_REASON: a run_code call that was moved to the background has finished.",
+    "This is a server-generated tool result, not a user message.",
+    "The previous user request is NOT being asked again.",
+    "You are resuming only to handle this newly completed background result.",
+    "",
+    `completed_tool: run_code`,
+    `language: ${language}`,
+    `command_summary: ${codeSummary || "(empty)"}`,
     `exit_code: ${r.exitCode}${r.timedOut ? " (timed out)" : ""}`,
     r.error ? `error: ${r.error}` : "",
     r.stdout ? `stdout:\n${r.stdout}` : "stdout: (empty)",
     r.stderr ? `stderr:\n${r.stderr}` : "",
     r.files.length
-      ? `files: ${r.files.map((f) => f.name).join(", ")} — present each with [[file:EXACT_NAME]] on its own line in your reply.`
+      ? `files: ${r.files.map((f) => f.name).join(", ")} - present each deliverable with [[file:EXACT_NAME]] if it matters to the user.`
       : "",
-    "This background run has finished. Continue based on its result.",
+    "",
+    "EXPECTED_ASSISTANT_BEHAVIOR:",
+    "- Reply to the user with the result of this completed background run_code.",
+    "- Briefly state what finished, whether it succeeded, and the useful output or next action.",
+    "- Reconcile this event with CURRENT_BACKGROUND_STATE and the latest assistant reply before drawing a conclusion.",
+    "- If a later assistant reply or newer background job already satisfied the user's goal, treat this completion event as historical context and do not contradict that success.",
+    "- If the user's requested goal is still unsatisfied and this result shows an actionable failure, continue with a different fix without asking the user whether to proceed.",
+    "- Do not repeat the full answer to the original user request.",
+    "- Do not restart the same command or redo already completed work unless the result shows a concrete failure that needs a different next step.",
+    "- If no user-visible action is needed, give a short status update only.",
   ]
     .filter(Boolean)
     .join("\n");
-  void import("../live/background").then(({ wakeConversation }) =>
-    wakeConversation(conversationId, content),
-  );
+  wakeConversationWhenIdle(conversationId, content);
 }
 
 /**
  * Run model code. On the microVM backend, the VM runs in the foreground for up
  * to `foregroundMs`; if it's still going, the run is auto-migrated to the
- * background (the VM keeps running) and the model is woken with the output when
- * it finishes. `addFiles` collects files for the current message.
+ * background (the VM keeps running) and the model is woken with a structured
+ * completion event when it finishes. `addFiles` collects files for the current
+ * message.
  */
 async function handleRunCode(
   conversationId: string,
@@ -272,7 +317,12 @@ async function handleRunCode(
   addFiles: (files: SandboxFile[]) => void,
 ): Promise<string> {
   const isVM = config.sandbox.driver === "microvm";
-  const p = runCode(conversationId, language, code);
+  const p = runCode(
+    conversationId,
+    language,
+    code,
+    isVM ? { timeoutMs: config.sandbox.microvm.maxRunMs } : undefined,
+  );
 
   if (!isVM) {
     const r = await p;
@@ -295,9 +345,9 @@ async function handleRunCode(
 
   // Still running after the foreground window -> move to background.
   void p.then(
-    (r) => onBgRunComplete(conversationId, r),
+    (r) => onBgRunComplete(conversationId, language, code, r),
     (e) =>
-      onBgRunComplete(conversationId, {
+      onBgRunComplete(conversationId, language, code, {
         stdout: "",
         stderr: String(e),
         exitCode: null,
@@ -309,7 +359,80 @@ async function handleRunCode(
   );
   return `Still running after ${Math.round(
     fg / 1000,
-  )}s, so it was automatically MOVED TO THE BACKGROUND and keeps running. You'll be notified with its full output when it finishes. You may continue using run_code or background tools in this conversation while it runs.`;
+  )}s, so it was automatically MOVED TO THE BACKGROUND and keeps running. It has NOT finished yet, and stdout/stderr are NOT available yet. Do NOT infer, guess, or report the final output from the command text. When it finishes, you will be woken with a structured background_run_code_completed event that identifies this command and its real result. If you reply before that wake event, only say that the command is still running in the background and that you will report the result when it completes. You may continue with non-conflicting work, but don't repeat this same run_code while it is pending.`;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stableJson(obj[k])}`)
+    .join(",")}}`;
+}
+
+function normalizeShellForGuard(command: string): string {
+  return normalizeLongRunningCommandClass(command);
+}
+
+function toolAttemptKey(name: string, args: Record<string, unknown>): string {
+  if (name === BG_START_FN && typeof args.command === "string") {
+    const kind = args.kind === "service" ? "service" : "task";
+    return `${name}:${kind}:${normalizeShellForGuard(args.command)}`;
+  }
+  if (name === CODE_FN && typeof args.code === "string") {
+    const lang = args.language === "bash" ? "bash" : "python";
+    return `${name}:${lang}:${normalizeShellForGuard(args.code)}`;
+  }
+  return `${name}:${stableJson(args)}`;
+}
+
+function toolFailureKey(conversationId: string, attemptKey: string): string {
+  return `${conversationId}:${attemptKey}`;
+}
+
+function getToolFailureCount(conversationId: string, attemptKey: string): number {
+  const now = Date.now();
+  for (const [key, value] of toolFailures) {
+    if (now - value.lastAt > TOOL_FAILURE_TTL_MS) toolFailures.delete(key);
+  }
+  return toolFailures.get(toolFailureKey(conversationId, attemptKey))?.count ?? 0;
+}
+
+function recordToolAttemptResult(
+  conversationId: string,
+  attemptKey: string,
+  failed: boolean,
+): void {
+  const key = toolFailureKey(conversationId, attemptKey);
+  if (!failed) {
+    toolFailures.delete(key);
+    return;
+  }
+  const prev = toolFailures.get(key)?.count ?? 0;
+  toolFailures.set(key, { count: prev + 1, lastAt: Date.now() });
+}
+
+function toolOutputLooksFailed(output: string): boolean {
+  const s = output.trim();
+  if (!s) return false;
+  try {
+    const parsed = JSON.parse(s) as { ok?: unknown; error?: unknown };
+    if (parsed && typeof parsed === "object") {
+      return parsed.ok === false || typeof parsed.error === "string";
+    }
+  } catch {
+    /* non-JSON tool output */
+  }
+  return (
+    /^error:/i.test(s) ||
+    /\bfailed:/i.test(s) ||
+    /\bfailed\b/i.test(s.slice(0, 300)) ||
+    /\btimed out\b/i.test(s.slice(0, 500)) ||
+    /exit_code:\s*(?!0(?:\D|$))[^\n]+/i.test(s) ||
+    /^No .+ in this conversation\./i.test(s)
+  );
 }
 
 /**
@@ -343,6 +466,7 @@ const SEND_SCREENSHOT_FN = "send_screenshot";
 const WATCH_VIDEO_FN = "watch_video";
 const LOOK_CLOSER_FN = "look_closer";
 const INSPECT_VIDEO_MOMENTS_FN = "inspect_video_moments";
+const TASK_STATE_FN = "update_task_state";
 
 function looksLikeImageUrl(url: string): boolean {
   try {
@@ -388,6 +512,80 @@ function costTicksFromUsage(usage: unknown): number {
 const BASE_TOOLS = [
   webSearchTool(),
   { type: "x_search" },
+  {
+    type: "function",
+    name: TASK_STATE_FN,
+    description:
+      "Update your hidden durable task ledger for this conversation. Use it for non-trivial user tasks: call it at the start to set the goal and acceptance criteria, after important tool/background milestones, when a failure is superseded by a later success, and before the final answer. This is internal working memory, not a user-visible message.",
+    parameters: {
+      type: "object",
+      properties: {
+        reset: {
+          type: "boolean",
+          description:
+            "Set true when starting a new user task so old progress does not contaminate the new goal.",
+        },
+        goal: {
+          type: "string",
+          description:
+            "The user's concrete task goal in their language, e.g. '在系統中開啟 Minecraft server'.",
+        },
+        status: {
+          type: "string",
+          enum: [
+            "idle",
+            "planning",
+            "running",
+            "verifying",
+            "succeeded",
+            "failed",
+            "blocked",
+          ],
+          description:
+            "Current overall task status. Use succeeded only after acceptance criteria are verified.",
+        },
+        acceptance_criteria: {
+          type: "array",
+          description:
+            "Concrete completion checks. For a server: process is running, expected port/listener is active, logs show ready/done.",
+          items: { type: "string" },
+        },
+        current_phase: {
+          type: "string",
+          description:
+            "What phase you are in now, e.g. installing dependencies, starting service, verifying port/logs.",
+        },
+        progress_note: {
+          type: "string",
+          description:
+            "One concise progress update to append to the ledger.",
+        },
+        evidence: {
+          type: "array",
+          description:
+            "Verified facts that matter for the final answer, including command/log evidence.",
+          items: { type: "string" },
+        },
+        background_jobs: {
+          type: "array",
+          description:
+            "Relevant background job ids (bg_...) and optionally short labels.",
+          items: { type: "string" },
+        },
+        superseded_failures: {
+          type: "array",
+          description:
+            "Failures that were later fixed or replaced by a newer successful approach. Marking them here prevents stale wake events from contradicting success.",
+          items: { type: "string" },
+        },
+        next_action: {
+          type: "string",
+          description:
+            "The next action you intend to take if the task is not complete, or what remains for the user if complete.",
+        },
+      },
+    },
+  },
   {
     type: "function",
     name: IMAGE_FN,
@@ -562,7 +760,7 @@ const BG_START_TOOL = {
   type: "function",
   name: BG_START_FN,
   description:
-    "Launch a long-running shell command as a BACKGROUND process in the conversation sandbox and get back a background id (bg_…). It keeps running after this reply; you are AUTOMATICALLY woken with its exit code + log tail when it finishes (or times out / is killed). Use for builds, servers, training, crawls, watchers, or anything that takes a while. For quick commands that finish in seconds, use run_code instead.",
+    "Launch a long-running shell command in the conversation sandbox and get back a background id (bg_…). Use kind='task' for finite jobs (builds, downloads, crawls): you are automatically woken when it finishes. Use kind='service' for persistent servers/watchers/daemons: choose this from the user's intent when the command should keep running, and pass the FOREGROUND command, not tmux/nohup/&; the manager daemonizes it, stores pid/log, keeps it marked running, and does NOT wake you just because startup succeeded. The manager blocks duplicate/repeated-failing services of the same command class; if blocked, inspect logs/change strategy instead of retrying. For quick commands that finish in seconds, use run_code instead.",
   parameters: {
     type: "object",
     properties: {
@@ -573,7 +771,13 @@ const BG_START_TOOL = {
       timeout_seconds: {
         type: "number",
         description:
-          "Hard timeout in seconds; the process is killed at this limit. Max 604800 (7 days). Defaults to the max if omitted.",
+          "For kind='task': hard timeout in seconds; killed at this limit. For kind='service': startup probe timeout only; the service keeps running after startup. Max 604800 (7 days). Defaults to the max if omitted.",
+      },
+      kind: {
+        type: "string",
+        enum: ["task", "service"],
+        description:
+          "Use 'service' for persistent servers/watchers/daemons that should keep running until killed. Use 'task' for finite work that should wake you when done. Defaults to 'task'.",
       },
     },
     required: ["command"],
@@ -1541,6 +1745,7 @@ export function streamGrokResponses(
               candles?: unknown[];
               title?: string;
               command?: string;
+              kind?: string;
               timeout_seconds?: number;
               id?: string;
               tail_chars?: number;
@@ -1570,6 +1775,16 @@ export function streamGrokResponses(
               remark?: boolean;
               bbox?: unknown[];
               state?: string;
+              reset?: boolean;
+              goal?: string;
+              status?: string;
+              acceptance_criteria?: string[];
+              current_phase?: string;
+              progress_note?: string;
+              evidence?: string[];
+              background_jobs?: string[];
+              superseded_failures?: string[];
+              next_action?: string;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -1577,7 +1792,41 @@ export function streamGrokResponses(
               /* ignore */
             }
             let out = "";
-            if (c.name === IMAGE_FN) {
+            const participatesInRetryGuard = c.name !== TASK_STATE_FN;
+            const retryKey = participatesInRetryGuard
+              ? toolAttemptKey(c.name, args as Record<string, unknown>)
+              : "";
+            const priorFailures = participatesInRetryGuard
+              ? getToolFailureCount(conversationId, retryKey)
+              : 0;
+            if (priorFailures >= 2) {
+              emitTool("tool_retry_blocked", {
+                tool: c.name,
+                repeated_failures: priorFailures,
+              });
+              out =
+                `Repeated failure guard: ${c.name} with the same arguments has already failed ${priorFailures} times. ` +
+                "Do NOT call this same tool with the same arguments again. Choose a different method, inspect state/logs, simplify the approach, or explain the blocker to the user.";
+            } else if (c.name === TASK_STATE_FN) {
+              const state = updateTaskLedger(conversationId, {
+                reset: Boolean(args.reset),
+                goal: args.goal,
+                status: args.status,
+                acceptanceCriteria: args.acceptance_criteria,
+                currentPhase: args.current_phase,
+                progressNote: args.progress_note,
+                evidence: args.evidence,
+                backgroundJobs: args.background_jobs,
+                supersededFailures: args.superseded_failures,
+                nextAction: args.next_action,
+              });
+              out = [
+                "Task ledger updated. Use this current state to decide the next action:",
+                formatTaskLedgerState(state),
+                "",
+                "Remember: if the goal is not satisfied and the failure is actionable, continue fixing it without asking the user whether to proceed. If a later success supersedes an older failure, do not contradict the success.",
+              ].join("\n");
+            } else if (c.name === IMAGE_FN) {
               emitTool("generate_image", { prompt: args.prompt ?? "" });
               try {
                 const src = await generateImage(args.prompt ?? "");
@@ -1702,15 +1951,32 @@ export function streamGrokResponses(
                 ? `Cloned into "${r.dir}/". Top-level tree:\n${r.tree}\n\nNow explore it with run_code (cd ${r.dir} && rg ...). Do NOT read every file.`
                 : `clone_repo failed: ${r.error ?? "error"}`;
             } else if (c.name === BG_START_FN) {
-              emitTool("start_background", { command: args.command ?? "" });
+              const kind = args.kind === "service" ? "service" : "task";
+              emitTool("start_background", { command: args.command ?? "", kind });
               const r = startBackground(
                 conversationId,
                 args.command ?? "",
                 args.timeout_seconds ?? 0,
+                kind,
               );
+              if (r.id) {
+                noteTaskProgress(conversationId, `Started background ${kind} ${r.id}: ${args.command ?? ""}`, {
+                  backgroundJobs: [`${r.id} (${kind})`],
+                  currentPhase:
+                    kind === "service"
+                      ? "background service started; verify readiness/logs"
+                      : "background task started; wait for completion or inspect logs",
+                  nextAction:
+                    kind === "service"
+                      ? `verify ${r.id} with read_background_log/list_background before final success`
+                      : `wait for ${r.id} completion wake or inspect its log`,
+                });
+              }
               out = r.error
                 ? `start_background failed: ${r.error}`
-                : `Started background process ${r.id} (timeout ${r.timeoutSeconds}s). It runs in the background; you'll be AUTOMATICALLY woken with its exit code + log when it finishes. You can check on it any time with read_background_log("${r.id}") or stop it with kill_background("${r.id}").`;
+                : kind === "service"
+                  ? `Started background service ${r.id}. It is intended to keep running until killed. You will NOT be woken just because startup succeeded; use read_background_log("${r.id}") or list_background to check it, and kill_background("${r.id}") to stop it.`
+                  : `Started background process ${r.id} (timeout ${r.timeoutSeconds}s). It runs in the background; you'll be AUTOMATICALLY woken with its exit code + log when it finishes. You can check on it any time with read_background_log("${r.id}") or stop it with kill_background("${r.id}").`;
             } else if (c.name === BG_LOG_FN) {
               emitTool("read_background_log", { id: args.id ?? "" });
               const r = await readBackgroundLog(
@@ -1728,7 +1994,7 @@ export function streamGrokResponses(
                 ? jobs
                     .map(
                       (j) =>
-                        `${j.id} [${j.status}${j.exitCode != null ? ` code=${j.exitCode}` : ""}] ${j.command}`,
+                        `${j.id} [${j.kind} ${j.status}${j.exitCode != null ? ` code=${j.exitCode}` : ""}] ${j.command}`,
                     )
                     .join("\n")
                 : "No background processes in this conversation.";
@@ -1736,7 +2002,7 @@ export function streamGrokResponses(
               emitTool("kill_background", { id: args.id ?? "" });
               const ok = killBackground(conversationId, args.id ?? "");
               out = ok
-                ? `Killed ${args.id}. (You'll still get the completion event.)`
+                ? `Killed ${args.id}. This explicit kill will not trigger a separate completion wake; inspect state/logs before starting any replacement.`
                 : `No running background process ${args.id ?? ""} in this conversation.`;
             } else if (c.name === TOOL_BG_READ_FN) {
               const id = args.id ?? "";
@@ -1753,6 +2019,9 @@ export function streamGrokResponses(
                   out = `Tool background job ${job.id} failed: ${job.error ?? "unknown error"}`;
                 } else {
                   pushToolBgVisuals(job.result?.visuals);
+                  for (const f of job.result?.files ?? []) {
+                    if (!files.some((x) => x.name === f.name)) files.push(f);
+                  }
                   out =
                     job.result?.output ??
                     `Tool background job ${job.id} finished with no output.`;
@@ -2042,6 +2311,13 @@ export function streamGrokResponses(
               }
             } else {
               out = `Unknown tool: ${c.name}`;
+            }
+            if (participatesInRetryGuard) {
+              recordToolAttemptResult(
+                conversationId,
+                retryKey,
+                toolOutputLooksFailed(out),
+              );
             }
             outputs.push({
               type: "function_call_output",

@@ -64,6 +64,16 @@ export function getActiveForConversation(
   return undefined;
 }
 
+/** The currently streaming generation for a conversation, if any. */
+export function getRunningForConversation(
+  conversationId: string,
+): ActiveGen | undefined {
+  for (const g of active.values()) {
+    if (g.conversationId === conversationId && g.status === "streaming") return g;
+  }
+  return undefined;
+}
+
 export function getGeneration(messageId: string): ActiveGen | undefined {
   return active.get(messageId);
 }
@@ -98,9 +108,16 @@ export interface StartGenerationArgs {
  * Create the assistant placeholder, broadcast it, and run the pipeline in the
  * background. Returns immediately; progress flows over the bus + DB.
  */
-export function startGeneration(args: StartGenerationArgs): void {
+export function startGeneration(args: StartGenerationArgs): boolean {
   const { conversationId, assistantMessageId, parentId, body } = args;
   const continueDepth = args.continueDepth ?? 0;
+  const running = getRunningForConversation(conversationId);
+  if (running) {
+    console.warn(
+      `[generation-blocked] conv=${conversationId} existing=${running.messageId} requested=${assistantMessageId}`,
+    );
+    return false;
+  }
 
   // 1. Persist an empty streaming placeholder and broadcast it so every device
   //    shows the assistant bubble right away.
@@ -136,6 +153,7 @@ export function startGeneration(args: StartGenerationArgs): void {
 
   // 2. Drive the pipeline in the background.
   void run(gen, body);
+  return true;
 }
 
 async function run(gen: ActiveGen, body: ChatRequestBody): Promise<void> {

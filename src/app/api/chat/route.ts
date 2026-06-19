@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
   }
 
   const assistantMessageId = body.assistantMessageId || nanoid();
-  startGeneration({
+  const started = startGeneration({
     conversationId,
     assistantMessageId,
     parentId,
@@ -66,6 +66,12 @@ export async function POST(req: NextRequest) {
       })),
     },
   });
+  if (!started) {
+    return Response.json(
+      { error: "A generation is already running for this conversation." },
+      { status: 409 },
+    );
+  }
 
   return Response.json(
     { ok: true, generationId: assistantMessageId },

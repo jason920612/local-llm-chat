@@ -589,10 +589,13 @@ export type BgStatus =
   | "timeout"
   | "terminated";
 
+export type BgKind = "task" | "service";
+
 export interface BackgroundJob {
   id: string;
   conversationId: string;
   command: string;
+  kind: BgKind;
   status: BgStatus;
   exitCode: number | null;
   log: string | null;
@@ -624,6 +627,7 @@ interface BgRow {
   id: string;
   conversation_id: string;
   command: string;
+  kind: string | null;
   status: string;
   exit_code: number | null;
   log: string | null;
@@ -637,6 +641,7 @@ function rowToBg(r: BgRow): BackgroundJob {
     id: r.id,
     conversationId: r.conversation_id,
     command: r.command,
+    kind: r.kind === "service" ? "service" : "task",
     status: r.status as BgStatus,
     exitCode: r.exit_code,
     log: r.log,
@@ -649,12 +654,13 @@ function rowToBg(r: BgRow): BackgroundJob {
 export function insertBackgroundJob(j: BackgroundJob): void {
   db.prepare(
     `INSERT INTO background_jobs
-       (id, conversation_id, command, status, exit_code, log, started_at, timeout_at, ended_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, conversation_id, command, kind, status, exit_code, log, started_at, timeout_at, ended_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     j.id,
     j.conversationId,
     j.command,
+    j.kind,
     j.status,
     j.exitCode,
     j.log,

@@ -90,6 +90,7 @@ function init(): Database.Database {
       id              TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
       command         TEXT NOT NULL,
+      kind            TEXT NOT NULL DEFAULT 'task',
       status          TEXT NOT NULL,
       exit_code       INTEGER,
       log             TEXT,
@@ -103,6 +104,12 @@ function init(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_bg_status
       ON background_jobs(status);
+
+    CREATE TABLE IF NOT EXISTS task_states (
+      conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+      state           TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS sop_control_events (
       id                TEXT PRIMARY KEY,
@@ -221,6 +228,11 @@ function init(): Database.Database {
   // 'error'. NULL = a normal, already-complete message.
   try {
     db.exec(`ALTER TABLE messages ADD COLUMN status TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE background_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'`);
   } catch {
     /* column already exists */
   }

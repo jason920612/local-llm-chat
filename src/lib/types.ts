@@ -93,6 +93,8 @@ export type BgStatus =
   | "timeout"
   | "terminated";
 
+export type BgKind = "task" | "service";
+
 export interface RagDocument {
   id: string;
   name: string;

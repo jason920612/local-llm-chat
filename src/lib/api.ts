@@ -406,6 +406,7 @@ export interface BackgroundJob {
   id: string;
   conversationId: string;
   command: string;
+  kind?: "task" | "service";
   status: BgStatus;
   exitCode: number | null;
   log: string | null;

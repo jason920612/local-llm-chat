@@ -14,6 +14,7 @@ import { askGrok, mapGrokCitations } from "../grok/search";
 import { generateImage } from "../grok/image";
 import { grokSearchTool, generateImageTool } from "../grok/tool";
 import { streamGrokResponses } from "../grok/responses";
+import { buildTaskLedgerPrompt } from "../task-ledger";
 import { skillsSummary } from "../skills";
 import { compactConversation } from "../compaction";
 import {
@@ -100,6 +101,15 @@ function combineInstructions(globalPrompt: string, projectPrompt?: string): stri
   return `${globalPrompt}\n\n# Project Instructions\n${p}`;
 }
 
+function withTaskLedgerPrompt(
+  systemPrompt: string,
+  conversationId?: string,
+  canUpdate = false,
+): string {
+  if (!conversationId) return systemPrompt;
+  return `${systemPrompt}\n\n${buildTaskLedgerPrompt(conversationId, { canUpdate })}`;
+}
+
 /** Input the route gathers before invoking the controlled pipeline. */
 export interface PipelineInput {
   messages: UIMessage[];
@@ -153,18 +163,22 @@ export async function runControlledChat(
         correctionRounds: 0,
         action: "grok_native",
       });
-      const systemPrompt = buildSystemPrompt({
-        hasImages,
-        ragContext,
-        grokNative: true,
-        customInstructions: combineInstructions(
-          customSystemPrompt(),
-          project.prompt,
-        ),
-        // Skills depend on the sandbox tools (run_code/clone_repo), so only
-        // advertise them when the sandbox is enabled.
-        skills: config.sandbox.enabled ? skillsSummary() : [],
-      });
+      const systemPrompt = withTaskLedgerPrompt(
+        buildSystemPrompt({
+          hasImages,
+          ragContext,
+          grokNative: true,
+          customInstructions: combineInstructions(
+            customSystemPrompt(),
+            project.prompt,
+          ),
+          // Skills depend on the sandbox tools (run_code/clone_repo), so only
+          // advertise them when the sandbox is enabled.
+          skills: config.sandbox.enabled ? skillsSummary() : [],
+        }),
+        body.conversationId,
+        true,
+      );
       // Auto-compact long histories: summarize older turns and send
       // [summary + recent turns] instead of the full transcript.
       const { messages: effective, summary } = await compactConversation(
@@ -220,15 +234,18 @@ export async function runControlledChat(
       action: useTools ? "grok_tool_enabled" : "no_external_tool",
     });
 
-    const systemPrompt = buildSystemPrompt({
-      hasImages,
-      ragContext,
-      hasGrokTool: useTools,
-      customInstructions: combineInstructions(
-        customSystemPrompt(),
-        project.prompt,
-      ),
-    });
+    const systemPrompt = withTaskLedgerPrompt(
+      buildSystemPrompt({
+        hasImages,
+        ragContext,
+        hasGrokTool: useTools,
+        customInstructions: combineInstructions(
+          customSystemPrompt(),
+          project.prompt,
+        ),
+      }),
+      body.conversationId,
+    );
     const openaiMessages: ChatParam[] = [
       { role: "system", content: systemPrompt },
       ...toOpenAIMessages(withTimeNote(messages)),
