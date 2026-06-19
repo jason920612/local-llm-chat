@@ -676,7 +676,7 @@ const ACTION_STEP_PROPERTIES = {
     enum: [
       "move", "left_click", "right_click", "middle_click", "double_click",
       "mouse_down", "mouse_up", "drag", "type_text", "key", "key_down",
-      "key_up", "scroll", "wait", "eval",
+      "key_up", "scroll", "focus_window", "raise_window", "wait", "eval",
     ],
   },
   js: { type: "string", description: "Browser only — for action 'eval': JavaScript run in the page via page.evaluate. Returns its value in the step result. Use to set a contenteditable directly, read <img>.src / canvas data, or install a persistent reactive handler (MutationObserver/setInterval) that auto-handles dynamic events." },
@@ -706,7 +706,7 @@ const ACTION_PROGRAM_DESC =
   "Run an ACTION PROGRAM: an ordered `steps` array executed server-side in ONE round-trip, fail-fast. Returns per-step results plus a fresh execution-time observation (new element handles), so you don't need a separate observe after. " +
   "TARGET a pointer step by `mark` (a number from a marked computer_observe — BEST, works for text-less icons) OR `id` (handle) OR `text` (re-locate by visible text/role) OR `x`,`y` (last resort). " +
   "Clicks move a REAL cursor smoothly to the target (human-like, not a synthetic/JS event) on both desktop and browser; set a step's `fast:true` to skip the travel. " +
-  "VERBS: move, left_click, right_click, middle_click, double_click, mouse_down, mouse_up, drag (destination via to_id/to_text/to_x+to_y), type_text (types `text`), key/key_down/key_up (`key`, combos like ctrl+shift+t), scroll (`amount`), wait (`ms`). `modifiers` holds keys during a click. " +
+  "VERBS: move, left_click, right_click, middle_click, double_click, mouse_down, mouse_up, drag (destination via to_id/to_text/to_x+to_y), type_text (types `text`), key/key_down/key_up (`key`, combos like ctrl+shift+t), scroll (`amount`), focus_window/raise_window (desktop only: bring a win_* target to the foreground without clicking), wait (`ms`). `modifiers` holds keys during a click. " +
   "CONDITION GATES — `when` (skip step now if false) and `wait_for` (poll until true, else step fails): leaves { text } | { gone } | { id_present } | { id_gone } | { clickable } | { url_contains } | { ms }, each may add a `label`; combine with { all:[…] } AND, { any:[…] } OR, { not:… } NOT, { none:[…] } NOR, { nand:[…] } NAND — nestable to any depth. A finished wait reports WHY in wait_result.by/unmet plus wait_result.condition, a recursive explanation tree that correctly explains negative gates like not/none/nand. " +
   "ON FAILURE, `on_fail` may run a pre-planned recovery sub-sequence { do:[…steps…], then:'return'(default)|'continue' } — recursive, so plan B can carry plan C. " +
   "Set include_screenshot:true to SEE the result: the returned observation screenshot is fed back to you as a real image (you can read CAPTCHAs, charts, board/map images, emoji, etc.).";
@@ -716,7 +716,7 @@ const COMPUTER_ACTION_TOOL = {
   name: COMPUTER_ACTION_FN,
   description:
     ACTION_PROGRAM_DESC +
-    " This drives the VM's RAW GUI (mouse/keyboard on the isolated Xvfb display) — get handles/coords from computer_observe (set ocr=true). The VM screen is isolated from the user's host.",
+    " This drives the VM's RAW GUI (mouse/keyboard on the isolated Xvfb display) — get handles/coords from computer_observe (set ocr=true). For overlapping desktop windows, first call focus_window with the target win_* handle (for example win_1) before typing or clicking inside it. The VM screen is isolated from the user's host.",
   parameters: {
     type: "object",
     properties: {

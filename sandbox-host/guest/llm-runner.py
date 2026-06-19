@@ -470,6 +470,44 @@ def list_windows():
     return windows
 
 
+def active_window_id():
+    env = computer_env()
+    rc, out, _err = run_cmd(["xdotool", "getactivewindow"], timeout=3, env=env)
+    if rc != 0:
+        return ""
+    raw = out.strip()
+    if not raw:
+        return ""
+    try:
+        return hex(int(raw)).lower()
+    except ValueError:
+        return raw.lower()
+
+
+def activate_window(window_id):
+    """Raise/focus a target X window before clicking it.
+
+    Window elements are represented to the model as win_1/win_2, but we keep the
+    real wmctrl id internally. Activating first avoids the classic overlap bug:
+    clicking the center of a partially covered terminal can hit Chrome instead.
+    """
+    if not window_id:
+        return False
+    env = computer_env()
+    wid = str(window_id)
+    try:
+        xwid = str(int(wid, 16)) if wid.lower().startswith("0x") else wid
+    except ValueError:
+        xwid = wid
+    ok = False
+    rc, _out, _err = run_cmd(["wmctrl", "-ia", wid], timeout=3, env=env)
+    ok = ok or rc == 0
+    run_cmd(["xdotool", "windowactivate", "--sync", xwid], timeout=5, env=env)
+    time.sleep(0.2)
+    active = active_window_id()
+    return ok or active == wid.lower()
+
+
 def wait_for_cdp(timeout=20.0):
     """Poll the Chromium DevTools endpoint until it accepts connections. On a cold
     first launch the 9222 listener isn't up immediately, so connect_over_cdp would
@@ -1465,6 +1503,7 @@ def _snapshot_computer(width, height, need_text):
             "kind": "window",
             "text": w.get("title", ""),
             "bbox": w["bbox"],
+            "window_id": w.get("id"),
             "center": [
                 int((w["bbox"][0] + w["bbox"][2]) / 2),
                 int((w["bbox"][1] + w["bbox"][3]) / 2),
@@ -1478,7 +1517,7 @@ def _snapshot_computer(width, height, need_text):
         ocr_els, _err = run_ppocr(shot)
         elements.extend(ocr_els)
         blob += " " + " ".join(str(e.get("text", "")) for e in ocr_els)
-    return {"kind": "computer", "text": blob, "elements": elements, "url": None}
+    return {"kind": "computer", "text": blob, "elements": elements, "windows": windows, "url": None}
 
 
 def _snapshot_browser(page):
@@ -1493,7 +1532,7 @@ def _snapshot_browser(page):
     return {"kind": "browser", "text": blob, "elements": els, "url": url}
 
 
-def _resolve_center(snap, want):
+def _resolve_target(snap, want):
     if want.get("mark") is not None:
         try:
             target = int(want["mark"])
@@ -1501,38 +1540,56 @@ def _resolve_center(snap, want):
             return None
         for m in (snap.get("marks") or []) + _MARK_STATE["marks"]:
             if m.get("mark") == target:
-                return m.get("center")
+                return m.get("center"), m
         return None
     if want.get("id"):
         for e in snap["elements"]:
             if e.get("id") == want["id"]:
-                return e.get("center")
+                return e.get("center"), e
         return None
     if want.get("text"):
         v = str(want["text"]).strip().lower()
         for e in snap["elements"]:
             if str(e.get("text", "")).strip().lower() == v:
-                return e.get("center")
+                return e.get("center"), e
         for e in snap["elements"]:
             if v and v in str(e.get("text", "")).lower():
-                return e.get("center")
+                return e.get("center"), e
         return None
     if want.get("x") is not None and want.get("y") is not None:
-        return [int(want["x"]), int(want["y"])]
+        return [int(want["x"]), int(want["y"])], None
     return None
+
+
+def _resolve_center(snap, want):
+    resolved = _resolve_target(snap, want)
+    return resolved[0] if resolved else None
+
+
+def _prepare_window_target(target):
+    if not isinstance(target, dict):
+        return
+    if target.get("source") != "window":
+        return
+    activate_window(target.get("window_id"))
 
 
 def _exec_computer_step(step, snap):
     env = computer_env()
     action = step.get("action")
     mods = [str(m) for m in (step.get("modifiers") or [])]
+    focus = action in ("focus_window", "raise_window")
     pointer = action in (
         "move", "left_click", "right_click", "middle_click", "double_click",
         "mouse_down", "mouse_up", "drag",
     )
-    center = _resolve_center(snap, step) if (pointer or action == "scroll") else None
-    if pointer and center is None and action != "mouse_up":
-        raise ValueError("target not found (id/text/x,y)")
+    resolved = _resolve_target(snap, step) if (pointer or focus or action == "scroll") else None
+    center = resolved[0] if resolved else None
+    target = resolved[1] if resolved else None
+    if (pointer or focus) and center is None and action != "mouse_up":
+        raise ValueError("target not found (mark/id/text/x,y)")
+    if pointer:
+        _prepare_window_target(target)
 
     def with_mods(fn):
         for m in mods:
@@ -1545,6 +1602,11 @@ def _exec_computer_step(step, snap):
 
     if action == "move":
         smooth_move(*center)
+    elif focus:
+        if not isinstance(target, dict) or target.get("source") != "window":
+            raise ValueError("focus_window target must be a window handle such as win_1")
+        if not activate_window(target.get("window_id")):
+            raise ValueError("focus_window failed")
     elif action in ("left_click", "right_click", "middle_click", "double_click"):
         smooth_move(*center)
         btn = {"left_click": "1", "right_click": "3", "middle_click": "2", "double_click": "1"}[action]
@@ -1566,7 +1628,7 @@ def _exec_computer_step(step, snap):
             "x": step.get("to_x"), "y": step.get("to_y"),
         })
         if dest is None:
-            raise ValueError("drag destination not found (to_id/to_text/to_x,to_y)")
+            raise ValueError("drag destination not found (to_mark/to_id/to_text/to_x,to_y)")
         smooth_move(*center)
         run_cmd(["xdotool", "mousedown", "1"], timeout=3, env=env)
         smooth_move(*dest)
