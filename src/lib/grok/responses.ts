@@ -639,7 +639,7 @@ const COMPUTER_OBSERVE_TOOL = {
   type: "function",
   name: COMPUTER_OBSERVE_FN,
   description:
-    "Observe the isolated virtual screen inside this conversation's microVM. Returns screen size, open windows, and optionally a small screenshot data URL. Set ocr=true to also get on-screen text elements with bounding boxes and clickable center coordinates (PP-OCRv6) — do this when you need to locate where to click. Use before any computer_action and again after each action. The VM screen is isolated from the user's host computer.",
+    "Observe the isolated virtual screen inside this conversation's microVM. Returns screen size, open windows, and optionally a small screenshot data URL. Set ocr=true to also get on-screen text elements with bounding boxes and clickable center coordinates (PP-OCRv6). Set mark=true for SET-OF-MARK grounding: a GPU detector finds every interactable element (incl. text-less icons/buttons), the returned screenshot is OVERLAID with numbered marks, and you get a `marks` list of {mark, center, text}. Then click precisely in computer_action with `mark: N` — far more reliable than guessing x,y. Use before any computer_action and again after each action. The VM screen is isolated from the user's host computer.",
   parameters: {
     type: "object",
     properties: {
@@ -652,6 +652,16 @@ const COMPUTER_OBSERVE_TOOL = {
         type: "boolean",
         description:
           "Run PP-OCRv6 (medium) to detect on-screen text and return each piece with its bounding box and clickable center coordinates. Set true when you need to read the screen or find where to click for non-browser GUIs; adds ~1-2s. Defaults to false.",
+      },
+      mark: {
+        type: "boolean",
+        description:
+          "Set-of-Mark grounding: overlay numbered marks on every interactable element (GPU detector + OCR) and return a `marks` list. The overlaid screenshot is shown to you; target elements precisely with `mark: N` in computer_action — especially icons/buttons that have no text. Re-detection is automatic when the screen changes.",
+      },
+      remark: {
+        type: "boolean",
+        description:
+          "Force re-detection of marks even if the screen looks unchanged (e.g. after a subtle update). Normally unnecessary.",
       },
     },
   },
@@ -670,14 +680,17 @@ const ACTION_STEP_PROPERTIES = {
     ],
   },
   js: { type: "string", description: "Browser only — for action 'eval': JavaScript run in the page via page.evaluate. Returns its value in the step result. Use to set a contenteditable directly, read <img>.src / canvas data, or install a persistent reactive handler (MutationObserver/setInterval) that auto-handles dynamic events." },
+  mark: { type: "number", description: "Target the numbered Set-of-Mark element from the latest marked computer_observe (mark=true). Most reliable way to click — including text-less icons. Resolves to that element's exact center." },
   id: { type: "string", description: "Target element handle from the latest observation (e.g. el_3 / dom_5 / win_1)." },
   text: { type: "string", description: "Pointer actions: re-locate the target by visible text/role (robust to id churn). For type_text: the literal text to type." },
   x: { type: "number" },
-  y: { type: "number", description: "Raw target coordinates (fallback when no id/text)." },
+  y: { type: "number", description: "Raw target coordinates (last resort — prefer mark/id/text)." },
+  to_mark: { type: "number", description: "Drag destination as a Set-of-Mark number." },
   to_id: { type: "string" },
   to_text: { type: "string" },
   to_x: { type: "number" },
-  to_y: { type: "number", description: "Drag destination — one of to_id/to_text/to_x+to_y." },
+  to_y: { type: "number", description: "Drag destination — one of to_mark/to_id/to_text/to_x+to_y." },
+  fast: { type: "boolean", description: "Skip the human-like cursor travel for this step (instant pointer). Default false: clicks move a REAL cursor smoothly to the target, which behaves more like a human and avoids synthetic-input detection." },
   modifiers: { type: "array", items: { type: "string", enum: ["ctrl", "shift", "alt", "meta"] }, description: "Modifier keys held during a click." },
   key: { type: "string", description: "For key/key_down/key_up; combos allowed, e.g. Return, Escape, ctrl+shift+t." },
   amount: { type: "number", description: "Scroll notches: positive scrolls down, negative up." },
@@ -691,7 +704,8 @@ const ACTION_STEP_PROPERTIES = {
 
 const ACTION_PROGRAM_DESC =
   "Run an ACTION PROGRAM: an ordered `steps` array executed server-side in ONE round-trip, fail-fast. Returns per-step results plus a fresh execution-time observation (new element handles), so you don't need a separate observe after. " +
-  "TARGET a pointer step by `id` (handle from observe) OR `text` (re-locate by visible text/role — best when ids change) OR `x`,`y`. " +
+  "TARGET a pointer step by `mark` (a number from a marked computer_observe — BEST, works for text-less icons) OR `id` (handle) OR `text` (re-locate by visible text/role) OR `x`,`y` (last resort). " +
+  "Clicks move a REAL cursor smoothly to the target (human-like, not a synthetic/JS event) on both desktop and browser; set a step's `fast:true` to skip the travel. " +
   "VERBS: move, left_click, right_click, middle_click, double_click, mouse_down, mouse_up, drag (destination via to_id/to_text/to_x+to_y), type_text (types `text`), key/key_down/key_up (`key`, combos like ctrl+shift+t), scroll (`amount`), wait (`ms`). `modifiers` holds keys during a click. " +
   "CONDITION GATES — `when` (skip step now if false) and `wait_for` (poll until true, else step fails): leaves { text } | { gone } | { id_present } | { id_gone } | { clickable } | { url_contains } | { ms }, each may add a `label`; combine with { all:[…] } AND, { any:[…] } OR, { not:… } NOT, { none:[…] } NOR, { nand:[…] } NAND — nestable to any depth. A finished wait reports WHY in wait_result.by/unmet plus wait_result.condition, a recursive explanation tree that correctly explains negative gates like not/none/nand. " +
   "ON FAILURE, `on_fail` may run a pre-planned recovery sub-sequence { do:[…steps…], then:'return'(default)|'continue' } — recursive, so plan B can carry plan C. " +
@@ -1503,6 +1517,8 @@ export function streamGrokResponses(
               moments?: unknown[];
               windowSec?: number;
               framesPerMoment?: number;
+              mark?: boolean;
+              remark?: boolean;
             } = {};
             try {
               args = JSON.parse(c.args || "{}");
@@ -1702,10 +1718,13 @@ export function streamGrokResponses(
               emitTool("computer_observe", {
                 include_screenshot: Boolean(args.include_screenshot),
                 ocr: args.ocr ?? false,
+                mark: Boolean(args.mark),
               });
               const obs = await computerObserve(conversationId, {
                 includeScreenshot: Boolean(args.include_screenshot),
                 ocr: args.ocr ?? false,
+                mark: Boolean(args.mark),
+                remark: Boolean(args.remark),
               });
               visionFromObservation(obs, "computer_observe");
               out = JSON.stringify(obs);

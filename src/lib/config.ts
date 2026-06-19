@@ -126,6 +126,33 @@ export const config = {
         height: Number(process.env.SANDBOX_VM_SCREEN_HEIGHT ?? 720),
         autoInstall: envBool("SANDBOX_VM_COMPUTER_AUTOINSTALL", true),
         ocr: envBool("SANDBOX_VM_COMPUTER_OCR", true),
+        // v3 Set-of-Mark grounding: overlay numbered marks on observed screens
+        // so the model can point precisely (mark: N) — including text-less icons.
+        marking: envBool("SANDBOX_VM_MARKING", true),
+        // Re-run detection when the frame changes beyond this fraction (0-1) or a
+        // new window appears; otherwise reuse cached marks (bounds GPU cost).
+        markDiffThreshold: Number(process.env.SANDBOX_VM_MARK_DIFF ?? 0.06),
+        // Human-like real cursor: move the X pointer along an eased, jittered
+        // path before a real click (vs teleport). Steps scale with distance.
+        humanMouse: envBool("SANDBOX_VM_HUMAN_MOUSE", true),
+        humanMouseMaxSteps: Number(process.env.SANDBOX_VM_HUMAN_MOUSE_STEPS ?? 40),
+        humanMouseJitter: Number(process.env.SANDBOX_VM_HUMAN_MOUSE_JITTER ?? 2),
+      },
+      /**
+       * Host-side GPU UI-detector service (WSL2). The microVM has no GPU, so the
+       * OmniParser YOLO + Florence-2-large models run in a persistent WSL2 CUDA
+       * process that serves all VMs over the shared workspace. Launched on demand
+       * and idle-exits. See docs/computer-use-v3-grounding-plan.md.
+       */
+      detector: {
+        enabled: envBool("SANDBOX_VM_DETECTOR", true),
+        // Caption each detected element with Florence-2 (off = boxes only).
+        caption: envBool("SANDBOX_VM_DETECTOR_CAPTION", true),
+        // Service idle seconds before it exits and frees VRAM.
+        idleSec: Number(process.env.SANDBOX_VM_DETECTOR_IDLE_SEC ?? 600),
+        // YOLO confidence threshold and max boxes per frame.
+        conf: Number(process.env.SANDBOX_VM_DETECTOR_CONF ?? 0.05),
+        maxBoxes: Number(process.env.SANDBOX_VM_DETECTOR_MAX_BOXES ?? 120),
       },
       /**
        * `watch_video`: sample frames (scene-change detection + duration-scaled

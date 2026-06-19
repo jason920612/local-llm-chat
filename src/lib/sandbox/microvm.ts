@@ -22,6 +22,7 @@ import {
   repoDirName,
 } from "./driver";
 import { listFiles, emptyResult, cloneTree } from "./fsutil";
+import { ensureDetector } from "./detector";
 
 /**
  * Cap how many conversation VMs may be alive at once. A VM slot is held for the
@@ -215,7 +216,12 @@ export class MicroVMDriver implements SandboxDriver {
 
   async computerObserve(
     conversationId: string,
-    opts: { includeScreenshot?: boolean; ocr?: boolean } = {},
+    opts: {
+      includeScreenshot?: boolean;
+      ocr?: boolean;
+      mark?: boolean;
+      remark?: boolean;
+    } = {},
   ): Promise<ComputerObservation> {
     if (!this.cfg.computer.enabled) {
       return {
@@ -225,6 +231,10 @@ export class MicroVMDriver implements SandboxDriver {
         error: "VM computer use is disabled",
       };
     }
+    const det = this.cfg.detector;
+    const wantMark = Boolean(opts.mark) && this.cfg.computer.marking;
+    // Set-of-Mark detection runs on the host GPU service — make sure it's up.
+    if (wantMark && det.enabled) ensureDetector();
     const jobId = this.safeJobId(`cu_obs_${nanoid(8)}`);
     const result = await this.runVmRequest(
       conversationId,
@@ -236,6 +246,12 @@ export class MicroVMDriver implements SandboxDriver {
         maxOutputChars: 2_000_000,
         includeScreenshot: Boolean(opts.includeScreenshot),
         ocr: opts.ocr ?? this.cfg.computer.ocr,
+        mark: wantMark,
+        remark: Boolean(opts.remark),
+        markDiffThreshold: this.cfg.computer.markDiffThreshold,
+        detectorCaption: det.caption,
+        detectorConf: det.conf,
+        detectorMaxBoxes: det.maxBoxes,
         autoInstall: this.cfg.computer.autoInstall,
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
@@ -265,6 +281,7 @@ export class MicroVMDriver implements SandboxDriver {
         autoInstall: this.cfg.computer.autoInstall,
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
+        humanMouse: this.cfg.computer.humanMouse,
         steps: seq.steps ?? [],
         includeScreenshot: Boolean(seq.includeScreenshot),
       },
@@ -338,6 +355,7 @@ export class MicroVMDriver implements SandboxDriver {
         autoInstall: this.cfg.computer.autoInstall,
         width: this.cfg.computer.width,
         height: this.cfg.computer.height,
+        humanMouse: this.cfg.computer.humanMouse,
         steps: seq.steps ?? [],
         includeScreenshot: Boolean(seq.includeScreenshot),
       },

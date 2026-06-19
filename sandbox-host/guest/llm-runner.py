@@ -892,6 +892,201 @@ def _reset_ocr_proc():
     _OCR_PROC = None
 
 
+# ---------------------------------------------------------------------------
+# Set-of-Mark grounding (v3). Detection runs on the HOST GPU service (the VM has
+# no GPU): the guest drops a request on the shared workspace and polls the
+# result. We merge detector boxes (+captions) with OCR boxes, overlay numbered
+# marks on the screenshot, and keep a cache so the model can target `mark: N`.
+# See docs/computer-use-v3-grounding-plan.md.
+# ---------------------------------------------------------------------------
+
+DETECT = RUN / "detect"
+# Per-VM cache of the last marking (this daemon serves one conversation).
+_MARK_STATE = {"sig": None, "windows": None, "marks": [], "marked_path": None}
+
+
+def request_detection(ws_rel_image, caption=True, conf=0.05, max_boxes=120, timeout=40):
+    """Ask the host GPU detector service to find interactable regions in a
+    screenshot already written under the shared workspace. Returns its element
+    list (bbox/center/caption/score) or None on timeout/unavailable."""
+    try:
+        DETECT.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        return None
+    rid = "%d_%d" % (now_ms(), random.randint(1000, 9999))
+    req_p = DETECT / ("req-%s.json" % rid)
+    res_p = DETECT / ("res-%s.json" % rid)
+    write_json(req_p, {"image": ws_rel_image, "caption": bool(caption), "conf": conf, "max": max_boxes})
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if res_p.exists():
+            data = read_json(res_p, None)
+            for p in (res_p, req_p):
+                try:
+                    p.unlink()
+                except Exception:  # noqa: BLE001
+                    pass
+            if isinstance(data, dict) and data.get("ok"):
+                return data.get("elements", [])
+            return []
+    try:
+        req_p.unlink()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _frame_sig(png_path):
+    try:
+        from PIL import Image
+
+        im = Image.open(png_path).convert("L").resize((32, 32))
+        return list(im.getdata())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _sig_diff(a, b):
+    if not a or not b or len(a) != len(b):
+        return 1.0
+    return sum(abs(p - q) for p, q in zip(a, b)) / (len(a) * 255.0)
+
+
+def _iou(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    return inter / float(area_a + area_b - inter + 1e-6)
+
+
+def _merge_detection(det_els, ocr_els):
+    """Combine detector boxes (+captions) with OCR text boxes; drop near-duplicate
+    overlaps, preferring the entry that carries text/caption."""
+    merged = []
+    for e in det_els:
+        merged.append(
+            {
+                "bbox": e.get("bbox"),
+                "center": e.get("center"),
+                "text": str(e.get("caption", "")).strip(),
+                "score": e.get("score"),
+                "source": "detector",
+            }
+        )
+    for e in ocr_els:
+        merged.append(
+            {
+                "bbox": e.get("bbox"),
+                "center": e.get("center"),
+                "text": str(e.get("text", "")).strip(),
+                "score": e.get("confidence"),
+                "source": "ocr",
+            }
+        )
+    out = []
+    for e in merged:
+        if not e.get("bbox") or not e.get("center"):
+            continue
+        dup = False
+        for k in out:
+            if _iou(e["bbox"], k["bbox"]) > 0.7:
+                # keep whichever has text; otherwise keep first
+                if not k.get("text") and e.get("text"):
+                    k.update(e)
+                dup = True
+                break
+        if not dup:
+            out.append(e)
+    return out
+
+
+def _assign_marks(elements, prev_marks):
+    """Number elements 1..N, reusing a previous element's number when boxes
+    overlap (stable numbering across re-marks)."""
+    used = set()
+    result = []
+    next_n = 1
+
+    def free():
+        nonlocal next_n
+        while next_n in used:
+            next_n += 1
+        used.add(next_n)
+        return next_n
+
+    for e in elements:
+        num = None
+        best = 0.0
+        for pm in prev_marks:
+            i = _iou(e["bbox"], pm["bbox"])
+            if i > 0.5 and i > best and pm["mark"] not in used:
+                best, num = i, pm["mark"]
+        if num is None:
+            num = free()
+        else:
+            used.add(num)
+        e2 = dict(e)
+        e2["mark"] = num
+        result.append(e2)
+    return result
+
+
+def _draw_overlay(shot_path, marks):
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        im = Image.open(shot_path).convert("RGB")
+        draw = ImageDraw.Draw(im)
+        try:
+            font = ImageFont.load_default()
+        except Exception:  # noqa: BLE001
+            font = None
+        for m in marks:
+            x1, y1, x2, y2 = m["bbox"]
+            draw.rectangle([x1, y1, x2, y2], outline=(255, 40, 40), width=2)
+            label = str(m["mark"])
+            tw = 8 * len(label) + 6
+            draw.rectangle([x1, max(0, y1 - 14), x1 + tw, y1], fill=(255, 40, 40))
+            draw.text((x1 + 3, max(0, y1 - 14)), label, fill=(255, 255, 255), font=font)
+        out = COMPUTER / ("marked-%d.png" % now_ms())
+        im.save(out)
+        return out
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def build_marks(shot, ws_rel, windows, ocr_els, force, threshold, conf, max_boxes, caption):
+    """Decide reuse-vs-redetect, run host detection if needed, merge + number +
+    overlay. Returns (marks, marked_png_path, redetected)."""
+    sig = _frame_sig(shot)
+    win_titles = [w.get("title", "") for w in windows]
+    reuse = (
+        not force
+        and _MARK_STATE["marks"]
+        and _MARK_STATE["marked_path"]
+        and os.path.exists(str(_MARK_STATE["marked_path"]))
+        and win_titles == _MARK_STATE["windows"]
+        and _sig_diff(sig, _MARK_STATE["sig"]) < threshold
+    )
+    if reuse:
+        return _MARK_STATE["marks"], _MARK_STATE["marked_path"], False
+    det_els = request_detection(ws_rel, caption=caption, conf=conf, max_boxes=max_boxes)
+    if det_els is None:
+        det_els = []  # service unavailable — fall back to OCR-only marks
+    merged = _merge_detection(det_els, ocr_els)
+    marks = _assign_marks(merged, _MARK_STATE["marks"])
+    marked = _draw_overlay(shot, marks)
+    _MARK_STATE.update(sig=sig, windows=win_titles, marks=marks, marked_path=marked)
+    return marks, marked, True
+
+
 def observe_computer(req):
     width = int(req.get("width") or 1280)
     height = int(req.get("height") or 720)
@@ -939,25 +1134,47 @@ def observe_computer(req):
         for i, w in enumerate(windows)
     ]
     warnings = []
-    if use_ocr:
+    want_mark = bool(req.get("mark", False))
+    # Marking needs OCR text boxes too; run OCR if marking even when ocr=false.
+    ocr_elements = []
+    if use_ocr or want_mark:
         ocr_elements, ocr_error = run_ppocr(shot)
         elements.extend(ocr_elements)
         if ocr_error:
             warnings.append(f"PP-OCR unavailable or failed: {ocr_error[-500:]}")
+
+    shot_for_vision = shot
+    marks = None
+    if want_mark:
+        marks, marked, _re = build_marks(
+            shot,
+            str(shot).replace(WS + "/", ""),
+            windows,
+            ocr_elements,
+            bool(req.get("remark", False)),
+            float(req.get("markDiffThreshold", 0.06)),
+            float(req.get("detectorConf", 0.05)),
+            int(req.get("detectorMaxBoxes", 120)),
+            bool(req.get("detectorCaption", True)),
+        )
+        if marked:
+            shot_for_vision = marked
+
     return {
         "ok": True,
         "display": DISPLAY,
         "screen": read_screen_size(shot) or {"width": width, "height": height},
         "screenshot": {
-            "path": str(shot).replace(WS + "/", ""),
+            "path": str(shot_for_vision).replace(WS + "/", ""),
             **(
-                {"dataUrl": screenshot_data_url(shot)}
-                if include_screenshot
+                {"dataUrl": screenshot_data_url(shot_for_vision)}
+                if (include_screenshot or want_mark)
                 else {}
             ),
         },
         "windows": windows,
         "elements": elements[:200],
+        **({"marks": marks} if marks is not None else {}),
         "warnings": warnings,
     }
 
@@ -1277,6 +1494,15 @@ def _snapshot_browser(page):
 
 
 def _resolve_center(snap, want):
+    if want.get("mark") is not None:
+        try:
+            target = int(want["mark"])
+        except (TypeError, ValueError):
+            return None
+        for m in (snap.get("marks") or []) + _MARK_STATE["marks"]:
+            if m.get("mark") == target:
+                return m.get("center")
+        return None
     if want.get("id"):
         for e in snap["elements"]:
             if e.get("id") == want["id"]:
@@ -1335,6 +1561,7 @@ def _exec_computer_step(step, snap):
         run_cmd(["xdotool", "mouseup", "1"], timeout=3, env=env)
     elif action == "drag":
         dest = _resolve_center(snap, {
+            "mark": step.get("to_mark"),
             "id": step.get("to_id"), "text": step.get("to_text"),
             "x": step.get("to_x"), "y": step.get("to_y"),
         })
@@ -1365,6 +1592,52 @@ def _exec_computer_step(step, snap):
         time.sleep(ms / 1000.0)
     else:
         raise ValueError(f"unknown action: {action}")
+
+
+# When true, browser pointer actions drive the REAL X cursor (xdotool) instead
+# of Playwright's synthetic input — many sites behave differently under, or
+# detect, JS/synthetic clicks. Set per-sequence from the request.
+_HUMAN_MOUSE = True
+_XDO_MODS = {"ctrl": "ctrl", "control": "ctrl", "shift": "shift", "alt": "alt",
+             "meta": "super", "cmd": "super", "command": "super"}
+
+
+def _browser_screen_offset(page):
+    """Map the page viewport origin to absolute X-screen coords (window position
+    + chrome height), so the real cursor can be moved onto a DOM target."""
+    try:
+        o = page.evaluate(
+            "() => ({sx: window.screenX, sy: window.screenY,"
+            " ox: window.outerWidth - window.innerWidth,"
+            " oy: window.outerHeight - window.innerHeight})"
+        )
+        bx = int(o.get("sx", 0)) + max(0, int(o.get("ox", 0))) // 2
+        by = int(o.get("sy", 0)) + max(0, int(o.get("oy", 0)))
+        return bx, by
+    except Exception:  # noqa: BLE001
+        return 0, 0
+
+
+def _browser_human_pointer(page, vx, vy, kind, raw_mods):
+    """Move the real cursor to a viewport point and perform a real click/hover."""
+    ox, oy = _browser_screen_offset(page)
+    sx, sy = int(ox + vx), int(oy + vy)
+    env = computer_env()
+    mods = [_XDO_MODS.get(str(m).lower(), str(m).lower()) for m in (raw_mods or [])]
+    smooth_move(sx, sy)
+    if kind == "move":
+        return
+    for m in mods:
+        run_cmd(["xdotool", "keydown", m], timeout=2, env=env)
+    try:
+        btn = {"left_click": "1", "right_click": "3", "middle_click": "2", "double_click": "1"}.get(kind, "1")
+        if kind == "double_click":
+            run_cmd(["xdotool", "click", "--repeat", "2", "--delay", "120", btn], timeout=5, env=env)
+        else:
+            run_cmd(["xdotool", "click", btn], timeout=5, env=env)
+    finally:
+        for m in mods:
+            run_cmd(["xdotool", "keyup", m], timeout=2, env=env)
 
 
 def _exec_browser_step(page, step, _snap):
@@ -1410,6 +1683,29 @@ def _exec_browser_step(page, step, _snap):
 
     if action in ("left_click", "right_click", "middle_click", "double_click", "move", "mouse_down", "mouse_up"):
         loc = None if (step.get("x") is not None and not step.get("id") and not step.get("text")) else locator()
+        # Human-cursor path (default): drive the REAL X pointer over the page
+        # (no synthetic/JS click) for clicks/move. Resolve a viewport point from
+        # the element box or raw x,y, then move + click via xdotool.
+        use_human = _HUMAN_MOUSE and not step.get("fast") and action in (
+            "left_click", "right_click", "middle_click", "double_click", "move",
+        )
+        if use_human:
+            vx = vy = None
+            if loc is not None:
+                try:
+                    loc.scroll_into_view_if_needed(timeout=10000)
+                    box = loc.bounding_box()
+                    if box:
+                        vx = box["x"] + box["width"] / 2
+                        vy = box["y"] + box["height"] / 2
+                except Exception:  # noqa: BLE001
+                    vx = vy = None
+            elif step.get("x") is not None:
+                vx, vy = float(step.get("x") or 0), float(step.get("y") or 0)
+            if vx is not None:
+                _browser_human_pointer(page, vx, vy, action, step.get("modifiers"))
+                return None
+            # else: fall through to Playwright (couldn't resolve a point)
         if loc is None:
             x, y = int(step.get("x") or 0), int(step.get("y") or 0)
             page.mouse.move(x, y)
@@ -1622,6 +1918,9 @@ def action_sequence(req, mode):
     width = int(req.get("width") or 1280)
     height = int(req.get("height") or 720)
     auto_install = bool(req.get("autoInstall", True))
+    # Whether browser pointer actions use the real X cursor (vs synthetic input).
+    global _HUMAN_MOUSE
+    _HUMAN_MOUSE = bool(req.get("humanMouse", True))
 
     if mode == "computer":
         missing = start_computer(width, height, auto_install=auto_install, ocr=False)

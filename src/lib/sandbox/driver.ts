@@ -48,6 +48,16 @@ export interface ComputerElement {
   source: "ocr" | "window" | "accessibility" | "dom" | "vision";
 }
 
+/** A numbered Set-of-Mark element overlaid on the screenshot (v3 grounding). */
+export interface ComputerMark {
+  mark: number;
+  center: [number, number];
+  bbox: [number, number, number, number];
+  text?: string;
+  source?: "detector" | "ocr";
+  score?: number;
+}
+
 export interface ComputerObservation {
   ok: boolean;
   screen?: { width: number; height: number };
@@ -58,6 +68,8 @@ export interface ComputerObservation {
   };
   windows: ComputerWindow[];
   elements: ComputerElement[];
+  /** Numbered marks (when a marked observe was requested); target via `mark:N`. */
+  marks?: ComputerMark[];
   missing?: string[];
   warnings?: string[];
   error?: string;
@@ -257,7 +269,14 @@ export interface SandboxDriver {
   /** Observe the conversation VM's isolated virtual display. */
   computerObserve?(
     conversationId: string,
-    opts?: { includeScreenshot?: boolean; ocr?: boolean },
+    opts?: {
+      includeScreenshot?: boolean;
+      ocr?: boolean;
+      /** Overlay numbered Set-of-Mark marks (v3 grounding). */
+      mark?: boolean;
+      /** Force re-detection even if the frame looks unchanged. */
+      remark?: boolean;
+    },
   ): Promise<ComputerObservation>;
 
   /** Run a GUI action program on the conversation VM's isolated virtual display. */

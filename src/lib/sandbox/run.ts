@@ -109,7 +109,12 @@ export function isMicrovmSandbox(): boolean {
 /** Observe the isolated virtual display for this conversation's microVM. */
 export function computerObserve(
   conversationId: string,
-  opts?: { includeScreenshot?: boolean; ocr?: boolean },
+  opts?: {
+    includeScreenshot?: boolean;
+    ocr?: boolean;
+    mark?: boolean;
+    remark?: boolean;
+  },
 ): Promise<ComputerObservation> {
   const driver = getDriver();
   if (!driver.computerObserve) {
