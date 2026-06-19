@@ -193,7 +193,14 @@ def main():
             did = True
             last_active = now
             try:
+                t0 = time.time()
                 out = handle(req_path)
+                log(
+                    "processed",
+                    os.path.basename(req_path),
+                    "elements=%d" % len(out.get("elements", [])),
+                    "in %.2fs" % (time.time() - t0),
+                )
             except Exception as ex:  # noqa: BLE001
                 out = {"ok": False, "error": str(ex)}
                 log("handle error:", ex)

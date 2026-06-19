@@ -68,14 +68,19 @@ export function ensureDetector(): void {
   const py = `${cfg().wslHome}/detector/venv/bin/python`;
   const logf = `${cfg().wslHome}/detector/service.log`;
   const captionFlag = det.caption ? "" : "--no-caption";
-  const inner =
-    `nohup "${py}" "${scriptWsl}" --idle ${Math.ceil(det.idleSec)} ${captionFlag} ` +
-    `>> "${logf}" 2>&1 &`;
+  // Run the service in the FOREGROUND of the wsl.exe child (exec replaces bash),
+  // so wsl.exe stays alive for the service's lifetime. This avoids two traps:
+  //   - `nohup … &` backgrounding: WSL often kills bg processes when the wsl.exe
+  //     interop call returns, so the service died right after launch.
+  //   - `detached:true`: on Windows it defeats windowsHide and flashes a console.
+  // windowsHide keeps it invisible; the service idle-exits on its own (then
+  // wsl.exe exits too). unref() keeps it off Node's event loop without killing it.
+  const inner = `exec "${py}" "${scriptWsl}" --idle ${Math.ceil(det.idleSec)} ${captionFlag} >> "${logf}" 2>&1`;
   try {
     const child = spawn(
       "wsl.exe",
       ["-d", cfg().wslDistro, "--", "bash", "-lc", inner],
-      { windowsHide: true, detached: true, stdio: "ignore" },
+      { windowsHide: true, stdio: "ignore" },
     );
     child.unref();
   } catch {
